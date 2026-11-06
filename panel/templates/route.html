@@ -44,7 +44,7 @@
   </div>
   <div class="table-wrap">
     <table class="stats-table">
-      <thead><tr><th>时间</th><th>来源</th><th>事件</th><th class="right">伤害</th><th class="right">进化点</th><th class="right">击杀</th><th class="right">助攻</th><th class="right">参与</th><th></th></tr></thead>
+      <thead><tr><th>时间</th><th>来源</th><th>事件</th><th class="right">伤害</th><th class="right">距下一级 EVO</th><th class="right">击杀</th><th class="right">助攻</th><th class="right">参与</th><th></th></tr></thead>
       <tbody>
       {% for mark in route.marks %}
       <tr data-elapsed="{{ mark.elapsed_ms }}">
@@ -83,7 +83,7 @@
     return best;
   }
   function status(p) {
-    var values = [["伤害", p.damage], ["进化点", p.evo], ["击杀", p.kills], ["助攻", p.assists], ["参与", p.participation]];
+    var values = [["伤害", p.damage], ["距下一级 EVO", p.evo], ["击杀", p.kills], ["助攻", p.assists], ["参与", p.participation]];
     return values.filter(function (x) { return x[1] !== null && x[1] !== undefined; }).map(function (x) { return x[0] + " " + x[1]; }).join(" · ") || "这一刻还没有读到状态";
   }
   function position(e) { var r = map.getBoundingClientRect(); return {x:(e.clientX-r.left)/r.width, y:(e.clientY-r.top)/r.height}; }

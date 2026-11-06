@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -18,6 +19,7 @@ atexit.register(shutil.rmtree, TEMP, ignore_errors=True)
 os.environ["EVO_DATA_DIR"] = str(TEMP)
 
 import routes  # noqa: E402
+from hud import Hud  # noqa: E402
 from route_matcher import MapMatcher  # noqa: E402
 import storage  # noqa: E402
 
@@ -52,8 +54,15 @@ def main():
     out["点击吸附到最近线段并插值时间"] = abs(snapped["x"] - .2) < .01 and 900 <= snapped["elapsed_ms"] <= 1100
     timed = routes.point_at_time(points, 1500)
     out["按时间插值路线坐标"] = abs(timed["x"] - .25) < 1e-6 and abs(timed["y"] - .25) < 1e-6
-    inferred = routes.infer_evo_event({"evo": 100, "damage": 50}, {"evo": 645, "damage": 170})
-    out["EVO 增量扣除伤害后推测地图事件"] = inferred is not None and inferred["key"] == "harvester"
+    inferred = routes.infer_evo_event({"evo": 1600, "damage": 50}, {"evo": 1055, "damage": 170})
+    out["EVO 剩余值下降量扣除伤害后推测地图事件"] = inferred is not None and inferred["key"] == "harvester"
+    out["EVO 升级后的剩余值跳高不会误判固定分值事件"] = (
+        routes.infer_evo_event({"evo": 20, "damage": 170}, {"evo": 1600, "damage": 170}) is None)
+    cfg = routes.load_route_config()
+    hud = object.__new__(Hud)
+    hud.engine = lambda _image: SimpleNamespace(txts=["下一级：1,609 进化"], scores=[.999])
+    evo_crop = np.zeros((69, 387, 3), dtype=np.uint8)
+    out["录屏样式的中文 EVO 文本能读成剩余值"] = hud.read_evo(evo_crop, cfg["evo"])[0] == 1609
 
     recorder = object.__new__(routes.RouteRecorder)
     states = [

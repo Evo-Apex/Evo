@@ -43,11 +43,17 @@ def load_evo_rules():
 
 
 def infer_evo_event(previous, current, rules=None):
-    """用 EVO 增量扣掉伤害带来的 EVO 后匹配世界事件；只返回“可能”，不把同分值当成确定事实。"""
+    """用获得的 EVO 扣掉伤害贡献后匹配世界事件；只返回“可能”，不把同分值当成确定事实。"""
     rules = rules or load_evo_rules()
     if previous.get("evo") is None or current.get("evo") is None:
         return None
-    evo_delta = current["evo"] - previous["evo"]
+    if rules.get("value_mode") == "remaining":
+        evo_delta = previous["evo"] - current["evo"]
+    else:
+        evo_delta = current["evo"] - previous["evo"]
+    # 剩余值在升级后会跳高；没有同时可靠读到等级时，不能拿这次跳变猜固定分值事件。
+    if evo_delta <= 0:
+        return None
     damage_delta = max(0, (current.get("damage") or 0) - (previous.get("damage") or 0))
     residual = evo_delta - damage_delta * float(rules.get("damage_to_evo", 1))
     tolerance = float(rules.get("tolerance", 10))
@@ -230,19 +236,22 @@ class RouteRecorder:
             self._finish(now)
             self._start(map_name, now)
         session = self.current
-        if not self.worker.available(map_name):
-            if map_name not in self.missing_warned:
-                self.log(f"⚠ 行进路线：{map_name} 没有基准地图，跳过这局（assets/maps/）")
-                self.missing_warned.add(map_name)
-            return
         elapsed = (now - session["started"]).total_seconds()
         if elapsed < session["next_sample"]:
             return
-        r = self.cfg["minimap"]
-        crop = cut(frame, r["roi"], self.cfg["base_resolution"], r.get("anchor"))
-        crop = crop.copy()
-        if self.worker.submit(session["id"], map_name, round(elapsed * 1000), crop):
-            session["pending"] += 1
+        elapsed_ms = round(elapsed * 1000)
+        evo = self.cfg.get("evo")
+        if evo:
+            crop = cut(frame, evo["roi"], self.cfg["base_resolution"], evo.get("anchor")).copy()
+            self.record_evo(crop, now)
+        if self.worker.available(map_name):
+            r = self.cfg["minimap"]
+            crop = cut(frame, r["roi"], self.cfg["base_resolution"], r.get("anchor")).copy()
+            if self.worker.submit(session["id"], map_name, elapsed_ms, crop):
+                session["pending"] += 1
+        elif map_name not in self.missing_warned:
+            self.log(f"⚠ 行进路线：{map_name} 没有基准地图；仍记录状态，但这局不能生成路线（assets/maps/）")
+            self.missing_warned.add(map_name)
         session["next_sample"] = elapsed + self.worker.interval()
 
     def bind_match(self, match_id):
@@ -259,7 +268,8 @@ class RouteRecorder:
         item = self.cfg["maps"].get(map_name) or {}
         session = {"id": self.next_session, "map_name": map_name, "map_asset": item.get("file", ""),
                    "started": now, "ended": None, "next_sample": 0.0, "pending": 0, "points": [],
-                   "match_id": None, "saved": False, "top_jobs": deque(), "states": [], "last_state": {}}
+                   "match_id": None, "saved": False, "top_jobs": deque(), "evo_jobs": deque(),
+                   "last_evo_thumb": None, "states": [], "last_state": {}}
         self.next_session += 1
         self.current = session
         self.sessions[session["id"]] = session
@@ -299,40 +309,72 @@ class RouteRecorder:
             self.current["top_jobs"] = jobs = deque(list(jobs)[::2])
         jobs.append((elapsed_ms, snip))
 
+    def record_evo(self, crop, now):
+        """低频保存发生变化的 EVO 小块到内存；不落盘，赛后 OCR 完就释放。"""
+        if self.current is None or crop.size == 0:
+            return
+        thumb = crop[::4, ::4].astype("int16")
+        previous = self.current["last_evo_thumb"]
+        self.current["last_evo_thumb"] = thumb
+        if previous is not None and previous.shape == thumb.shape:
+            if float(abs(thumb - previous).mean()) < float(self.cfg["evo"].get("change", 3)):
+                return
+        elapsed_ms = max(0, round((now - self.current["started"]).total_seconds() * 1000))
+        jobs = self.current["evo_jobs"]
+        limit = int(self.cfg.get("max_state_samples", 60))
+        if len(jobs) >= limit:
+            self.current["evo_jobs"] = jobs = deque(list(jobs)[::2])
+        jobs.append((elapsed_ms, crop))
+
     def idle_step(self, hud):
         """非战斗画面每轮最多读一个状态块，避免和总结页争抢 CPU。"""
         self._drain()
-        session = next((s for s in self.completed if not s["saved"] and s["top_jobs"]), None)
+        session = next((s for s in self.completed if not s["saved"] and (s["top_jobs"] or s["evo_jobs"])), None)
         if session is None:
             return False
-        elapsed_ms, snip = session["top_jobs"].popleft()
-        values, scores, shown = hud.read_top(snip)
-        if values.get("squads_left") is not None or values.get("rp_delta") is not None:
-            state = dict(session["last_state"])
-            for name, value in values.items():
-                if value is not None:
-                    state[name] = value
-                elif name in ZERO_STATE_FIELDS and name not in shown and name not in state:
-                    state[name] = 0
-            changed = {k: v for k, v in state.items() if session["last_state"].get(k) != v}
-            if changed:
-                confidence = [scores.get(k) for k in changed if scores.get(k) is not None]
-                session["states"].append({"elapsed_ms": elapsed_ms, **state,
-                                          "ocr_confidence": sum(confidence) / len(confidence) if confidence else None,
-                                          "changed": tuple(changed)})
+        use_evo = bool(session["evo_jobs"] and
+                       (not session["top_jobs"] or session["evo_jobs"][0][0] <= session["top_jobs"][0][0]))
+        if use_evo:
+            elapsed_ms, crop = session["evo_jobs"].popleft()
+            value, score = hud.read_evo(crop, self.cfg["evo"])
+            if value is not None and session["last_state"].get("evo") != value:
+                state = {**session["last_state"], "evo": value}
+                session["states"].append({"elapsed_ms": elapsed_ms, **state, "ocr_confidence": score,
+                                          "changed": ("evo",)})
                 session["last_state"] = state
+        else:
+            elapsed_ms, snip = session["top_jobs"].popleft()
+            values, scores, shown = hud.read_top(snip)
+            if values.get("squads_left") is not None or values.get("rp_delta") is not None:
+                state = dict(session["last_state"])
+                for name, value in values.items():
+                    if value is not None:
+                        state[name] = value
+                    elif name in ZERO_STATE_FIELDS and name not in shown and name not in state:
+                        state[name] = 0
+                changed = {k: v for k, v in state.items() if session["last_state"].get(k) != v}
+                if changed:
+                    confidence = [scores.get(k) for k in changed if scores.get(k) is not None]
+                    session["states"].append({"elapsed_ms": elapsed_ms, **state,
+                                              "ocr_confidence": sum(confidence) / len(confidence) if confidence else None,
+                                              "changed": tuple(changed)})
+                    session["last_state"] = state
         self._save_if_ready(session)
         return True
 
     @staticmethod
     def _state_label(previous, state):
-        labels = {"damage": "伤害", "evo": "进化点", "kills": "击杀", "assists": "助攻",
+        labels = {"damage": "伤害", "evo": "距下一级 EVO", "kills": "击杀", "assists": "助攻",
                   "participation": "参与", "squads_left": "剩余小队", "rp_delta": "RP"}
         parts = []
         for name in state.get("changed", ()):
             value = state.get(name)
             old = previous.get(name)
-            if isinstance(value, int) and isinstance(old, int) and value > old:
+            if name == "evo" and isinstance(value, int) and isinstance(old, int) and value > old:
+                parts.append(f"EVO 等级提升，距下一级 {value}")
+            elif name == "evo":
+                parts.append(f"距下一级 EVO {value}")
+            elif isinstance(value, int) and isinstance(old, int) and value > old:
                 parts.append(f"{labels[name]} +{value - old}")
             else:
                 parts.append(f"{labels[name]} {value}")
@@ -368,7 +410,7 @@ class RouteRecorder:
 
     def _save_if_ready(self, session):
         if (session["saved"] or session["ended"] is None or session["match_id"] is None
-                or session["pending"] or session["top_jobs"]):
+                or session["pending"] or session["top_jobs"] or session["evo_jobs"]):
             return
         points = sorted(session["points"], key=lambda p: p["elapsed_ms"])
         raw_count = len(points)

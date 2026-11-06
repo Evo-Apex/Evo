@@ -216,6 +216,36 @@ class Hud:
             shown.add("damage")
         return values, scores, shown
 
+    def read_evo(self, crop, spec):
+        """读左下角‘距下一级’的 EVO 数值。crop 是 routes.py 已按当前分辨率裁好的小块。
+
+        录屏样本里文字和数字可能被 OCR 拆成几段，所以既试每一段，也试按画面顺序拼起来的整行；
+        必须同时符合带‘下一级 / 进化 / EVO’的格式，避免把等级、血量或直播水印当成 EVO。
+        """
+        _, _, width, height = spec["roi"]
+        piece = cv2.resize(crop, (round(width * spec["upscale"]), round(height * spec["upscale"])),
+                           interpolation=cv2.INTER_CUBIC)
+        piece = cv2.cvtColor(cv2.cvtColor(piece, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
+        pad = int(spec.get("pad", 0))
+        if pad:
+            piece = cv2.copyMakeBorder(piece, pad, pad, pad, pad, cv2.BORDER_REPLICATE)
+        texts = self._texts(piece)
+        candidates = list(texts)
+        if len(texts) > 1:
+            candidates.append(("".join(text for text, _score in texts), min(score for _text, score in texts)))
+        best = (None, None)
+        for text, score in candidates:
+            cleaned = clean_number(text, spec.get("replace", {}))
+            for pattern in spec["patterns"]:
+                found = re.search(pattern, cleaned, re.IGNORECASE)
+                if not found:
+                    continue
+                value = int(found[1])
+                if (score >= spec["min_score"] and spec["range"][0] <= value <= spec["range"][1]
+                        and (best[1] is None or score > best[1])):
+                    best = (value, float(score))
+        return best
+
     def _kp_icons(self, snip, row):
         """击杀 / 助攻 / 老板分那一行每个图标的左右边（基准坐标），{项: (左, 右)}，没找到的不在里面。
         三个图标从左到右排：后一个找到的位置不在前一个右边，算认错了。"""
