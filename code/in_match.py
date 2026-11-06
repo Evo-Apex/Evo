@@ -39,13 +39,14 @@ class InMatchWatcher:
     VOTES = 2  # 同一个传奇认出这么多次才算数
 
     def __init__(self, hud, post, log, name_cfg, save=None, keep_all=lambda: False, weapons=None,
-                 before_hand_over=None):
+                 before_hand_over=None, on_top_change=None):
         """save(截图, 文件名)：存一张截图（记录程序的截图文件夹）；keep_all()：现在是不是"保留全部截图"。
         保留全部截图时（用源码运行时永远是），一局结束时存下最后一张自己的界面（hud_时间_last.png），用来校准对局中的区域。
         weapons：武器识别（weapons.WeaponDetector，不给就新建一个：读 config/weapons.json 和参照图）。
         before_hand_over()：把数据交给 PostMatch 之前先调用（记录程序用它读总结页上先留着的队友，好和对局中认出的对上）。"""
         self.hud, self.post, self.log = hud, post, log
         self.before_hand_over = before_hand_over
+        self.on_top_change = on_top_change
         self.weapons = WeaponTimer(weapons or WeaponDetector())
         self.save, self.keep_all = save, keep_all
         self.last_frame = None  # 保留全部截图时：最近一张右上角有变化的自己的界面（整张）
@@ -141,6 +142,8 @@ class InMatchWatcher:
         snip = self.hud.top_snip(frame)
         if self.hud.changed(snip, self.tops[-1] if self.tops else None):
             self.tops.append(snip)
+            if self.on_top_change is not None:
+                self.on_top_change(snip, now)
             if self.save is not None and self.keep_all():
                 self.last_frame = frame.copy()
 

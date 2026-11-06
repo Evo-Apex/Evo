@@ -1,0 +1,31 @@
+{
+  "_说明": "按 EVO 与伤害的变化推测路线事件。只写当前仍有可靠来源的规则；同分值可能来自别的动作，所以页面统一写“可能”。",
+  "checked_at": "2026-11-06",
+  "value_mode": "accumulated",
+  "damage_to_evo": 1.0,
+  "tolerance": 12,
+  "events": [
+    {
+      "key": "harvester",
+      "value": 425,
+      "label": "可能拿了进化收割机",
+      "source": "https://www.ea.com/es-mx/games/apex-legends/apex-legends/news/showdown-patch-notes"
+    },
+    {
+      "key": "ring_console",
+      "value": 200,
+      "label": "可能使用环形控制台（侦察下一个安全区）或开启宝库",
+      "source": "https://apexlegends.wiki.gg/wiki/Legend_upgrade"
+    },
+    {
+      "key": "survey_beacon",
+      "value": 75,
+      "label": "可能使用侦察信标或回收队友旗帜",
+      "source": "https://www.ea.com/fr/games/apex-legends/apex-legends/news/shockwave-patch-notes"
+    }
+  ],
+  "level_event": {
+    "label": "可能占领了要塞（全队直接提升一级）",
+    "source": "https://www.ea.com/games/apex-legends/apex-legends/news/cipher-patch-notes"
+  }
+}

@@ -234,8 +234,8 @@ def settle(conn, match_id, log=print):
 
 
 class PostMatch:
-    def __init__(self, conn, log=print, name_slip=0.8, on_round_end=None):
-        self.conn, self.log, self.on_round_end = conn, log, on_round_end
+    def __init__(self, conn, log=print, name_slip=0.8, on_round_end=None, on_match_saved=None):
+        self.conn, self.log, self.on_round_end, self.on_match_saved = conn, log, on_round_end, on_match_saved
         self.inserted = 0  # 由这里新记下的局数（没有总结页的局）
         self.info = {}  # 开局画面读到的这一局的模式、地图，对局中认出的传奇
         self.unknown_maps = set()  # 开局画面上读到、但不在已知地图名单里的文字
@@ -244,6 +244,7 @@ class PostMatch:
         self.unnamed = []  # 这次记录里存下时还不知道玩家名的局，认出名字后补上
         self.saved = []  # 这次记录里存下的所有局（之前记的名字原来是截短的，改成完整的时用）
         self.last_xp = None  # 上一次用过的经验值页读数（补进了一局或单独记了一局），不随每局清掉
+        self.saved_notified = set()  # 行进路线等附属记录：每个编号只通知一次
         self.reset()
 
     def reset(self):
@@ -483,6 +484,9 @@ class PostMatch:
     def _wait_for_name(self, match_id):
         """刚存下一局：还不知道玩家名的话，记下编号，认出名字后补上。"""
         self.saved.append(match_id)
+        if self.on_match_saved is not None and match_id not in self.saved_notified:
+            self.saved_notified.add(match_id)
+            self.on_match_saved(match_id)
         if self.player_name is None:
             self.unnamed.append(match_id)
 

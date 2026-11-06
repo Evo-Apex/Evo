@@ -19,7 +19,7 @@ from pathlib import Path
 from paths import DB_PATH
 
 APP_VERSION = "0.5.4"
-SCHEMA_VERSION = 9  # 表结构变了就加 1，并在 MIGRATIONS 里写上怎么从旧版本升级
+SCHEMA_VERSION = 10  # 表结构变了就加 1，并在 MIGRATIONS 里写上怎么从旧版本升级
 
 # 列名和类型，顺序也是导出 CSV 时的列顺序
 COLUMNS = {
@@ -118,6 +118,58 @@ WEAPON_TABLE = """CREATE TABLE IF NOT EXISTS weapon_holds (
   PRIMARY KEY (match_id, start_s)
 )"""
 
+# 行进路线：地图底图是所有对局共用的一份素材，每局只保存归一化坐标（0–1）、时间和当时的 HUD 状态。
+# 不保存每一帧截图，也不为每局另存一张路线图；面板打开时用底图 + 折线即时绘制，空间占用通常只有几 KB。
+ROUTE_TABLE = """CREATE TABLE IF NOT EXISTS match_routes (
+  match_id INTEGER PRIMARY KEY,
+  map_name TEXT NOT NULL,
+  map_asset TEXT NOT NULL,
+  status TEXT NOT NULL,  -- processing / ready / partial / failed
+  started_at TEXT,
+  ended_at TEXT,
+  coverage REAL,
+  point_count INTEGER NOT NULL DEFAULT 0,
+  processed_at TEXT
+)"""
+
+ROUTE_POINT_TABLE = """CREATE TABLE IF NOT EXISTS route_points (
+  match_id INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  elapsed_ms INTEGER NOT NULL,
+  x REAL NOT NULL,
+  y REAL NOT NULL,
+  confidence REAL NOT NULL,
+  damage INTEGER,
+  evo INTEGER,
+  kills INTEGER,
+  assists INTEGER,
+  participation INTEGER,
+  squads_left INTEGER,
+  rp_delta INTEGER,
+  PRIMARY KEY (match_id, seq)
+)"""
+
+# 自动记录的状态变化和用户在路线图上点击添加的时间点共用一张表，面板按 elapsed_ms 排序。
+ROUTE_MARK_TABLE = """CREATE TABLE IF NOT EXISTS route_marks (
+  mark_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  match_id INTEGER NOT NULL,
+  elapsed_ms INTEGER NOT NULL,
+  kind TEXT NOT NULL,  -- auto / manual
+  label TEXT,
+  confidence REAL,
+  x REAL,
+  y REAL,
+  damage INTEGER,
+  evo INTEGER,
+  kills INTEGER,
+  assists INTEGER,
+  participation INTEGER,
+  squads_left INTEGER,
+  rp_delta INTEGER,
+  note TEXT,
+  created_at TEXT
+)"""
+
 # 历史赛季：游戏里数据页上每个赛季的合计（2026-11-01 用户要的"录入历史赛季数据"，见 season_stats.py、live_collect.SeasonWatcher）。
 # 每个账号 × 每个赛季 × 全部 / 排位一行，生涯合计另一行（season 为空）。和每局的数据分开，不混在一起。
 # 记录程序读到的先存成"待核对"（status = pending），玩家在"赛季"页面核对、改好点保存才是 saved；同一项最多一行待核对、
@@ -166,6 +218,7 @@ MIGRATIONS = {
     7: [("加列", "matches", "edited", "TEXT")],  # 2026-10-22 0.3.7：用户改过哪几项（匿名统计里的"识别情况"用）
     8: [WEAPON_TABLE],  # 2026-10-24 武器：每一段拿在手上的武器（数据页"最常用武器"）
     9: [SEASON_TABLE],  # 2026-11-01 历史赛季：游戏里数据页上每个赛季的合计
+    10: [ROUTE_TABLE, ROUTE_POINT_TABLE, ROUTE_MARK_TABLE],  # 行进路线、HUD 时间点和用户标记
 }
 
 
@@ -197,6 +250,9 @@ def _upgrade(conn):
             conn.execute(LOBBY_TABLE)
             conn.execute(WEAPON_TABLE)
             conn.execute(SEASON_TABLE)
+            conn.execute(ROUTE_TABLE)
+            conn.execute(ROUTE_POINT_TABLE)
+            conn.execute(ROUTE_MARK_TABLE)
         else:
             for v in range(version + 1, SCHEMA_VERSION + 1):
                 for step in MIGRATIONS[v]:
@@ -319,6 +375,9 @@ def delete_match(conn, match_id):
     conn.execute("DELETE FROM teammates WHERE match_id = ?", (match_id,))
     conn.execute("DELETE FROM readings WHERE match_id = ?", (match_id,))
     conn.execute("DELETE FROM weapon_holds WHERE match_id = ?", (match_id,))
+    conn.execute("DELETE FROM match_routes WHERE match_id = ?", (match_id,))
+    conn.execute("DELETE FROM route_points WHERE match_id = ?", (match_id,))
+    conn.execute("DELETE FROM route_marks WHERE match_id = ?", (match_id,))
     conn.commit()
 
 
@@ -393,6 +452,62 @@ def weapon_totals(holds, after, match_ids):
     return seconds, played
 
 
+# ---------- 行进路线（见 routes.py） ----------
+
+ROUTE_STATE_FIELDS = ("damage", "evo", "kills", "assists", "participation", "squads_left", "rp_delta")
+
+
+def save_route(conn, match_id, route, points, marks=()):
+    """保存一局已经算好的路线，覆盖旧结果。points/marks 都是字典；坐标是地图宽高中的 0–1。"""
+    conn.execute("DELETE FROM route_points WHERE match_id = ?", (match_id,))
+    conn.execute("DELETE FROM route_marks WHERE match_id = ?", (match_id,))
+    keys = ("map_name", "map_asset", "status", "started_at", "ended_at", "coverage", "processed_at")
+    conn.execute(
+        "INSERT OR REPLACE INTO match_routes "
+        "(match_id, map_name, map_asset, status, started_at, ended_at, coverage, point_count, processed_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [match_id, *(route.get(k) for k in keys[:-1]), len(points), route.get("processed_at")],
+    )
+    point_keys = ("elapsed_ms", "x", "y", "confidence", *ROUTE_STATE_FIELDS)
+    conn.executemany(
+        f"INSERT INTO route_points (match_id, seq, {', '.join(point_keys)}) "
+        f"VALUES (?, ?, {', '.join('?' for _ in point_keys)})",
+        [(match_id, seq, *(point.get(k) for k in point_keys)) for seq, point in enumerate(points)],
+    )
+    for mark in marks:
+        add_route_mark(conn, match_id, mark, commit=False)
+    conn.commit()
+
+
+def route_of(conn, match_id):
+    return conn.execute("SELECT * FROM match_routes WHERE match_id = ?", (match_id,)).fetchone()
+
+
+def route_points_of(conn, match_id):
+    return conn.execute("SELECT * FROM route_points WHERE match_id = ? ORDER BY seq", (match_id,)).fetchall()
+
+
+def route_marks_of(conn, match_id):
+    return conn.execute("SELECT * FROM route_marks WHERE match_id = ? ORDER BY elapsed_ms, mark_id", (match_id,)).fetchall()
+
+
+def add_route_mark(conn, match_id, mark, commit=True):
+    """添加自动/手动时间点，返回编号。调用方先把点击位置吸附到路线并补好当时状态。"""
+    keys = ("elapsed_ms", "kind", "label", "confidence", "x", "y", *ROUTE_STATE_FIELDS, "note", "created_at")
+    cur = conn.execute(
+        f"INSERT INTO route_marks (match_id, {', '.join(keys)}) VALUES (?, {', '.join('?' for _ in keys)})",
+        [match_id, *(mark.get(k) for k in keys)],
+    )
+    if commit:
+        conn.commit()
+    return cur.lastrowid
+
+
+def delete_route_mark(conn, match_id, mark_id):
+    conn.execute("DELETE FROM route_marks WHERE match_id = ? AND mark_id = ? AND kind = 'manual'", (match_id, mark_id))
+    conn.commit()
+
+
 # ---------- 大厅读数（见 lobby.py、calibration.py） ----------
 
 def save_lobby(conn, reading):
@@ -446,6 +561,9 @@ def delete_all_matches(conn):
     conn.execute("DELETE FROM teammates")
     conn.execute("DELETE FROM readings")
     conn.execute("DELETE FROM weapon_holds")
+    conn.execute("DELETE FROM match_routes")
+    conn.execute("DELETE FROM route_points")
+    conn.execute("DELETE FROM route_marks")
     conn.execute("DELETE FROM lobby_readings")  # 段位卡片、走势图也要跟着清空
     conn.commit()
     return n
@@ -623,7 +741,7 @@ def delete_account(conn, account_id):
 
     matches, lobby, seasons = mine("matches", "match_id"), mine("lobby_readings", "reading_id"), mine("season_stats", "stat_id")
     match_ids = [(r["match_id"],) for r in matches]
-    for table in ("matches", "teammates", "readings", "weapon_holds"):
+    for table in ("matches", "teammates", "readings", "weapon_holds", "match_routes", "route_points", "route_marks"):
         conn.executemany(f"DELETE FROM {table} WHERE match_id = ?", match_ids)
     conn.executemany("DELETE FROM lobby_readings WHERE reading_id = ?", [(r["reading_id"],) for r in lobby])
     conn.executemany("DELETE FROM season_stats WHERE stat_id = ?", [(r["stat_id"],) for r in seasons])

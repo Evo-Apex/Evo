@@ -1,0 +1,39 @@
+{
+  "_说明": "行进路线：对局中只裁小地图并交给低优先级后台线程；地图配准持续做，忙时自动放慢。成功后只存归一化折线，不保存小地图截图。",
+  "base_resolution": [1920, 1080],
+  "minimap": {
+    "roi": [20, 38, 270, 270],
+    "anchor": "top",
+    "_说明": "小地图外接方框。圆外和中间玩家箭头由 matcher 的 mask 去掉；需要用第 31 赛季 16:9、16:10、4:3 原图复核。"
+  },
+  "sample_seconds": 3.0,
+  "max_sample_seconds": 10.0,
+  "simplify_tolerance": 0.003,
+  "min_route_points": 3,
+  "max_state_samples": 60,
+  "worker": {
+    "queue": 40,
+    "target_ms": 20.0,
+    "_说明": "最多积压 40 个小地图块。平均一张超过 20ms 或队列变长时，采样间隔自动放慢；不阻塞截屏主循环。"
+  },
+  "matcher": {
+    "reference_size": 1536,
+    "sample_size": 224,
+    "mask_radius": 0.46,
+    "center_mask": 0.07,
+    "local_radius": 0.13,
+    "ratio": 0.74,
+    "min_matches": 8,
+    "min_inliers": 6,
+    "min_inlier_ratio": 0.45,
+    "ransac_px": 6.0
+  },
+  "maps": {
+    "风暴点": {"file": "storm-point-s31.jpg", "version": "s31"},
+    "电力区域": {"file": "e-district-night-s31.jpg", "version": "s31"},
+    "残月": {"file": "broken-moon-s31.jpg", "version": "s31"},
+    "世界尽头": {"file": "worlds-edge.jpg", "version": "latest"},
+    "奥林匹斯": {"file": "olympus.jpg", "version": "latest"},
+    "诸王峡谷": {"file": "kings-canyon.jpg", "version": "latest"}
+  }
+}

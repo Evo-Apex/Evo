@@ -1,0 +1,23 @@
+Evo 行进路线地图底图
+====================
+
+文件与来源：
+
+- storm-point-s31.jpg：Storm Point MU2.png
+  https://apexlegends.wiki.gg/wiki/File:Storm_Point_MU2.png
+- e-district-night-s31.jpg：E-District.png
+  https://apexlegends.wiki.gg/wiki/File:E-District.png
+- broken-moon-s31.jpg：Broken Moon MU1.png
+  https://apexlegends.wiki.gg/wiki/File:Broken_Moon_MU1.png
+
+原图来自 The Apex Legends Wiki。Wiki 对其能够授权的文字和图形内容采用
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0（CC BY-NC-SA 4.0）；
+文件页另有标注时以文件页为准。这里的版本缩小到 1536 × 1536 并转为 JPEG，
+只用作非商业玩家工具里的地图定位与路线展示。
+
+https://apexlegends.wiki.gg/wiki/Apex_Legends_Wiki:Copyrights
+https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+Apex Legends 及地图美术的相关权利属于 Electronic Arts Inc. / Respawn Entertainment。
+Evo 是玩家自制的非官方工具，与 Electronic Arts、Respawn Entertainment 没有任何关系，
+也没有得到它们的认可。

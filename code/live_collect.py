@@ -52,6 +52,7 @@ import screenshots
 import season_import
 import sounds
 import storage
+import routes
 from eliminated import read_eliminated
 from game_aspect import AspectWatcher
 from hud import Hud
@@ -624,7 +625,9 @@ def collect(db_path=storage.DB_PATH, interval=1.0, fast=0.3, summary_timeout=10.
                 f"（腾出 {done.freed / 2 ** 20:.0f} MB）")
 
     name_cfg = load_config("player_name.json")
-    post = PostMatch(conn, log=log, name_slip=name_cfg["slip_similarity"], on_round_end=round_end)
+    route = routes.RouteRecorder(conn, log=log)
+    post = PostMatch(conn, log=log, name_slip=name_cfg["slip_similarity"], on_round_end=round_end,
+                     on_match_saved=route.bind_match)
 
     # clock 用 lambda 包一层：测试时会把本文件的 time 换成假时钟
     engine = LazyEngine(SMALL_CROP_PARAMS, MODEL_IDLE_SECONDS, clock=lambda: time.monotonic(), log=log)
@@ -645,7 +648,8 @@ def collect(db_path=storage.DB_PATH, interval=1.0, fast=0.3, summary_timeout=10.
         save_png(path, frame)
 
     in_match = InMatchWatcher(hud, post, log, name_cfg, save=save_hud,
-                              keep_all=lambda: other.keep_all, before_hand_over=summary.catch_up)
+                              keep_all=lambda: other.keep_all, before_hand_over=summary.catch_up,
+                              on_top_change=route.record_top)
     lobby = LobbyWatcher(LobbyReader(engine, load_config("lobby.json", lang)), post, conn, log)
     seasons = SeasonWatcher(engine, conn, post, log)  # 录入历史赛季数据（设置页的按钮）
     aspect = AspectWatcher(log, clock=lambda: time.monotonic(), fixed=game_aspect)
@@ -715,8 +719,11 @@ def collect(db_path=storage.DB_PATH, interval=1.0, fast=0.3, summary_timeout=10.
                     summary.catch_up()  # 存总结页时先留着的队友、名字：回到大厅、下一局开局时读，在交对局中的数据之前
                 in_match.update(screen, frame, now)  # 一局结束时先记下；回到大厅、下一局开局时交对局中的数据（先交才收尾）
                 other.update(None if on_summary else screen, frame, now)  # 总结页还没存下时，经验值页先不读
+                route.update(screen, frame, now, in_match.active, post.info.get("map"))
                 lobby.update(screen, frame, now)
                 seasons.update(screen, frame, now, in_match.active)  # 录入模式里：游戏里的数据页
+                if not in_match.active and not summary.waiting and not on_xp and not seasons.showing:
+                    route.idle_step(hud)  # 对局中不跑 OCR；空闲时每轮消化一个路线状态点
                 if screen is not None:
                     last_seen, warned = tick, False
                 elif not warned and tick - last_seen > NO_SCREEN_WARNING_MINUTES * 60 and not in_match.active:
@@ -747,6 +754,7 @@ def collect(db_path=storage.DB_PATH, interval=1.0, fast=0.3, summary_timeout=10.
         post.finish()
         aspect.reset()
         seasons.stop(now)
+        route.stop(now, hud)
         speed.stop()
         camera.release()
         conn.close()
