@@ -976,3 +976,25 @@ table.stats-table { width: 100%; border-collapse: collapse; }
 .curve-caption { margin: 8px 0 0 48px; color: var(--muted); font-size: 12px; }
 .curve-plot svg { animation: evo-wipe 800ms cubic-bezier(0.4, 0, 0.2, 1) 100ms backwards; }  /* 和总览页的走势图一样从左往右画出来 */
 .curve-end { animation: evo-pop 300ms cubic-bezier(0.3, 1.6, 0.6, 1) 800ms backwards; }
+
+/* ---------- 单局行进路线 ---------- */
+.route-layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 20px; align-items: start; }
+.route-card { padding: 18px; min-width: 0; }
+.route-map { position: relative; overflow: hidden; aspect-ratio: 1; border: 1px solid var(--row-border); border-radius: 6px; background: var(--inset); cursor: crosshair; }
+.route-map:focus-visible { outline: 2px solid var(--p3-bg); outline-offset: 3px; }
+.route-map > img, .route-map > svg { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+.route-map > img { object-fit: contain; }
+.route-map > svg { overflow: visible; }
+#route-line { fill: none; stroke: #ff5c5c; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; filter: drop-shadow(0 1px 2px rgb(0 0 0 / .7)); }
+#route-cursor { fill: #fff; stroke: #ff5c5c; stroke-width: 4; vector-effect: non-scaling-stroke; }
+.route-mark { stroke: #fff; stroke-width: 3; vector-effect: non-scaling-stroke; }
+.route-mark.auto { fill: #ffbf3c; }.route-mark.manual { fill: #52a8ff; }
+.route-tip { position: absolute; z-index: 2; display: flex; flex-direction: column; gap: 3px; max-width: 260px; padding: 9px 11px; transform: translate(12px, 12px); border: 1px solid var(--border); border-radius: 6px; background: var(--card); box-shadow: 0 8px 24px rgb(0 0 0 / .35); pointer-events: none; font-size: 12px; }
+.route-tip strong { font-variant-numeric: tabular-nums; }.route-tip span { color: var(--muted); }
+.route-help { margin: 12px 2px 0; color: var(--muted); font-size: 12px; }
+.route-summary { padding: 20px; display: flex; flex-direction: column; gap: 13px; }
+.route-summary > div { display: flex; justify-content: space-between; gap: 12px; }
+.route-summary > div span, .route-summary p { color: var(--muted); }.route-summary p { margin: 8px 0 0; font-size: 12px; line-height: 1.7; }
+.route-events { margin-top: 20px; padding: 0; overflow: hidden; }.route-events .card-head { padding: 20px 22px 12px; }.route-events .card-head h2 { margin: 0; }.route-events .card-head p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+.route-events form { margin: 0; }
+@media (max-width: 860px) { .route-layout { grid-template-columns: 1fr; }.route-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }.route-summary p { grid-column: 1 / -1; } }
