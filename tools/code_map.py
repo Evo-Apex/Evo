@@ -38,7 +38,8 @@ SECTIONS = [
     ("模型", "认出画面，读结算画面和大厅", [
         "code/screens.py", "code/summary_page.py", "code/teammates.py", "code/xp_page.py",
         "code/eliminated.py", "code/match_start.py", "code/lobby.py", "code/player_name.py"]),
-    ("模型", "对局中", ["code/in_match.py", "code/hud.py", "code/legends.py", "code/weapons.py"]),
+    ("模型", "对局中", ["code/in_match.py", "code/hud.py", "code/legends.py", "code/weapons.py",
+                         "code/routes.py", "code/route_matcher.py"]),
     ("模型", "合并、校准、段位、赛季、留截图", [
         "code/post_match.py", "code/calibration.py", "code/ranks.py", "code/seasons.py", "code/screenshots.py"]),
     ("模型", "游戏里的数据页（录入历史赛季数据）", [
@@ -81,7 +82,7 @@ SECTIONS = [
     ("开发用的脚本（tools/）", "查问题、看数据", [
         "tools/ocr_probe.py", "tools/frame_capture.py", "tools/legend_capture.py", "tools/log_speed.py",
         "tools/diag_report.py", "tools/stats_report.py", "tools/demo_data.py", "tools/demo_seasons.py",
-        "tools/code_map.py"]),
+        "tools/code_map.py", "tools/map_assets.py"]),
     ("测试（tests/）", None, [
         "tests/run_all.py", "tests/fake_game.py", "tests/test_*.py",
         ("tests/*.csv", "正确答案（整晚重放、数据页、武器）；队友名字的答案只在本机")]),

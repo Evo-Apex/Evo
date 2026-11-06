@@ -37,6 +37,8 @@ __pycache__/
 # 虚拟环境（每台电脑自己装）
 .venv/
 venv/
+.uv-cache/
+.uv-python/
 
 # ===== 打包输出（PyInstaller）=====
 build/
