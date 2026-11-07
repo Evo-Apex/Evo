@@ -83,11 +83,33 @@ def add_licenses():
     (folder / "README.txt").write_text(LICENSE_NOTE, encoding="utf-8")
 
 
+# 窗口用的是 pythonnet + WinForms（pywebview 的后端）。pythonnet 在 .NET Framework 下用
+# Assembly.LoadFrom 加载 pythonnet/runtime/Python.Runtime.dll，而 .NET Framework 认为这类加载
+# "来自网络位置"，默认拒绝（NotSupportedException 0x80131515），于是窗口后端起不来、
+# Evo 只能退回浏览器打开面板。这个开关让它照常加载。
+# 必须放在 Evo.exe 旁边（进程的 .config），程序内部改不了。
+RUNTIME_CONFIG = """<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <runtime>
+    <!-- 允许 pythonnet 从本地文件夹加载 Python.Runtime.dll（否则窗口后端初始化失败） -->
+    <loadFromRemoteSources enabled="true" />
+  </runtime>
+</configuration>
+"""
+
+
+def add_runtime_config():
+    path = DIST / "Evo.exe.config"
+    path.write_text(RUNTIME_CONFIG, encoding="utf-8")
+    print(f"运行时配置：{path}")
+
+
 def main():
     make_icon()
     get_webview2_setup()
     subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "tools/evo.spec"], cwd=ROOT, check=True)
     add_licenses()
+    add_runtime_config()
     files = [p for p in DIST.rglob("*") if p.is_file()]
     size = sum(p.stat().st_size for p in files)
     exe = DIST / "Evo.exe"

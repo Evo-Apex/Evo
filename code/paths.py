@@ -54,6 +54,25 @@ def _in_temp(path):
         return False
 
 
+def writable(folder):
+    """这个文件夹能不能真的写进去（建目录 + 写一个测试文件）。
+    只看 is_dir 不够：受限用户、被改过权限的 AppData、只读介质里建目录能成功但写不了文件。"""
+    folder = Path(folder)
+    probe = folder / f".evo-write-test-{os.getpid()}"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+
+
 def default_data_dir(exe_dir=EXE_DIR):
     """程序旁边的 Evo Tracker Data（如 D:\\Evo → D:\\Evo Tracker Data）。
     程序在临时文件夹里（在压缩包里直接双击）、在磁盘根目录、或者那里写不进去：返回 None。"""
@@ -73,7 +92,8 @@ def default_data_dir(exe_dir=EXE_DIR):
 def resolve_data_dir(environ=None, frozen=FROZEN, exe_dir=EXE_DIR, local_dir=LOCAL_DIR, app_dir=APP_DIR):
     """数据文件夹在哪里，返回 (文件夹, 来源)。来源："env" 环境变量 / "project" 用源码运行 / "program" 程序旁边的
     data_location.txt / "pointer" 指路文件 / "legacy" C 盘旧的默认位置（有数据，等着搬）/ "default" 程序旁边的
-    Evo Tracker Data / "local" 程序旁边用不了，只好用 C 盘。参数都是测试时替换用的。"""
+    Evo Tracker Data / "local" 程序旁边用不了，只好用 C 盘 / "temp" 哪儿都写不进去，只好写临时文件夹。
+    每个候选都要先过 writable()：写不进去的候选跳过，免得后面 setup_logging / 数据库一碰就抛 PermissionError。"""
     environ = os.environ if environ is None else environ
     if environ.get("EVO_DATA_DIR"):
         return Path(environ["EVO_DATA_DIR"]).resolve(), "env"
@@ -83,12 +103,21 @@ def resolve_data_dir(environ=None, frozen=FROZEN, exe_dir=EXE_DIR, local_dir=LOC
     if found is not None:
         return found, "program"
     found = read_pointer(Path(local_dir) / POINTER_NAME)
-    if found is not None and found.is_dir():
+    if found is not None and found.is_dir() and writable(found):
         return found, "pointer"
-    if has_data(local_dir):
+    if has_data(local_dir) and writable(local_dir):
         return Path(local_dir), "legacy"
     folder = default_data_dir(exe_dir)
-    return (folder, "default") if folder is not None else (Path(local_dir), "local")
+    if folder is not None and writable(folder):
+        return folder, "default"
+    if writable(local_dir):
+        return Path(local_dir), "local"
+    # 上面都不行：多半是 TEMP 环境变量被指到了程序文件夹（于是 default_data_dir 以为"在压缩包里运行"）。
+    # 只要程序旁边的 Evo Tracker Data 还写得进去，就还是用它——总比 C 盘那个写不进去的位置强。
+    sibling = Path(exe_dir).parent / DATA_NAME
+    if writable(sibling):
+        return sibling, "default"
+    return Path(tempfile.gettempdir()) / DATA_NAME, "temp"
 
 
 DATA_DIR, DATA_SOURCE = resolve_data_dir()
