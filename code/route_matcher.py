@@ -44,18 +44,9 @@ class MapMatcher:
         cv2.circle(mask, (center, center), round(gray.shape[0] * self.cfg["center_mask"]), 0, -1)
         return self.detector.detectAndCompute(gray, mask)
 
-    def locate(self, crop, previous=None):
-        query_points, query_desc = self._query(crop)
-        if query_desc is None or len(query_points) < self.cfg["min_matches"]:
-            return None
-        indexes = np.arange(len(self.keypoints))
-        if previous is not None:
-            radius = self.image.shape[0] * self.cfg["local_radius"]
-            cx, cy = previous[0] * self.image.shape[1], previous[1] * self.image.shape[0]
-            local = [i for i, kp in enumerate(self.keypoints)
-                     if (kp.pt[0] - cx) ** 2 + (kp.pt[1] - cy) ** 2 <= radius ** 2]
-            if len(local) >= self.cfg["min_matches"] * 2:
-                indexes = np.asarray(local)
+    def _locate_with_indexes(self, query_points, query_desc, indexes):
+        """在一组参照特征里匹配。局部匹配失败时，locate 会再回退到全图。"""
+        indexes = np.arange(len(self.keypoints)) if indexes is None else np.asarray(indexes)
         ref_desc = self.descriptors[indexes]
         pairs = cv2.BFMatcher(self.norm).knnMatch(query_desc, ref_desc, k=2)
         good = [a for a, b in pairs if a.distance < self.cfg["ratio"] * b.distance]
@@ -82,3 +73,18 @@ class MapMatcher:
         error = float(np.mean(np.linalg.norm(predicted - dst[inliers], axis=1)))
         confidence = min(1.0, count / (self.cfg["min_inliers"] * 2)) * ratio / (1 + error / 5)
         return {"x": float(x), "y": float(y), "confidence": round(confidence, 4), "matches": count}
+
+    def locate(self, crop, previous=None):
+        query_points, query_desc = self._query(crop)
+        if query_desc is None or len(query_points) < self.cfg["min_matches"]:
+            return None
+        if previous is not None:
+            radius = self.image.shape[0] * self.cfg["local_radius"]
+            cx, cy = previous[0] * self.image.shape[1], previous[1] * self.image.shape[0]
+            local = [i for i, kp in enumerate(self.keypoints)
+                     if (kp.pt[0] - cx) ** 2 + (kp.pt[1] - cy) ** 2 <= radius ** 2]
+            if len(local) >= self.cfg["min_matches"] * 2:
+                result = self._locate_with_indexes(query_points, query_desc, local)
+                if result is not None:
+                    return result
+        return self._locate_with_indexes(query_points, query_desc, None)

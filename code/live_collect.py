@@ -649,7 +649,7 @@ def collect(db_path=storage.DB_PATH, interval=1.0, fast=0.3, summary_timeout=10.
 
     in_match = InMatchWatcher(hud, post, log, name_cfg, save=save_hud,
                               keep_all=lambda: other.keep_all, before_hand_over=summary.catch_up,
-                              on_top_change=route.record_top)
+                              on_top_change=route.record_top, on_state=route.record_state)
     lobby = LobbyWatcher(LobbyReader(engine, load_config("lobby.json", lang)), post, conn, log)
     seasons = SeasonWatcher(engine, conn, post, log)  # 录入历史赛季数据（设置页的按钮）
     aspect = AspectWatcher(log, clock=lambda: time.monotonic(), fixed=game_aspect)

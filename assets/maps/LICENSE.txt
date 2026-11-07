@@ -12,8 +12,11 @@ Evo 行进路线地图底图
 
 原图来自 The Apex Legends Wiki。Wiki 对其能够授权的文字和图形内容采用
 Creative Commons Attribution-NonCommercial-ShareAlike 4.0（CC BY-NC-SA 4.0）；
-文件页另有标注时以文件页为准。这里的版本缩小到 1536 × 1536 并转为 JPEG，
-只用作非商业玩家工具里的地图定位与路线展示。
+文件页另有标注时以文件页为准。Wiki 的原图是 2048 × 2048 PNG；这里的版本用
+Lanczos 放大到 3072 × 3072 再转成 JPEG（q90、渐进式），因为面板里地图约 745 像素宽、
+放大到 4 倍要近 3000 像素，2048 的版本在 3 倍以上就糊（2026-11-08 用户反馈）。
+3072 里的细节是从 2048 插值出来的，不是游戏里的更高分辨率素材；只用作非商业玩家
+工具里的地图定位与路线展示。重新生成：python tools/map_assets.py --force
 
 https://apexlegends.wiki.gg/wiki/Apex_Legends_Wiki:Copyrights
 https://creativecommons.org/licenses/by-nc-sa/4.0/

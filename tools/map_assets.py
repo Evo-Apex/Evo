@@ -1,4 +1,10 @@
-"""下载并压缩行进路线使用的全地图底图；每张地图只存一份，不随对局复制。"""
+"""下载并压缩行进路线使用的全地图底图；每张地图只存一份，不随对局复制。
+
+Wiki 原图是 2048 × 2048 PNG。面板里地图约 745 像素宽，放大到 4 倍要近 3000 像素，
+2048 在 3 倍以上就开始糊（2026-11-08 用户反馈"地图太模糊"）。所以存成 3072：1–4 倍
+是接近真实的细节，再往上（最大 6 倍）是插值出来的，会慢慢变软。地图本身没变，
+只是把 Wiki 的 2048 用 Lanczos 放大到 3072 再压 JPEG（q90、渐进式），一张约 1.5 MB；
+不能用 WebP 省体积，WebView2 之外还有用浏览器打开面板的情况。"""
 
 import argparse
 import hashlib
@@ -12,6 +18,7 @@ import requests
 
 ROOT = Path(__file__).resolve().parent.parent
 DEST = ROOT / "assets" / "maps"
+SIZE = 3072
 USER_AGENT = "Evo-map-assets/0.1 (https://github.com/AugustHuangMX/Evo)"
 MAPS = {
     "storm-point-s31.jpg": "https://apexlegends.wiki.gg/wiki/Special:Redirect/file/Storm_Point_MU2.png",
@@ -30,8 +37,9 @@ def download(name, url, force=False):
     image = cv2.imdecode(np.frombuffer(response.content, np.uint8), cv2.IMREAD_COLOR)
     if image is None or min(image.shape[:2]) < 1500:
         raise ValueError(f"{name} 下载到的不是预期全地图（{len(response.content)} 字节）")
-    image = cv2.resize(image, (1536, 1536), interpolation=cv2.INTER_AREA)
-    encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 88])[1]
+    image = cv2.resize(image, (SIZE, SIZE), interpolation=cv2.INTER_LANCZOS4)
+    encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 90,
+                                          cv2.IMWRITE_JPEG_PROGRESSIVE, 1])[1]
     DEST.mkdir(parents=True, exist_ok=True)
     part = target.with_suffix(target.suffix + ".part")
     encoded.tofile(part)

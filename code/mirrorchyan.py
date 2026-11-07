@@ -95,8 +95,11 @@ def clean_cdk(text):
 
 
 def version_tuple(text):
-    """"v0.5.4" 或 "0.5.4" → (0, 5, 4)；格式不对返回 None。"""
-    m = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", str(text or "").strip())
+    """"v0.5.4" 或 "0.5.4" → (0, 5, 4)；格式不对返回 None。
+
+    2026-11-08：同 update_check.version_tuple，允许测试后缀（"0.5.5b"），后缀不参与比较。"""
+    m = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:[-.]?[a-z]+\d*(?:\.\d+)*)?",
+                     str(text or "").strip(), re.IGNORECASE)
     return tuple(int(x) for x in m.groups()) if m else None
 
 

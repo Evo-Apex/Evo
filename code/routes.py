@@ -28,6 +28,27 @@ CONFIG_NAME = "routes.json"
 ASSET_DIR = APP_DIR / "assets" / "maps"
 END_SCREENS = {"eliminated", "champion", "summary", "xp", "squad_out", "lobby"}
 ZERO_STATE_FIELDS = {"kills", "assists", "participation", "damage"}
+ROUTE_EVENT_FIELDS = ("kills", "assists")  # 面板在路线图上单独画形状的两项（击杀、助攻）
+DEATH_STATE = "成盒"  # 与 in_match.STATE_DEAD 同一个词（那一局里自己成盒 = 死亡）
+
+
+def thin_by_time(jobs, limit):
+    """按时间均匀地减少状态块：从头到尾每隔「总时长 / (上限 - 1)」留一个，最新的那块一定留下。
+
+    不能像以前那样隔一个丢一个（`jobs[::2]`）：那样每满一次就折半一次，越早的点被丢的次数越多，
+    整局下来开局会空掉一大段。2026-11-07 实战就是这样：一条 20 分钟的路线，节点在快结束前全是 0，
+    到结尾（最后被杀那一刻）才一次跳到总数。"""
+    limit = max(2, int(limit))
+    jobs = list(jobs)
+    if len(jobs) <= limit:
+        return jobs
+    gap = max(1, (jobs[-1][0] - jobs[0][0]) // (limit - 1))
+    kept = [jobs[-1]]
+    for item in reversed(jobs[:-1]):
+        if kept[-1][0] - item[0] >= gap:
+            kept.append(item)
+    kept.reverse()
+    return kept
 
 
 @lru_cache(maxsize=1)
@@ -130,6 +151,13 @@ def point_at_time(points, elapsed_ms):
     return {**dict(points[-1]), "elapsed_ms": elapsed_ms}
 
 
+def route_step_ok(previous, current, cfg):
+    """相邻定位是否可能由正常移动产生；过滤数秒内横跨地图的误匹配。"""
+    elapsed = max(0.0, (current["elapsed_ms"] - previous["elapsed_ms"]) / 1000)
+    limit = max(float(cfg["min_step_radius"]), elapsed * float(cfg["max_speed_per_second"]))
+    return math.hypot(current["x"] - previous["x"], current["y"] - previous["y"]) <= limit
+
+
 class RouteWorker:
     """单线程持续配准。满队列不阻塞截屏线程；RouteRecorder 会自动降低采样频率。"""
 
@@ -137,7 +165,7 @@ class RouteWorker:
         self.cfg, self.log = cfg, log
         self.input = queue.Queue(maxsize=int(cfg["worker"]["queue"]))
         self.output = queue.Queue()
-        self.matchers, self.previous = {}, {}
+        self.matchers, self.previous, self.tentative, self.rejects = {}, {}, {}, {}
         self.average_ms = 0.0
         self.running = True
         self.thread = threading.Thread(target=self._run, name="route-matcher", daemon=True)
@@ -182,9 +210,10 @@ class RouteWorker:
             started = perf_counter()
             try:
                 key = (session, map_name)
-                result = self._matcher(map_name).locate(image, self.previous.get(key))
-                if result:
-                    self.previous[key] = (result["x"], result["y"])
+                previous = self.previous.get(key)
+                near = (previous["x"], previous["y"]) if previous is not None else None
+                result = self._matcher(map_name).locate(image, near)
+                result = self._accept(key, elapsed_ms, result)
                 self.output.put((session, elapsed_ms, result))
             except Exception as exc:
                 self.output.put((session, elapsed_ms, None))
@@ -193,6 +222,34 @@ class RouteWorker:
                 took = (perf_counter() - started) * 1000
                 self.average_ms = took if not self.average_ms else self.average_ms * 0.9 + took * 0.1
                 self.input.task_done()
+
+    def _accept(self, key, elapsed_ms, result):
+        """首次位置要连续两次相近；已开始后拒绝不可能的瞬移，连续异常后重新找起点。"""
+        if result is None:
+            return None
+        current = {"elapsed_ms": elapsed_ms, **result}
+        previous = self.previous.get(key)
+        if previous is None:
+            candidate = self.tentative.get(key)
+            if candidate is not None:
+                distance = math.hypot(current["x"] - candidate["x"], current["y"] - candidate["y"])
+                if distance <= float(self.cfg["matcher"]["start_confirm_radius"]):
+                    self.previous[key] = current
+                    self.tentative.pop(key, None)
+                    self.rejects[key] = 0
+                    return current
+            self.tentative[key] = current
+            return None
+        if route_step_ok(previous, current, self.cfg["matcher"]):
+            self.previous[key] = current
+            self.rejects[key] = 0
+            return current
+        self.rejects[key] = self.rejects.get(key, 0) + 1
+        if self.rejects[key] >= int(self.cfg["matcher"]["reset_after_rejects"]):
+            self.previous.pop(key, None)
+            self.tentative[key] = current
+            self.rejects[key] = 0
+        return None
 
     def close(self):
         self.running = False
@@ -269,7 +326,7 @@ class RouteRecorder:
         session = {"id": self.next_session, "map_name": map_name, "map_asset": item.get("file", ""),
                    "started": now, "ended": None, "next_sample": 0.0, "pending": 0, "points": [],
                    "match_id": None, "saved": False, "top_jobs": deque(), "evo_jobs": deque(),
-                   "last_evo_thumb": None, "states": [], "last_state": {}}
+                   "state_jobs": [], "last_evo_thumb": None, "states": [], "last_state": {}}
         self.next_session += 1
         self.current = session
         self.sessions[session["id"]] = session
@@ -302,12 +359,20 @@ class RouteRecorder:
         if self.current is None:
             return
         elapsed_ms = max(0, round((now - self.current["started"]).total_seconds() * 1000))
-        jobs = self.current["top_jobs"]
-        limit = int(self.cfg.get("max_state_samples", 60))
-        if len(jobs) >= limit:
-            # 伤害连续上涨时变化很多。内存到上限就把旧点隔一个留一个，首尾仍在，之后还能继续采。
-            self.current["top_jobs"] = jobs = deque(list(jobs)[::2])
-        jobs.append((elapsed_ms, snip))
+        self.current["top_jobs"].append((elapsed_ms, snip))
+        self._thin("top_jobs")
+
+    def record_state(self, state, now):
+        """存活 / 倒地 / 成盒 变了：只记时间和状态，位置赛后按时间从路线上取。
+
+        对局中的状态判断不花 OCR，所以这一步几乎没有代价；成盒会变成路线图上的"死亡"标记。"""
+        if self.current is None:
+            return
+        elapsed_ms = max(0, round((now - self.current["started"]).total_seconds() * 1000))
+        jobs = self.current["state_jobs"]
+        if jobs and jobs[-1][0] == elapsed_ms and jobs[-1][1] == state:
+            return
+        jobs.append((elapsed_ms, state))
 
     def record_evo(self, crop, now):
         """低频保存发生变化的 EVO 小块到内存；不落盘，赛后 OCR 完就释放。"""
@@ -320,11 +385,14 @@ class RouteRecorder:
             if float(abs(thumb - previous).mean()) < float(self.cfg["evo"].get("change", 3)):
                 return
         elapsed_ms = max(0, round((now - self.current["started"]).total_seconds() * 1000))
-        jobs = self.current["evo_jobs"]
+        self.current["evo_jobs"].append((elapsed_ms, crop))
+        self._thin("evo_jobs")
+
+    def _thin(self, key):
         limit = int(self.cfg.get("max_state_samples", 60))
-        if len(jobs) >= limit:
-            self.current["evo_jobs"] = jobs = deque(list(jobs)[::2])
-        jobs.append((elapsed_ms, crop))
+        jobs = self.current[key]
+        if len(jobs) > max(2, limit):
+            self.current[key] = deque(thin_by_time(jobs, limit))
 
     def idle_step(self, hud):
         """非战斗画面每轮最多读一个状态块，避免和总结页争抢 CPU。"""
@@ -383,8 +451,8 @@ class RouteRecorder:
             parts.insert(0, inferred["label"])
         return "、".join(parts) or "状态变化"
 
-    def _with_states(self, points, states):
-        """把每个定位点补上当时最近一次状态，并生成系统时间点。"""
+    def _with_states(self, points, states, events=()):
+        """把每个定位点补上当时最近一次状态，并生成系统时间点（含成盒 = 死亡）和时间点。"""
         if not points:
             return points, []
         states = sorted(states, key=lambda s: s["elapsed_ms"])
@@ -397,6 +465,12 @@ class RouteRecorder:
             enriched.append({**point, **current})
         marks, previous = [], {}
         for state in states:
+            changed = state.get("changed") or ()
+            if changed and set(changed) <= {"damage"}:
+                # 伤害一直在涨：每涨一点都记一个时间点，表格和地图上的圆点会被埋掉。
+                # 伤害照样补在路线上（上面 enriched），只是不单独记时间点。
+                previous.update({k: state[k] for k in storage.ROUTE_STATE_FIELDS if k in state})
+                continue
             mark = point_at_time(enriched, state["elapsed_ms"])
             if mark is None:
                 continue
@@ -406,6 +480,21 @@ class RouteRecorder:
                          "created_at": f"{datetime.now():%Y-%m-%d %H:%M:%S}"})
             marks.append(mark)
             previous.update({k: state[k] for k in storage.ROUTE_STATE_FIELDS if k in state})
+        for elapsed_ms, state_name in sorted(events, key=lambda item: item[0]):
+            if state_name != DEATH_STATE:
+                continue  # 存活、倒地不单独记：只是标题上的状态跳动
+            mark = point_at_time(enriched, elapsed_ms)
+            if mark is None:
+                continue
+            values = {}
+            for state in states:
+                if state["elapsed_ms"] <= elapsed_ms:
+                    values.update({k: state[k] for k in storage.ROUTE_STATE_FIELDS if k in state})
+            mark.update(values)
+            mark.update({"elapsed_ms": int(elapsed_ms), "kind": "death", "label": "死亡", "note": None,
+                         "created_at": f"{datetime.now():%Y-%m-%d %H:%M:%S}"})
+            marks.append(mark)
+        marks.sort(key=lambda mark: mark["elapsed_ms"])
         return enriched, marks
 
     def _save_if_ready(self, session):
@@ -415,7 +504,7 @@ class RouteRecorder:
         points = sorted(session["points"], key=lambda p: p["elapsed_ms"])
         raw_count = len(points)
         points = simplify(points, self.cfg["simplify_tolerance"]) if points else []
-        points, marks = self._with_states(points, session["states"])
+        points, marks = self._with_states(points, session["states"], session["state_jobs"])
         coverage = raw_count / max(1, round((session["ended"] - session["started"]).total_seconds()
                                             / self.cfg["sample_seconds"]))
         status = "ready" if len(points) >= self.cfg["min_route_points"] else ("partial" if points else "failed")
@@ -445,13 +534,33 @@ class RouteRecorder:
             self._save_if_ready(session)
 
 
+def mark_events(marks):
+    """给每个时间点标上这一刻为什么记下它（kills、assists），以及这一刻 RP 涨了多少，面板据此在路线图上画不同的形状。
+
+    只认系统时间点，和上一个系统时间点比大小：一局里第一次读到击杀不算"这一刻的击杀"
+    （没有上一块可比）；手动的点带的是吸附位置那一刻的读数，没有先后可比，一律留空。
+
+    RP 不在这里算：面板直接显示 mark["rp_delta"]，也就是游戏右下角那个数字（开局是负的入场费，
+    打完整局是 +223 这种从开局算起的累计值）；用户要的就是"当时右上角写多少就写多少"。"""
+    previous = {}
+    for mark in marks:
+        events = []
+        if mark.get("kind") == "auto":
+            events = [name for name in ROUTE_EVENT_FIELDS
+                      if isinstance(mark.get(name), int) and isinstance(previous.get(name), int)
+                      and mark[name] > previous[name]]
+            previous.update({name: mark[name] for name in ROUTE_EVENT_FIELDS if isinstance(mark.get(name), int)})
+        mark["events"] = events
+    return marks
+
+
 def route_view(conn, match_id):
     """面板需要的 JSON 友好结构。"""
     route = storage.route_of(conn, match_id)
     if route is None:
         return None
     points = [dict(r) for r in storage.route_points_of(conn, match_id)]
-    marks = [dict(r) for r in storage.route_marks_of(conn, match_id)]
+    marks = mark_events([dict(r) for r in storage.route_marks_of(conn, match_id)])
     meta = dict(route)
     meta["asset_available"] = bool(meta.get("map_asset") and (ASSET_DIR / meta["map_asset"]).is_file())
     return {"meta": meta, "points": points, "marks": marks}

@@ -65,11 +65,6 @@ class Snip:
         """roi 这一块缩放成基准尺寸的灰度图（比外观用）。"""
         return cv2.cvtColor(self.crop(roi, 1, gray=False), cv2.COLOR_BGR2GRAY)
 
-    def thumb(self):
-        """缩小的灰度图，用来判断"和上一次存的比，内容变了没有"。"""
-        g = cv2.cvtColor(self.img, cv2.COLOR_BGR2GRAY)
-        return cv2.resize(g, (max(1, g.shape[1] // 4), max(1, g.shape[0] // 4)), interpolation=cv2.INTER_AREA)
-
 
 def load_hud_template(name, lang=None):
     """对局中的一张参照图（灰度），没有返回 None。lang：游戏语言，带文字的（"观战"标签）每种语言一张，见 game_lang.py。"""
@@ -166,14 +161,23 @@ class Hud:
     def own_name_snip(self, frame, roi, anchor=None):
         return Snip(frame, roi, self.base, anchor)
 
+    def readout_rois(self):
+        """右上角显示着读数的那几块（基准坐标）：剩余小队、击杀/助攻/老板分那一行、伤害、RP。
+        判断"变了没有"只看这几块（见 changed）。"""
+        top = self.cfg["top_right"]
+        return (top["fields"]["squads_left"]["roi"], top["kp_row"]["area"],
+                top["damage"]["cell"], top["fields"]["rp_delta"]["roi"])
+
     def changed(self, a, b):
-        """两块右上角的内容是不是不一样（只存变了的，读的时候少读几张）。"""
-        if a is None or b is None:
+        """两块右上角的内容是不是不一样（只存变了的，读的时候少读几张）。
+        只看读数那几块，不比整块：整块缩到 1/4 再取平均，一个数字变了也只差 0.1–0.8，被整块（以及面板缝隙里的
+        战场）稀释得看不见。2026-11-07 实战就是这样：整局的击杀、助攻、伤害一次都没算"变了"，路线上的节点
+        到快结束前全是 0。"""
+        if a is None or b is None or a.img.shape != b.img.shape:
             return True
-        ta, tb = a.thumb(), b.thumb()
-        if ta.shape != tb.shape:
-            return True
-        return float(np.mean(cv2.absdiff(ta, tb))) >= self.cfg["top_right"]["change"]
+        limit = self.cfg["top_right"]["change"]
+        return any(float(np.mean(cv2.absdiff(a.gray(roi), b.gray(roi)))) >= limit
+                   for roi in self.readout_rois())
 
     # ---------- 用识别引擎读（一局结束时才调用） ----------
 

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from paths import DB_PATH
 
-APP_VERSION = "0.5.4"
+APP_VERSION = "0.5.5b"  # 2026-11-08：支线测试版（行进路线这一支），不进 main、不上架更新
 SCHEMA_VERSION = 10  # 表结构变了就加 1，并在 MIGRATIONS 里写上怎么从旧版本升级
 
 # 列名和类型，顺序也是导出 CSV 时的列顺序

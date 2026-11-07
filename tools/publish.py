@@ -102,8 +102,8 @@ def step(n, text):
 
 
 def version_tuple(text):
-    """"0.10.2" → (0, 10, 2)，用来比较新旧。"""
-    return tuple(int(x) for x in str(text).split("."))
+    """"0.10.2" → (0, 10, 2)，用来比较新旧；测试版的后缀（「0.5.5b」）不参与比较（2026-11-08）。"""
+    return tuple(int(x) for x in re.match(r"\d+(?:\.\d+)*", str(text)).group(0).split("."))
 
 
 def md5(path):
