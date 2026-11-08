@@ -20,14 +20,20 @@ import sqlite3
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import fake_game
+import numpy as np
 from fake_game import SOUNDS_PLAYED, SHOTS, load, report, run_collect  # 要在项目代码之前导入（设置临时数据文件夹）
 
+import app_settings
+import game_aspect
+import layout
 import live_collect
 import ocr
 import season_import
+import season_stats
 import storage
 
 FOLDER = SHOTS / "frames" / "20261101_161135"
@@ -90,6 +96,158 @@ def mode_checks():
     }
     season_import.stop()
     out["点\"结束\"：马上关"] = not season_import.active(now) and season_import.until() is None
+    return out
+
+
+def aspect_checks():
+    """4:3：自动检测（读视频设置文件）、设置页手动选、界面坐标换算。不用截图。"""
+    out = {}
+    path = TEMP / "videoconfig-4x3.txt"
+    path.write_text('"VideoConfig"\n{\n'
+                    '\t"setting.fullscreen"\t\t"1"\n\t"setting.nowindowborder"\t\t"1"\n'
+                    '\t"setting.defaultres"\t\t"1920"\n\t"setting.defaultresheight"\t\t"1440"\n}\n',
+                    encoding="utf-16")
+    found, why = game_aspect.from_video_config(path)
+    out[f"自动检测：全屏 1920×1440 → 4:3（{game_aspect.name(found)}，{why}）"] = (
+        found == 4 / 3 and game_aspect.name(found) == "4:3" and "1920×1440" in why)
+
+    box = layout.Mapping((1080, 1920), (1920, 1080), "top", aspect=4 / 3).box([1335, 264, 90, 46])
+    name_box = layout.Mapping((1080, 1920), (1920, 1080), "top", aspect=4 / 3).box([440, 96, 1040, 76])
+    out[f"1920×1080 截图、游戏 4:3：数据页 ROI 从 y=264 换到 y=198（{box}），玩家名从 96 换到 72（{name_box}）"] = (
+        box == (1335, 198, 1425, 232) and name_box == (440, 72, 1480, 129))
+
+    log = []
+    clock = [0.0]
+    watcher = game_aspect.AspectWatcher(log.append, clock=lambda: clock[0], path=path)
+    watcher.check(np.zeros((1080, 1920, 3), np.uint8))
+    out[f"记录程序：自动检测出 4:3，日志写出截图尺寸（{log[0] if log else '没有日志'}）"] = (
+        layout.game_aspect() == 4 / 3 and bool(log) and "4:3" in log[0] and "1920×1080" in log[0])
+    watcher.reset()
+
+    app_settings.set_value(game_aspect.SETTING_KEY, "4:3")
+    manual, why = game_aspect.current(path=TEMP / "not-there.txt")
+    out[f"设置页手动选 4:3：不看视频设置文件，直接用 4:3（{why}）"] = (
+        manual == 4 / 3 and "手动选的 4:3" in why)
+    app_settings.set_value(game_aspect.SETTING_KEY, "auto")
+    path.unlink()
+    return out
+
+
+SEASON_VALUES = {"games": 100, "wins": 5, "top5": 20, "damage": 2000, "damage_max": 800, "damage_avg": 20.0,
+                 "kills": 200, "deaths": 100, "kd": 2.0, "kills_max": 8, "knockdowns": 150, "assists": 50,
+                 "win_streak": 3, "revives": 10, "respawns": 5}
+
+
+class FakeSeasonPage:
+    """替身：不跑 OCR，只验证 4:3 下从录入模式到待核对的整条路。"""
+
+    def __init__(self, engine, values=None, on=True, player="ImperialHzd"):
+        self.values = dict(SEASON_VALUES if values is None else values)
+        self.on, self.player, self.reads = on, player, 0
+
+    def on_page(self, frame):
+        return self.on
+
+    def name(self, frame):
+        return self.player
+
+    def label(self, frame, memo=None):
+        return 30, "all", "诸神烙印", "第30赛季：诸神烙印"
+
+    def read(self, frame, panel="season", memo=None):
+        self.reads += 1
+        return {"panel": panel, "values": dict(self.values), "approx": {}, "obscured": False}
+
+
+def feedback_checks():
+    """录入模式开着、一直没认出数据页：日志要说清比例、截图尺寸、卡在哪一步；认出后数字稳定两帧才存。"""
+    out = {}
+    now = datetime(2026, 11, 1, 16, 0, 0)
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    conn = storage.connect(TEMP / "feedback.db")
+    page = FakeSeasonPage(None, values={})
+    log = []
+    watcher = live_collect.SeasonWatcher(None, conn, SimpleNamespace(player_name="ImperialHzd"), log.append, page=page)
+    season_import.start(now)
+    watcher.check_mode(now)
+    layout.set_game_aspect(4 / 3)
+    watcher.update(None, frame, now, False)  # 认出一次数据页（空数据），之后用不上的画面
+    page.on = False
+    for i in range(1, 5):
+        watcher.update(None, frame, now + timedelta(seconds=i), False)
+    lines = [line for line in log if "录入历史赛季数据：" in line]
+    out[f"连续几帧没认出：日志说“未识别页面”、4:3、截图 1920×1080（{lines[-1] if lines else '没有'}）"] = (
+        any("未识别页面" in line and "4:3" in line and "1920×1080" in line for line in lines)
+        and sum("未识别页面" in line for line in lines) == 1)
+
+    page.on, page.player, watcher.owner = True, None, None
+    watcher.update(None, frame, now + timedelta(seconds=6), False)
+    out["页面上的名字读不出来：日志说“玩家名不匹配”，带上比例和截图尺寸"] = any(
+        "玩家名不匹配" in line and "4:3" in line and "1920×1080" in line for line in log)
+
+    page.player, page.values, watcher.owner = "ImperialHzd", dict(SEASON_VALUES), None
+    watcher.update(None, frame, now + timedelta(seconds=7), False)
+    first = any("数字稳定中" in line for line in log)
+    watcher.update(None, frame, now + timedelta(seconds=8), False)
+    rows = storage.season_rows(conn)
+    out[f"4:3 连续两帧数字一样：存成待核对，日志说“已存为待核对”（{len(rows)} 行）"] = (
+        first and any("已存为待核对" in line for line in log)
+        and {(r["season"], r["kind"]) for r in rows} == {(30, "all"), (None, "career")})
+    conn.close()
+    layout.set_game_aspect(None)
+    season_import.stop()
+    return out
+
+
+def import_checks():
+    """4:3 整条录入：自动检测、设置页手动选，各喂两张数据页，应该各存一项待核对、响一声。"""
+    out = {}
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+
+    def picture(key):
+        return frame
+
+    def rows_of(db):
+        conn = storage.connect(db)
+        rows = storage.season_rows(conn)
+        conn.close()
+        return rows
+
+    def run(label, prepare):
+        season_import.stop()
+        prepare()
+        season_import.start()
+        SOUNDS_PLAYED.clear()
+        with mock.patch.object(season_stats, "SeasonPage", FakeSeasonPage):
+            _, _, log = run_collect(["A1", "A2"], picture, game_aspect=None)
+        rows = rows_of(fake_game.last_db)
+        seasons = [r for r in rows if r["kind"] != "career"]
+        out[f"{label}：连续两帧稳定后存下 1 个赛季 + 生涯，待核对（{[(r['season'], r['kind'], r['games']) for r in rows]}）"] = (
+            len(seasons) == 1 and seasons[0]["season"] == 30 and seasons[0]["games"] == 100
+            and any(r["kind"] == "career" for r in rows) and all(r["status"] == "pending" for r in rows))
+        out[f"{label}：成功读取时响一声（{list(SOUNDS_PLAYED)}）"] = list(SOUNDS_PLAYED) == ["summary"]
+        out[f"{label}：日志写出 4:3、截图 1920×1080（{[l for l in log if '游戏画面比例' in l]}）"] = any(
+            "游戏画面比例：4:3" in line and "1920×1080" in line for line in log)
+
+    config = game_aspect.VIDEO_CONFIG
+    config.write_text('"VideoConfig"\n{\n'
+                      '\t"setting.fullscreen"\t\t"1"\n\t"setting.nowindowborder"\t\t"1"\n'
+                      '\t"setting.defaultres"\t\t"1920"\n\t"setting.defaultresheight"\t\t"1440"\n}\n',
+                      encoding="utf-16")
+    app_settings.set_value(game_aspect.SETTING_KEY, "auto")
+    run("自动检测 4:3", lambda: None)
+
+    config.write_text('"VideoConfig"\n{\n'
+                      '\t"setting.fullscreen"\t\t"1"\n\t"setting.nowindowborder"\t\t"1"\n'
+                      '\t"setting.defaultres"\t\t"2560"\n\t"setting.defaultresheight"\t\t"1440"\n}\n',
+                      encoding="utf-16")
+    app_settings.set_value(game_aspect.SETTING_KEY, "4:3")
+    run("设置页手动 4:3", lambda: None)
+
+    app_settings.set_value(game_aspect.SETTING_KEY, "auto")
+    config.unlink()
+    season_import.stop()
+    layout.set_game_aspect(None)
     return out
 
 
@@ -178,7 +336,7 @@ def collect_checks():
 
 def main():
     print("录入历史赛季数据（新表、录入模式、记录程序读数据页）")
-    checks = {**table_checks(), **mode_checks()}
+    checks = {**table_checks(), **mode_checks(), **aspect_checks(), **feedback_checks(), **import_checks()}
     shots = collect_checks()
     if shots is None:
         print(f"  ⏭ 截图部分跳过：找不到 {FOLDER}（截图只在开发者电脑上，不在仓库里）")
