@@ -19,7 +19,7 @@
         <div class="route-canvas" id="route-canvas">
           <img src="{{ url_for('route_map', name=route.meta.map_asset) }}" alt="{{ route.meta.map_name }} 全地图">
           <svg viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true">
-            <polyline id="route-line"></polyline>
+            <g id="route-lines"></g>
             <g id="route-marks"></g>
             <circle id="route-cursor" r="9" hidden></circle>
           </svg>
@@ -81,20 +81,48 @@
   var map = document.getElementById("route-map");
   var stage = document.getElementById("route-stage");
   var canvas = document.getElementById("route-canvas");
-  var line = document.getElementById("route-line");
+  var lineLayer = document.getElementById("route-lines");
   var layer = document.getElementById("route-marks");
   var cursor = document.getElementById("route-cursor");
   var tip = document.getElementById("route-tip");
   var fullscreen = document.getElementById("route-fullscreen");
   var zoom = 1, panX = 0, panY = 0, dragging = null, suppressClick = false;
-  line.setAttribute("points", points.map(function (p) { return (p.x * 1000) + "," + (p.y * 1000); }).join(" "));
+  // 重定位会开新的一段。每段单独一条 polyline：段与段之间留空，绝不把新位置和上一段用实线连起来。
+  // 只有一段里只有一个点时画一个小圆点；缺口没有画出来，也就不给点击/时间插值跨过去的机会。
+  var ns = "http://www.w3.org/2000/svg";
+  function drawSegments() {
+    var groups = [];
+    points.forEach(function (p) {
+      var seg = (p.segment_id === null || p.segment_id === undefined) ? 0 : p.segment_id;
+      var g = groups[groups.length - 1];
+      if (!g || g.seg !== seg) { g = {seg:seg, pts:[]}; groups.push(g); }
+      g.pts.push(p);
+    });
+    groups.forEach(function (g) {
+      if (g.pts.length === 1) {
+        var dot = document.createElementNS(ns, "circle");
+        dot.setAttribute("class", "route-point");
+        dot.setAttribute("cx", g.pts[0].x * 1000); dot.setAttribute("cy", g.pts[0].y * 1000);
+        dot.setAttribute("r", 5 / zoom);
+        lineLayer.appendChild(dot);
+        return;
+      }
+      var line = document.createElementNS(ns, "polyline");
+      line.setAttribute("class", "route-line");
+      line.setAttribute("points", g.pts.map(function (p) {
+        return (p.x * 1000) + "," + (p.y * 1000);
+      }).join(" "));
+      lineLayer.appendChild(line);
+    });
+  }
+  drawSegments();
   // 地图上只画这一局的事件：击杀＝红菱形、助攻＝绿三角、死亡＝白色叉。
   // 其余时间点（系统读数的黄点、手动蓝点）不在图上出现，只在下面的表格里（2026-11-08 用户要求）。
   // 形状在 1000x1000 的图坐标里画，再按 1/zoom 缩回去，放大时不跟着变粗。
-  var ns = "http://www.w3.org/2000/svg";
   var shapes = {kill: "M0 -10 L10 0 L0 10 L-10 0 Z", assist: "M0 -10 L10 9 L-10 9 Z",
                 death: "M-7 -7 L7 7 M7 -7 L-7 7"};
   function markKind(p) {
+    if (p.gap || p.x === null || p.x === undefined || p.y === null || p.y === undefined) return null;
     if (p.kind === "death") return "death";
     if (p.kind !== "auto") return null;
     var events = p.events || [];
@@ -157,7 +185,13 @@
     if (zoom <= 1.001) { zoom = 1; panX = panY = 0; }
   }
   function resizeOverlays() {
-    line.style.strokeWidth = (5 / zoom) + "px";
+    lineLayer.querySelectorAll(".route-line").forEach(function (line) {
+      line.style.strokeWidth = (5 / zoom) + "px";
+    });
+    lineLayer.querySelectorAll(".route-point").forEach(function (dot) {
+      dot.setAttribute("r", 5 / zoom);
+      dot.style.strokeWidth = (2 / zoom) + "px";
+    });
     cursor.setAttribute("r", 9 / zoom);
     cursor.style.strokeWidth = (4 / zoom) + "px";
     layer.querySelectorAll(".route-mark").forEach(function (dot) {

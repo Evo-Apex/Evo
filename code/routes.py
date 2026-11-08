@@ -96,8 +96,25 @@ def _distance_to_line(point, start, end):
     return math.hypot(px - (ax + u * dx), py - (ay + u * dy))
 
 
+def _segment(point):
+    """定位点属于第几段（见 RouteWorker._accept）。旧数据没有这一列时当作第 0 段。"""
+    return int(point["segment_id"]) if "segment_id" in point.keys() else 0
+
+
 def simplify(points, tolerance=0.003):
-    """Ramer–Douglas–Peucker 简化折线。时间和状态跟着保留下来的点走；首尾一定保留。"""
+    """Ramer–Douglas–Peucker 简化折线。**只在同一 segment 内简化**：重定位后的新点绝不和上一段连成一条线。
+    时间和状态跟着保留下来的点走；每段首尾一定保留。"""
+    if len(points) <= 2:
+        return list(points)
+    out, start = [], 0
+    for i in range(1, len(points) + 1):
+        if i == len(points) or _segment(points[i]) != _segment(points[start]):
+            out.extend(_simplify_one(points[start:i], tolerance))
+            start = i
+    return out
+
+
+def _simplify_one(points, tolerance):
     if len(points) <= 2:
         return list(points)
     start, end = points[0], points[-1]
@@ -106,17 +123,21 @@ def simplify(points, tolerance=0.003):
     if distances[farthest] <= tolerance:
         return [start, end]
     split = farthest + 1
-    return simplify(points[:split + 1], tolerance)[:-1] + simplify(points[split:], tolerance)
+    return _simplify_one(points[:split + 1], tolerance)[:-1] + _simplify_one(points[split:], tolerance)
 
 
 def nearest_on_route(points, x, y):
-    """把地图上的点击位置吸附到最近线段，返回坐标、插值后的时间、置信度和前一点的状态。"""
+    """把地图上的点击位置吸附到最近线段，返回坐标、插值后的时间、置信度和前一点的状态。
+    只吸附同一 segment 内的线段：断点两侧没有画出来的路线，不能把点击插到两段中间。"""
     if not points:
         return None
     if len(points) == 1:
-        return {**dict(points[0]), "x": float(points[0]["x"]), "y": float(points[0]["y"])}
+        return {**dict(points[0]), "x": float(points[0]["x"]), "y": float(points[0]["y"]),
+                "segment_id": _segment(points[0])}
     best = None
     for a, b in zip(points, points[1:]):
+        if _segment(a) != _segment(b):
+            continue
         ax, ay = float(a["x"]), float(a["y"])
         bx, by = float(b["x"]), float(b["y"])
         dx, dy = bx - ax, by - ay
@@ -130,25 +151,38 @@ def nearest_on_route(points, x, y):
                 "y": py,
                 "elapsed_ms": round(int(a["elapsed_ms"]) + u * (int(b["elapsed_ms"]) - int(a["elapsed_ms"]))),
                 "confidence": min(float(a["confidence"]), float(b["confidence"])),
+                "segment_id": _segment(a),
                 **state,
             })
-    return best[1]
+    if best is not None:
+        return best[1]
+    # 每段都只有一个点：退回到最近的那个点，仍然不跨段插值。
+    point = min(points, key=lambda p: math.hypot(x - float(p["x"]), y - float(p["y"])))
+    return {**dict(point), "x": float(point["x"]), "y": float(point["y"]), "segment_id": _segment(point)}
 
 
 def point_at_time(points, elapsed_ms):
-    """按时间在线段之间插值坐标；状态取这个时间之前最近一个点。"""
+    """按时间在线段之间插值坐标；状态取这个时间之前最近一个点。
+
+    只插值同一 segment 内的相邻点。时间落在两段之间的空档时，返回上一段最后一个点并标 gap=True：
+    不假装知道玩家在空档里走到了哪里。正好落在下一段第一个点时返回那个点。"""
     if not points:
         return None
     if elapsed_ms <= points[0]["elapsed_ms"]:
         return dict(points[0])
     for a, b in zip(points, points[1:]):
         if elapsed_ms <= b["elapsed_ms"]:
+            if _segment(a) != _segment(b):
+                if elapsed_ms == b["elapsed_ms"]:
+                    return dict(b)
+                return {**dict(a), "elapsed_ms": elapsed_ms, "gap": True}
             span = max(1, int(b["elapsed_ms"]) - int(a["elapsed_ms"]))
             u = max(0.0, min(1.0, (elapsed_ms - int(a["elapsed_ms"])) / span))
             return {**dict(a), "x": float(a["x"]) + u * (float(b["x"]) - float(a["x"])),
                     "y": float(a["y"]) + u * (float(b["y"]) - float(a["y"])), "elapsed_ms": elapsed_ms,
                     "confidence": min(float(a["confidence"]), float(b["confidence"]))}
-    return {**dict(points[-1]), "elapsed_ms": elapsed_ms}
+    last = points[-1]
+    return {**dict(last), "elapsed_ms": elapsed_ms, "gap": elapsed_ms > last["elapsed_ms"]}
 
 
 def route_step_ok(previous, current, cfg):
@@ -166,6 +200,7 @@ class RouteWorker:
         self.input = queue.Queue(maxsize=int(cfg["worker"]["queue"]))
         self.output = queue.Queue()
         self.matchers, self.previous, self.tentative, self.rejects = {}, {}, {}, {}
+        self.segments = {}
         self.average_ms = 0.0
         self.running = True
         self.thread = threading.Thread(target=self._run, name="route-matcher", daemon=True)
@@ -224,7 +259,9 @@ class RouteWorker:
                 self.input.task_done()
 
     def _accept(self, key, elapsed_ms, result):
-        """首次位置要连续两次相近；已开始后拒绝不可能的瞬移，连续异常后重新找起点。"""
+        """首次位置要连续两次相近；已开始后拒绝不可能的瞬移，连续异常后重新找起点。
+
+        重新找到的起点不是上一段的延续：它开一个新 segment。断点本身没有点，两段之间不连线。"""
         if result is None:
             return None
         current = {"elapsed_ms": elapsed_ms, **result}
@@ -234,6 +271,9 @@ class RouteWorker:
             if candidate is not None:
                 distance = math.hypot(current["x"] - candidate["x"], current["y"] - candidate["y"])
                 if distance <= float(self.cfg["matcher"]["start_confirm_radius"]):
+                    # 每确认一个新起点就换一段：第一次是 0，重定位后是 1、2……
+                    self.segments[key] = self.segments.get(key, -1) + 1
+                    current["segment_id"] = self.segments[key]
                     self.previous[key] = current
                     self.tentative.pop(key, None)
                     self.rejects[key] = 0
@@ -241,6 +281,7 @@ class RouteWorker:
             self.tentative[key] = current
             return None
         if route_step_ok(previous, current, self.cfg["matcher"]):
+            current["segment_id"] = self.segments.get(key, 0)
             self.previous[key] = current
             self.rejects[key] = 0
             return current
@@ -474,6 +515,9 @@ class RouteRecorder:
             mark = point_at_time(enriched, state["elapsed_ms"])
             if mark is None:
                 continue
+            if mark.get("gap"):
+                # 时间落在两段之间的空档：时间和状态照记，但不编造位置（地图上不画这个点）。
+                mark["x"] = mark["y"] = None
             mark.update({k: state[k] for k in storage.ROUTE_STATE_FIELDS if k in state})
             mark.update({"elapsed_ms": state["elapsed_ms"], "kind": "auto", "label": self._state_label(previous, state),
                          "note": (f"OCR {state['ocr_confidence']:.2f}" if state.get("ocr_confidence") is not None else None),
@@ -486,6 +530,8 @@ class RouteRecorder:
             mark = point_at_time(enriched, elapsed_ms)
             if mark is None:
                 continue
+            if mark.get("gap"):
+                mark["x"] = mark["y"] = None
             values = {}
             for state in states:
                 if state["elapsed_ms"] <= elapsed_ms:
@@ -501,9 +547,9 @@ class RouteRecorder:
         if (session["saved"] or session["ended"] is None or session["match_id"] is None
                 or session["pending"] or session["top_jobs"] or session["evo_jobs"]):
             return
-        points = sorted(session["points"], key=lambda p: p["elapsed_ms"])
-        raw_count = len(points)
-        points = simplify(points, self.cfg["simplify_tolerance"]) if points else []
+        raw_points = sorted(session["points"], key=lambda p: p["elapsed_ms"])
+        raw_count = len(raw_points)
+        points = simplify(raw_points, self.cfg["simplify_tolerance"]) if raw_points else []
         points, marks = self._with_states(points, session["states"], session["state_jobs"])
         coverage = raw_count / max(1, round((session["ended"] - session["started"]).total_seconds()
                                             / self.cfg["sample_seconds"]))
@@ -514,7 +560,7 @@ class RouteRecorder:
             "ended_at": f"{session['ended']:%Y-%m-%d %H:%M:%S}",
             "coverage": min(1.0, coverage), "processed_at": f"{datetime.now():%Y-%m-%d %H:%M:%S}",
         }
-        storage.save_route(self.conn, session["match_id"], route, points, marks)
+        storage.save_route(self.conn, session["match_id"], route, points, marks, raw_points)
         session["saved"] = True
         self.log(f"           行进路线：{session['map_name']}，定位 {raw_count} 个点，简化后 {len(points)} 个"
                  f"（编号 {session['match_id']}，{status}）")

@@ -62,13 +62,47 @@ def main():
         {"elapsed_ms": 1000, "x": .5, "y": .5}, {"elapsed_ms": 5000, "x": .2, "y": .8}, motion)
     worker = object.__new__(routes.RouteWorker)
     worker.cfg = {"matcher": {**motion, "start_confirm_radius": .045, "reset_after_rejects": 3}}
-    worker.previous, worker.tentative, worker.rejects = {}, {}, {}
+    worker.previous, worker.tentative, worker.rejects, worker.segments = {}, {}, {}, {}
     locate = lambda x, y: {"x": x, "y": y, "confidence": .8, "matches": 10}
     first = worker._accept((1, "残月"), 1000, locate(.5, .5))
     confirmed = worker._accept((1, "残月"), 5000, locate(.51, .51))
     jumped = worker._accept((1, "残月"), 8000, locate(.2, .8))
     out["首个位置连续确认后才采用"] = first is None and confirmed is not None
     out["已确认路线中的瞬移点会被丢弃"] = jumped is None and worker.previous[(1, "残月")]["x"] == .51
+
+    # 连续三次瞬移后重新找起点：新起点另开一段，旧的一段到此为止。
+    for elapsed, (x, y) in ((8000, (.2, .8)), (9000, (.21, .81)), (10000, (.2, .8))):
+        worker._accept((1, "残月"), elapsed, locate(x, y))
+    resumed = worker._accept((1, "残月"), 12000, locate(.205, .805))
+    followed = worker._accept((1, "残月"), 15000, locate(.23, .81))
+    out["重定位后新起点连续确认会开第二个 segment"] = (
+        resumed is not None and resumed["segment_id"] == 1 and followed["segment_id"] == 1
+        and worker.previous[(1, "残月")]["segment_id"] == 1)
+    out["重定位前的一段保留自己的编号"] = confirmed["segment_id"] == 0
+
+    two_segments = [
+        {"elapsed_ms": 0, "x": .1, "y": .1, "confidence": .9, "segment_id": 0},
+        {"elapsed_ms": 1000, "x": .11, "y": .1, "confidence": .9, "segment_id": 0},
+        {"elapsed_ms": 2000, "x": .12, "y": .1, "confidence": .9, "segment_id": 0},
+        {"elapsed_ms": 9000, "x": .6, "y": .6, "confidence": .8, "segment_id": 1},
+        {"elapsed_ms": 10000, "x": .61, "y": .6, "confidence": .8, "segment_id": 1},
+        {"elapsed_ms": 11000, "x": .62, "y": .6, "confidence": .8, "segment_id": 1},
+    ]
+    segmented = routes.simplify(two_segments, .05)
+    out["RDP 只在同一 segment 内简化，不跨段连线"] = (
+        [p["segment_id"] for p in segmented] == [0, 0, 1, 1]
+        and [(p["segment_id"], p["elapsed_ms"]) for p in segmented] ==
+        [(0, 0), (0, 2000), (1, 9000), (1, 11000)])
+    snapped_gap = routes.nearest_on_route(segmented, .36, .35)
+    out["点击吸附不会落到两段之间的空白处"] = (
+        snapped_gap is not None and (snapped_gap["x"] == .12 or snapped_gap["x"] == .6)
+        and snapped_gap["segment_id"] in (0, 1))
+    in_gap = routes.point_at_time(segmented, 6000)
+    out["时间点落在断档时只停在上段末点并标 gap"] = (
+        in_gap["x"] == .12 and in_gap["y"] == .1 and in_gap["gap"] is True)
+    at_start = routes.point_at_time(segmented, 9000)
+    out["时间点正好是下段起点时取下段起点"] = (
+        at_start["x"] == .6 and at_start["segment_id"] == 1 and not at_start.get("gap"))
     inferred = routes.infer_evo_event({"evo": 1600, "damage": 50}, {"evo": 1055, "damage": 170})
     out["EVO 剩余值下降量扣除伤害后推测地图事件"] = inferred is not None and inferred["key"] == "harvester"
     out["EVO 升级后的剩余值跳高不会误判固定分值事件"] = (
@@ -86,6 +120,11 @@ def main():
     ]
     enriched, marks = recorder._with_states(points, states)
     out["状态按时间合并进路线"] = enriched[0].get("damage") is None and enriched[1]["damage"] == 0 and enriched[2]["damage"] == 120
+    gap_marks = recorder._with_states(two_segments, [
+        {"elapsed_ms": 6000, "damage": 10, "kills": 1, "changed": ("kills",), "ocr_confidence": .9}])[1]
+    out["断档里的状态点保留时间但不编造位置"] = (
+        len(gap_marks) == 1 and gap_marks[0]["elapsed_ms"] == 6000
+        and gap_marks[0]["x"] is None and gap_marks[0]["y"] is None)
     out["系统状态点按时间排序并生成变化说明"] = (
         [m["elapsed_ms"] for m in marks] == [500, 1500] and "伤害 +120" in marks[1]["label"])
     damage_only = [
@@ -157,6 +196,41 @@ def main():
     out["点击路线接口新增手动时间点"] = response.status_code == 200 and len(storage.route_marks_of(conn, match_id)) == 3
     conn.close()
 
+    # 旧数据库（第 10 版，没有 segment_id 和 route_raw_points）打开时自动升级；
+    # 老路线照样能读，新路线能同时存简化点、原始点和段号。
+    old_path = TEMP / "route-old.db"
+    old = storage.connect(old_path)
+    old_match = storage.insert_match(old, {"ended_at": "2026-11-05 21:00:00", "map": "残月"})
+    storage.save_route(old, old_match, {"map_name": "残月", "map_asset": "broken-moon-s31.jpg",
+                                        "status": "ready", "started_at": "2026-11-05 20:40:00",
+                                        "ended_at": "2026-11-05 21:00:00", "coverage": .6,
+                                        "processed_at": "2026-11-05 21:00:01"}, points)
+    old.execute("PRAGMA user_version = 10")
+    old.execute("ALTER TABLE route_points DROP COLUMN segment_id")
+    old.execute("DROP TABLE route_raw_points")
+    old.commit()
+    old.close()
+    old = storage.connect(old_path)
+    old_columns = {r[1] for r in old.execute("PRAGMA table_info(route_points)")}
+    old_tables = {r[0] for r in old.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    old_points = storage.route_points_of(old, old_match)
+    out["旧数据库可以迁移并打开"] = (
+        old.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
+        and "segment_id" in old_columns and "route_raw_points" in old_tables
+        and len(old_points) == 3 and all(p["segment_id"] == 0 for p in old_points))
+    saved = routes.simplify(two_segments, .05)
+    storage.save_route(old, old_match, {"map_name": "残月", "map_asset": "broken-moon-s31.jpg", "status": "ready",
+                                        "started_at": "2026-11-05 20:40:00", "ended_at": "2026-11-05 21:00:00",
+                                        "coverage": .6, "processed_at": "2026-11-05 21:00:01"},
+                         saved, (), two_segments)
+    stored = storage.route_points_of(old, old_match)
+    raw = storage.route_raw_points_of(old, old_match)
+    out["数据库保留简化点的段号和全部原始定位点"] = (
+        [p["segment_id"] for p in stored] == [0, 0, 1, 1] and len(raw) == 6
+        and [p["segment_id"] for p in raw] == [0, 0, 0, 1, 1, 1]
+        and abs(raw[3]["x"] - .6) < 1e-9 and raw[0]["confidence"] == .9)
+    old.close()
+
     located, recovered = synthetic_matcher()
     out["小地图能配准到预置全地图"] = located is not None and abs(located["x"] - .525) < .04 and abs(located["y"] - .5) < .04
     out["局部位置错误时会回退全图重新定位"] = recovered is not None and abs(recovered["x"] - .525) < .04
@@ -169,6 +243,12 @@ def main():
                                                     ('"wheel"', "passive:false", "pointerdown", "route-canvas"))
     out["放大时路线图标和描边反向缩小"] = all(x in template for x in
                                              ("resizeOverlays", "5 / zoom", "9 / zoom", "placeMark") )
+    out["路线页面按 segment 画多条折线，两段之间不连线"] = (
+        'id="route-lines"' in template and '<polyline id="route-line">' not in template
+        and "drawSegments" in template and "segment_id" in template
+        and 'setAttribute("class", "route-line")' in template
+        and 'setAttribute("class", "route-point")' in template)
+
     out["放大到地图原图像素就停，不再拉大"] = all(x in template for x in
                                                 ("function maxZoom()", "naturalWidth", "devicePixelRatio",
                                                  "Math.min(maxZoom()"))

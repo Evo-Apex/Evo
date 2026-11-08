@@ -1050,7 +1050,8 @@ table.stats-table { width: 100%; border-collapse: collapse; }
 }
 .route-map:fullscreen .route-fullscreen, .route-map.is-expanded .route-fullscreen { top: 18px; right: 18px; }
 body.route-expanded { overflow: hidden; }
-#route-line { fill: none; stroke: #ff5c5c; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; filter: drop-shadow(0 1px 2px rgb(0 0 0 / .7)); }
+.route-line { fill: none; stroke: #ff5c5c; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; filter: drop-shadow(0 1px 2px rgb(0 0 0 / .7)); }
+.route-point { fill: #ff5c5c; stroke: #fff; stroke-width: 2; vector-effect: non-scaling-stroke; filter: drop-shadow(0 1px 2px rgb(0 0 0 / .7)); }
 #route-cursor { fill: #fff; stroke: #ff5c5c; stroke-width: 4; vector-effect: non-scaling-stroke; }
 .route-mark { stroke: #fff; stroke-width: 3; filter: drop-shadow(0 1px 2px rgb(0 0 0 / .85)); }
 .route-mark > * { vector-effect: non-scaling-stroke; }
