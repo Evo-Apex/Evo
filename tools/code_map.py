@@ -39,7 +39,7 @@ SECTIONS = [
         "code/screens.py", "code/summary_page.py", "code/teammates.py", "code/xp_page.py",
         "code/eliminated.py", "code/match_start.py", "code/lobby.py", "code/player_name.py"]),
     ("模型", "对局中", ["code/in_match.py", "code/hud.py", "code/legends.py", "code/weapons.py",
-                         "code/routes.py", "code/route_matcher.py"]),
+                         "code/routes.py", "code/route_matcher.py", "code/route_planner.py"]),
     ("模型", "合并、校准、段位、赛季、留截图", [
         "code/post_match.py", "code/calibration.py", "code/ranks.py", "code/seasons.py", "code/screenshots.py"]),
     ("模型", "游戏里的数据页（录入历史赛季数据）", [
