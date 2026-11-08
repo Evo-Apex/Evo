@@ -215,6 +215,84 @@ def feedback_checks():
     return out
 
 
+def write_rate_checks():
+    """状态写盘：同一帧只报一个最终状态；普通状态至少隔 2 秒；几百帧不能线性写文件。"""
+    out = {}
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    conn = storage.connect(TEMP / "write-rate.db")
+    log = []
+    watcher = live_collect.SeasonWatcher(None, conn, SimpleNamespace(player_name="ImperialHzd"), log.append,
+                                         page=FakeSeasonPage(None, values={}))
+    watcher.on = True
+    now = datetime(2026, 11, 1, 17, 0, 0)
+
+    writes = []
+    with mock.patch.object(season_import.app_settings, "set_value", side_effect=lambda k, v: writes.append((k, v))):
+        season_import._last_report, season_import._pending = None, None
+        watcher.status_candidates = {}
+        watcher._feedback("等待数据页", frame, now)
+        watcher._feedback("已存为待核对（第 30 赛季 全部）", frame, now, force=True)
+        watcher._flush_status(now)
+    out["同一帧有等待和已存：只写已存，不先写等待"] = (
+        len(writes) == 1 and writes[0][1]["stage"] == "stored")
+
+    writes = []
+    with mock.patch.object(season_import.app_settings, "set_value", side_effect=lambda k, v: writes.append((k, v))):
+        season_import._last_report, season_import._pending = None, None
+        season_import.report("waiting_page", "等待数据页", "4:3", 1920, 1080, now)
+        season_import.report("page_not_recognized", "未识别到数据页", "4:3", 1920, 1080,
+                             now + timedelta(milliseconds=500))
+        season_import.report("owner_mismatch", "数据页上的玩家名不是你", "4:3", 1920, 1080,
+                             now + timedelta(milliseconds=1200))
+        season_import.report("page_not_recognized", "未识别到数据页", "4:3", 1920, 1080,
+                             now + timedelta(seconds=2, milliseconds=100))
+    out[f"普通状态至少隔 2 秒：2.1 秒里只写 2 次（{[(v['stage'], v['updated_at']) for _, v in writes]}）"] = (
+        len(writes) == 2 and writes[1][1]["stage"] == "owner_mismatch")
+
+    def run(seconds):
+        writes = []
+        with mock.patch.object(season_import.app_settings, "set_value", side_effect=lambda k, v: writes.append((k, v))):
+            season_import._last_report, season_import._pending = None, None
+            watcher.status_candidates = {}
+            frames = seconds * 60
+            for i in range(frames):
+                at = now + timedelta(seconds=i / 60)
+                watcher._feedback("数字稳定中（第 30 赛季 全部）", frame, at)
+                watcher._feedback("数字稳定中（生涯合计）", frame, at)
+                watcher._flush_status(at)
+        return len(writes), frames
+
+    short, short_frames = run(2)
+    long, long_frames = run(10)
+    out[f"10 秒 600 帧来回切换：只写 {long} 次（不是 {long_frames} 次），2 秒写 {short} 次"] = (
+        long <= 6 and long <= short + 4 and long < long_frames / 50)
+    out["写盘次数不随帧数线性增长：帧数 5 倍，写盘不到 4 倍"] = long < short * 4
+
+    conn.close()
+    season_import._last_report, season_import._pending = None, None
+    return out
+
+
+def replay_checks():
+    """离线复现工具：显式 4:3 时 1920×1080 的拉伸截图仍按 4:3 换算，不退回 16:9。"""
+    out = {}
+    from ocr import load_config
+    import season_replay
+
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    cfg = load_config("season_stats.json")
+    aspect, why = season_replay.resolve_aspect("4:3", frame, 16 / 9)
+    boxes = season_replay.roi_boxes(cfg, frame.shape, aspect)
+    out[f"复现工具：显式 4:3 不被 1920×1080 截图改成 16:9（{why}）"] = (
+        abs(aspect - 4 / 3) < 1e-6 and "显式" in why)
+    out[f"复现工具：4:3 的数据页 ROI 从 y=264 换到 y=198（{boxes['detect'][1]}）"] = (
+        boxes["detect"][1] == (1335, 198, 1425, 232) and boxes["name"][1] == (440, 72, 1480, 129))
+    auto, why_auto = season_replay.resolve_aspect("auto", frame, None)
+    out[f"复现工具：auto 读不到视频设置时按截图比例，不瞎猜 4:3（{why_auto}）"] = (
+        abs(auto - 16 / 9) < 1e-6)
+    return out
+
+
 def import_checks():
     """4:3 整条录入：自动检测、设置页手动选，各喂两张数据页，应该各存一项待核对、响一声。"""
     out = {}
@@ -352,7 +430,8 @@ def collect_checks():
 
 def main():
     print("录入历史赛季数据（新表、录入模式、记录程序读数据页）")
-    checks = {**table_checks(), **mode_checks(), **aspect_checks(), **feedback_checks(), **import_checks()}
+    checks = {**table_checks(), **mode_checks(), **aspect_checks(), **feedback_checks(), **write_rate_checks(),
+              **replay_checks(), **import_checks()}
     shots = collect_checks()
     if shots is None:
         print(f"  ⏭ 截图部分跳过：找不到 {FOLDER}（截图只在开发者电脑上，不在仓库里）")

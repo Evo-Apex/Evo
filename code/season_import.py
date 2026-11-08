@@ -14,8 +14,10 @@ MINUTES = 10  # 按一次录多久
 STATUS_KEY = "season_import_status"  # 记录程序现在卡在哪一步（面板读，见 report）
 STATUS_SECONDS = 10  # 状态没变也最多这么久写一次，不能逐帧写文件
 STATUS_STALE_SECONDS = 30  # 这么久没更新 = 记录程序没在跑/没响应
+MIN_WRITE_SECONDS = 2.0  # 两次写盘至少隔这么久；中间的只留最新一条，等下一次再写
 
 _last_report = None  # (内容, 时刻)：只在记录程序这个进程里用
+_pending = None  # (内容, 数据, 时刻)：还没到 2 秒，先留着的最新状态
 
 
 def start(now=None):
@@ -31,25 +33,47 @@ def stop():
     clear_status()
 
 
+def _write(key, payload, now):
+    global _last_report, _pending
+    _last_report = (key, now)
+    _pending = None
+    app_settings.set_value(STATUS_KEY, payload)
+
+
 def report(stage, message, aspect, width, height, now=None, force=False):
     """记录程序报告当前阶段（只写共享设置文件；面板每 3 秒读一次，不另开轮询）。
 
     stage：waiting_page / page_not_recognized / owner_mismatch / stabilizing / stored / obscured。
-    状态没变、没到 STATUS_SECONDS 就不写，避免逐帧改 settings.json。"""
-    global _last_report
+    状态没变、没到 STATUS_SECONDS 就不写；普通状态两次写盘至少隔 MIN_WRITE_SECONDS，
+    间隔里的新状态只留最新一条，避免 season/career 两栏来回切换时逐帧改 settings.json。
+    stored 等关键状态传 force=True，立即写。"""
+    global _pending
     now = now or datetime.now()
     key = (stage, message, aspect, int(width), int(height))
-    if (not force and _last_report is not None and _last_report[0] == key
-            and (now - _last_report[1]).total_seconds() < STATUS_SECONDS):
-        return
-    _last_report = (key, now)
-    app_settings.set_value(STATUS_KEY, {
+    payload = {
         "stage": stage,
         "message": message,
         "game_aspect": aspect,
         "screenshot_size": f"{int(width)}×{int(height)}",
         "updated_at": now.isoformat(timespec="seconds"),
-    })
+    }
+    if force:
+        _write(key, payload, now)
+        return
+    elapsed = (now - _last_report[1]).total_seconds() if _last_report is not None else MIN_WRITE_SECONDS
+    if _last_report is not None and key == _last_report[0] and elapsed < STATUS_SECONDS:
+        return
+    if _last_report is not None and elapsed < MIN_WRITE_SECONDS:
+        _pending = (key, payload, now)
+        return
+    if _pending is not None:
+        # 到点了：先把间隔里留下的最新一条写掉；当前这条下一帧还在的话再写。
+        old_key, old_payload, old_at = _pending
+        _write(old_key, old_payload, now)
+        if old_key == key:
+            return
+        return
+    _write(key, payload, now)
 
 
 def status():
@@ -61,8 +85,9 @@ def status():
 
 
 def clear_status():
-    global _last_report
+    global _last_report, _pending
     _last_report = None
+    _pending = None
     if status() is not None:
         app_settings.set_value(STATUS_KEY, None)
 

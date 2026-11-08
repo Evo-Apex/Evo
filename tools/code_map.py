@@ -44,7 +44,7 @@ SECTIONS = [
     ("模型", "合并、校准、段位、赛季、留截图", [
         "code/post_match.py", "code/calibration.py", "code/ranks.py", "code/seasons.py", "code/screenshots.py"]),
     ("模型", "游戏里的数据页（录入历史赛季数据）", [
-        "code/season_stats.py", "code/season_rules.py", "code/season_import.py"]),
+        "code/season_stats.py", "code/season_rules.py", "code/season_import.py", "code/season_replay.py"]),
     ("模型", "规则（config/）", [
         "config/*.json", "config/lang/*.json",
         ("config/templates/", "参照图（外观检查用）：按画面放；legends/ 传奇头像、weapons/ 武器、hud/ 对局中，"
@@ -86,7 +86,7 @@ SECTIONS = [
         "tools/export_route_diag.py", "tools/replay_route_video.py", "tools/diagnose_route_match.py",
         "tools/annotate_route_truth.py",
         "tools/evaluate_route_truth.py", "tools/find_full_map_frames.py", "tools/build_route_masks.py",
-        "tools/code_map.py", "tools/map_assets.py"]),
+        "tools/replay_season_frame.py", "tools/code_map.py", "tools/map_assets.py"]),
     ("测试（tests/）", None, [
         "tests/run_all.py", "tests/fake_game.py", "tests/test_*.py",
         ("tests/*.csv", "正确答案（整晚重放、数据页、武器）；队友名字的答案只在本机")]),
