@@ -193,6 +193,22 @@ def feedback_checks():
     out[f"4:3 连续两帧数字一样：存成待核对，日志说“已存为待核对”（{len(rows)} 行）"] = (
         first and any("已存为待核对" in line for line in log)
         and {(r["season"], r["kind"]) for r in rows} == {(30, "all"), (None, "career")})
+
+    season_import.stop()
+    watcher.check_mode(now + timedelta(seconds=9))
+    page.on, page.reads = True, 0
+    watcher.update(None, frame, now + timedelta(seconds=9), False)
+    out["录入关掉后：不再跑数据页 OCR（read 一次都没调）"] = page.reads == 0
+
+    season_import.start(now + timedelta(seconds=10))
+    watcher.check_mode(now + timedelta(seconds=10))
+    layout.set_game_aspect(None)  # 1920×1080 截图 = 16:9
+    page.on, page.player = False, "ImperialHzd"
+    watcher.seen_page, watcher.misses, watcher.feedback_key = False, 0, None
+    for i in range(3, 6):
+        watcher.update(None, frame, now + timedelta(seconds=10 + i), False)
+    out["16:9 下没认出：日志写“等待数据页”、16:9（不会当成 4:3），也给出截图尺寸"] = any(
+        "等待数据页" in line and "游戏画面比例 16:9" in line and "1920×1080" in line for line in log)
     conn.close()
     layout.set_game_aspect(None)
     season_import.stop()
