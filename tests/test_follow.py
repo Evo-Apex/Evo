@@ -7,6 +7,7 @@
 - 设置页"关于 Evo"最下面的"支持我"（2026-10-28）：连着三个弹窗（文字是用户写的原文），最后一个是开发者的微信收款码
 - 右上角"Evo 官方合作小程序：派圈助手"（2026-10-28，每一页都有）：前面是派圈助手的图标，点了弹出小程序码（弹窗、码、扫码说明、关闭）；
   每一页都有；没有小程序码图片时不显示；有图片时两张都是真的 PNG、面板能取到，文件夹里有许可说明
+- 设置页"关于 Evo"下面的鸣谢卡片（2026-11-07）：开发者（链到 GitHub）→ 官方合作（派圈助手，弹同一个小程序码）→ 特别鸣谢
 
 运行：python tests/test_follow.py
 """
@@ -40,7 +41,7 @@ def follow_links(page):
 
 
 def main():
-    print("总览页\"关注我\"：B 站、小黑盒、Evo 官网；右上角派圈助手；设置页支持我")
+    print("总览页\"关注我\"：B 站、小黑盒、Evo 官网；右上角派圈助手；设置页支持我、鸣谢卡片")
     path = FOLDER / "follow.db"
     conn = storage.connect(path)
     storage.insert_match(conn, {"ended_at": "2026-10-22 20:00:00", "placement": 3, "legend": "恶灵"})
@@ -83,7 +84,36 @@ def main():
     }
     checks.update(partner_checks(client))
     checks.update(support_checks(client))
+    checks.update(credits_checks(client))
     return report(checks)
+
+
+def credits_checks(client):
+    """设置页"关于 Evo"下面的鸣谢卡片（2026-11-07）：开发者 → 官方合作 → 特别鸣谢。"""
+    def card(**patch):
+        with mock.patch.multiple(panel_app, **patch):
+            page = client.get("/settings").get_data(as_text=True)
+        found = re.search(r'<section class="card credits-card".*?</section>', page, re.S)
+        return page, found.group(0) if found else ""
+
+    page, credits = card(partner_qr=lambda: panel_app.PARTNER_QR)
+    _, no_partner = card(partner_qr=lambda: None)
+    _, no_thanks = card(partner_qr=lambda: panel_app.PARTNER_QR, THANKS=())
+    devs = re.findall(r'<a class="source-link" href="([^"]+)" target="_blank" rel="noopener noreferrer">([^<]+) ↗</a>', credits)
+    thanks = re.search(r'<ul class="thanks-list">(.*?)</ul>', credits, re.S)
+    thanks = re.findall(r"<li>([^<]+)</li>", thanks.group(1)) if thanks else []
+    return {
+        "设置页右边一列：\"关于 Evo\"下面是鸣谢卡片": -1 < page.find('class="settings-side"') < page.find("about-card")
+            < page.find("credits-card"),
+        "顺序：开发者 → 官方合作 → 特别鸣谢（放最下面）":
+            -1 < credits.find(">开发者<") < credits.find(">官方合作<") < credits.find(">特别鸣谢<"),
+        "开发者：显示的名字是各自取的，点了用浏览器打开 GitHub 主页": [(n, u) for u, n in devs]
+            == [(d["name"], d["url"]) for d in panel_app.DEVELOPERS] and all("github.com/" in u for u, _ in devs),
+        "官方合作：派圈助手按钮，点了弹出右上角那个小程序码": "data-partner-open" in credits and ">派圈助手<" in credits,
+        "没有小程序码图片时不显示\"官方合作\"": ">官方合作<" not in no_partner and ">开发者<" in no_partner,
+        "特别鸣谢：名单里的名字都在、按顺序，一样大（不带字号档位）": thanks == list(panel_app.THANKS) and bool(thanks),
+        "名单空了不显示\"特别鸣谢\"": ">特别鸣谢<" not in no_thanks and ">开发者<" in no_thanks,
+    }
 
 
 def partner_checks(client):
@@ -101,7 +131,7 @@ def partner_checks(client):
             'id="partner-open"' in header and "Evo 官方合作小程序：</span><span class=\"partner-name\">派圈助手" in header,
         "点了弹出小程序码：弹窗里有码（读屏写着是什么）、扫码说明、关闭按钮":
             f'src="/static/{panel_app.PARTNER_QR}"' in dialog and 'alt="派圈助手的小程序码"' in dialog and "扫一扫" in dialog
-            and "data-partner-close" in dialog and 'getElementById("partner-open")' in overview,
+            and "data-partner-close" in dialog and 'querySelectorAll("#partner-open, [data-partner-open]")' in overview,
         "每一页都有（战绩、数据、全体玩家、设置页也有按钮和弹窗）": all(
             'id="partner-open"' in page.split("</header>")[0] and 'id="partner-dialog"' in page for page in others),
         "没有小程序码图片时不显示按钮和弹窗": "partner-open" not in without and "partner-dialog" not in without,

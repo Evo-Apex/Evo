@@ -92,6 +92,7 @@ SECTIONS = [
         ("docs/", "说明文档（什么时候读哪一份见 CLAUDE.md），images/ 是 README 的截图"),
         ("claude/", "进度和待办：progress.md、todo.md、progress_archive.md"),
         ("README.md", "GitHub 上的介绍"), ("PRIVACY.md", "隐私说明"), ("LICENSE", "AGPL-3.0 许可证"),
+        (".github/CODEOWNERS", "代码负责人：所有 PR 要 AugustHuangMX 批准才能合并进 main"),
         ("CLAUDE.md", "项目说明（给 Claude 的）"), (".gitignore", "不进 git 的文件（每一项为什么不进写在旁边）")]),
 ]
 

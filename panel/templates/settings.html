@@ -13,7 +13,6 @@
       <div class="setting">
         <div class="setting-text">
           <div class="setting-name">主题</div>
-          <div class="setting-desc">选"跟随系统"时，Windows 切换深浅色，面板会自动同步</div>
         </div>
         <select id="theme-select" aria-label="主题">
           <option value="system">跟随系统</option>
@@ -25,11 +24,8 @@
       <div class="setting">
         <div class="setting-text">
           <div class="setting-name" id="autostart-name">开机自动启动</div>
-          <div class="setting-desc">
-            {%- if autostart.blocked %}{{ autostart.blocked }}
-            {%- else %}开机后 Evo 将在托盘里自动运行。安全/杀毒软件问是否允许时，请选"允许"
-            {%- endif %}
-          </div>
+          {# 平时不写说明（2026-11-07 用户删了）；开关用不了时写原因（在压缩包里直接打开、用源码运行） #}
+          {% if autostart.blocked %}<div class="setting-desc">{{ autostart.blocked }}</div>{% endif %}
           {% if autostart.off_in_windows %}
           <div class="setting-desc">在 Windows 的"启动应用"里被关掉了，打开这里的开关会重新开启</div>
           {% elif autostart.other and not autostart.blocked %}
@@ -54,7 +50,6 @@
       <div class="setting">
         <div class="setting-text">
           <div class="setting-name" id="maps-name">总览页显示当前地图</div>
-          <div class="setting-desc">匹配、排位、轮换模式现在是哪张图、还剩多久。打开后，看总览页时要联网下载地图轮换，不发送任何战绩</div>
         </div>
         <form method="post" action="{{ url_for('maps_setting') }}">
           <input type="hidden" name="token" value="{{ token }}">
@@ -76,7 +71,6 @@
       <div class="setting">
         <div class="setting-text">
           <div class="setting-name" id="sounds-name">对局结束时的提示音</div>
-          <div class="setting-desc">每局最多响三声，每一声只响一次</div>
         </div>
         <form method="post" action="{{ url_for('sounds_setting') }}">
           <input type="hidden" name="token" value="{{ token }}">
@@ -93,7 +87,6 @@
         <input type="hidden" name="token" value="{{ token }}">
         <div class="setting-text">
           <label class="setting-name" for="sound-pack">声音</label>
-          <div class="setting-desc">三声一起换。选"{{ sound.packs[-1].name }}"可以把每一声换成你自己的音频</div>
         </div>
         <div class="setting-actions inline">
           <select id="sound-pack" name="pack">
@@ -108,12 +101,10 @@
         <input type="hidden" name="token" value="{{ token }}">
         <div class="setting-text">
           <label class="setting-name" for="sound-volume">音量</label>
-          <div class="setting-desc" id="sound-volume-desc">只调 Evo 的提示音，松开后按新音量响一声</div>
         </div>
         <div class="setting-actions inline sound-volume">
           <input type="range" id="sound-volume" name="volume" min="{{ sound.volume_range[0] }}" max="{{ sound.volume_range[1] }}"
-                 step="{{ sound.volume_range[2] }}" value="{{ sound.volume }}" aria-describedby="sound-volume-desc"
-                 aria-valuetext="{{ sound.volume }}%">
+                 step="{{ sound.volume_range[2] }}" value="{{ sound.volume }}" aria-valuetext="{{ sound.volume }}%">
           <output for="sound-volume" class="num volume-value" id="sound-volume-value">{{ sound.volume }}%</output>
           <noscript><button type="submit" class="btn">保存</button></noscript>
         </div>
@@ -174,7 +165,6 @@
         <input type="hidden" name="token" value="{{ token }}">
         <div class="setting-text">
           <label class="setting-name" for="language-select">游戏语言</label>
-          <div class="setting-desc">游戏界面用的语言。"自动识别"会在认出第一个画面时自己判断；选了某种语言，Evo 就只按这种语言识别</div>
           {% if language.pending %}<div class="setting-desc">{{ language.pending | join('、') }} 还没做好，做好以后就能选</div>{% endif %}
         </div>
         <div class="setting-actions inline">
@@ -192,7 +182,6 @@
         <input type="hidden" name="token" value="{{ token }}">
         <div class="setting-text">
           <label class="setting-name" for="aspect-select">游戏画面比例</label>
-          <div class="setting-desc">用 4:3、16:10 等拉伸分辨率时，Evo 要知道游戏实际的比例才认得出界面。"自动检测"会读 Apex 自己的视频设置文件（只读，不修改）</div>
           <div class="setting-desc">自动检测结果：{% if aspect.detected %}<span class="num">{{ aspect.detected }}</span>（{{ aspect.why }}）{% else %}{{ aspect.why }}{% endif %}</div>
         </div>
         <div class="setting-actions inline">
@@ -341,22 +330,6 @@
             <button type="submit" class="btn">打开文件夹</button>
           </form>
         </div>
-      </div>
-      <div class="setting">
-        <div class="setting-text">
-          <div class="setting-name">按画面类型整理截图</div>
-          {# 以前平铺存的截图移进画面类型文件夹（screenshots.organize）；正在记录的文件夹不动 #}
-          <div class="setting-desc">
-            {%- if shots_locked %}用源码运行时不整理：项目里的 <code>captures/</code> 是测试集
-            {%- elif organize_count %}新存的截图已经按画面类型（总结页、经验值页……）分文件夹放。以前存的还有 <span class="num">{{ organize_count }}</span> 张平铺放着，整理以后战绩页照样能打开
-            {%- else %}新存的截图已经按画面类型（总结页、经验值页……）分文件夹放，以前存的也都整理好了
-            {%- endif %}
-          </div>
-        </div>
-        <form method="post" action="{{ url_for('organize_shots') }}">
-          <input type="hidden" name="token" value="{{ token }}">
-          <button type="submit" class="btn" {{ 'disabled' if shots_locked or not organize_count }}>整理截图</button>
-        </form>
       </div>
       {# 截图留不留（screenshots.py）：记录程序每局结束时看一眼开关，所以"从下一局开始生效" #}
       <div class="setting">
@@ -536,6 +509,7 @@
     <p class="setting-desc coming">每局结束后的通知、性能模式等功能还在开发中，做好后会出现在这里。</p>
   </div>
 
+  <div class="settings-side">
   <aside class="card about-card" aria-labelledby="h-about">
     <h2 id="h-about">关于 Evo</h2>
     <div class="setting-desc">版本 <span class="num">{{ version }}</span> · AGPL-3.0 开源许可</div>
@@ -559,6 +533,38 @@
       </button>
     </div>
   </aside>
+
+  {# 鸣谢（2026-11-07 用户要求）：特别鸣谢（打赏的人）、开发者、官方合作。名单在 panel_app.THANKS、DEVELOPERS，不联网；
+     开发者的名字点了交给系统浏览器打开 GitHub 主页；派圈助手点了弹出和右上角一样的小程序码（没有小程序码图片时这一项不显示） #}
+  <section class="card credits-card" aria-label="鸣谢">
+    <div class="credit">
+      <h3 class="setting-name">开发者</h3>
+      <ul class="dev-list">
+        {% for dev in developers %}
+        <li><a class="source-link" href="{{ dev.url }}" target="_blank" rel="noopener noreferrer">{{ dev.name }} ↗</a></li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% if partner %}
+    <div class="credit">
+      <h3 class="setting-name">官方合作</h3>
+      <button type="button" class="partner-btn credit-partner" data-partner-open aria-haspopup="dialog">
+        <img class="partner-icon" src="{{ url_for('static', filename=partner_icon) }}" alt="" width="20" height="20">
+        <span class="partner-name">派圈助手</span>
+      </button>
+    </div>
+    {% endif %}
+    {# 特别鸣谢放最下面（用户要求）：浅灰斜体，名字一样大；名单空了这一项不显示 #}
+    {% if thanks %}
+    <div class="credit">
+      <h3 class="setting-name">特别鸣谢</h3>
+      <ul class="thanks-list">
+        {% for name in thanks %}<li>{{ name }}</li>{% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </section>
+  </div>
 </div>
 
 {# 点"国内渠道"时的说明（2026-11-04 用户写的原文，"Mirror酱""CDK"前后照面板的习惯加了空格） #}

@@ -150,6 +150,36 @@ def rows_of(page):
     return [re.sub(r"<[^>]+>|\s", "", r) for r in re.findall(r'<th scope="row">(.*?)</th>', page, re.S)]
 
 
+def strip(html):
+    return re.sub(r"<[^>]+>|\s", "", html)
+
+
+def podium(section):
+    """卡片上的前三名（颁奖台，2026-11-08；HTML 里按 1、2、3 的顺序）：[(名字或组合, "你"那一行的文字或 None, 颜色, 台子上的名次)]。"""
+    out = []
+    for slot in re.findall(r'<li class="podium-slot podium-\d">(.*?)</li>', section, re.S):
+        who = re.search(r'<div class="podium-who">(.*?)</div>', slot, re.S)
+        you = re.search(r'<div class="podium-meta podium-you">(.*?)</div>', slot, re.S)
+        vs = re.search(r"you-(better|worse|same)", you.group(1)) if you else None
+        step = re.search(r'<div class="podium-step" aria-hidden="true"><span class="num">(\d)</span>', slot)
+        out.append((strip(who.group(1)) if who else None, strip(you.group(1)) if you else None,
+                    vs.group(1) if vs else None, int(step.group(1)) if step else None))
+    return out
+
+
+def card_rows(section):
+    """卡片上从第一名往下：颁奖台上的前三名，再接下面表格里的。"""
+    return [p[0] for p in podium(section)] + rows_of(section)
+
+
+def card_you(section, name):
+    """卡片上某个传奇的"你"：在颁奖台上就读台上那一行（没用过时不写，当作"—"），否则读表格那一格。格式和 you_cell 一样。"""
+    for who, you, vs, _ in podium(section):
+        if who == name:
+            return (you.removeprefix("你").replace("·", ""), vs) if you else ("—", None)
+    return you_cell(section, name)
+
+
 def you_cell(page, name):
     """传奇热度里某个传奇那一行"你"那一格的文字和颜色（better / worse / same），没有返回 None。"""
     row = re.search(rf'{name}</span></th>(.*?)</tr>', page, re.S)
@@ -242,14 +272,29 @@ def checks():
     out["两列卡片：传奇热度、热门组合、大家常用的武器、你在 Evo 玩家中；段位分布在下面"] = (
         re.search(r'<div class="stats-grid">.*id="h-hot".*id="h-combos".*id="h-weapons".*id="h-you".*</div>\s*<details', full, re.S)
         is not None)
+    hot_card = full.split('id="h-combos"')[0]
+    combo_card = full.split('id="h-combos"')[1].split('id="h-weapons"')[0]
     out["传奇热度：卡片上列前 5 个（按出场次数，有\"你\"），\"查看全部 10 个传奇\"打开完整的表格（10 个）"] = (
-        rows_of(full.split('id="h-combos"')[0]) == LEGENDS[:5] and you_cell(full, "恶灵") is not None
+        card_rows(hot_card) == LEGENDS[:5] and card_you(hot_card, "恶灵") not in (None, ("—", None))
         and '<a class="peek-more" href="/stats/legends?view=all&amp;range=all&amp;mode=ranked&amp;tier=all">' in full
         and "查看全部 <span class=\"num\">10</span> 个传奇" in full and rows_of(hot) == LEGENDS)
-    out["热门组合：卡片上列前 5 个（只放头像，名字在悬停和读屏里），完整的表格 7 个"] = (
-        len(rows_of(full.split('id="h-combos"')[1].split('id="h-weapons"')[0])) == 5
+    out["前三名在颁奖台上（HTML 里按 1、2、3 的顺序，台子上写着名次），第四、第五在下面的表格"] = (
+        [p[0] for p in podium(hot_card)] == LEGENDS[:3] and [p[3] for p in podium(hot_card)] == [1, 2, 3]
+        and rows_of(hot_card) == LEGENDS[3:5] and '<ol class="podium podium-legend" aria-label="前三名">' in hot_card
+        and '<span class="sr-only">第 1 名：</span>' in hot_card)
+    out["第四、第五前面写着名次 4、5（接着台上的 1、2、3）"] = (
+        re.findall(r'<td class="rest-rank num">(\d)</td>', hot_card) == ["4", "5"]
+        and re.findall(r'<td class="rest-rank num">(\d)</td>', combo_card) == ["4", "5"])
+    blank = 'class="podium-meta podium-you-blank" aria-hidden="true"'
+    out["\"你\"那一行总是留着（没用过的是空行），两张卡片的颁奖台一样高"] = all(
+        len(podium(card)) == 3 and card.count(blank) == 3 - sum(1 for p in podium(card) if p[1])
+        for card in (hot_card, combo_card)) and any(p[1] for p in podium(hot_card))
+    out["热门组合：卡片上列前 5 个（前三个在颁奖台上，只放头像，名字在悬停和读屏里），完整的表格 7 个"] = (
+        len(card_rows(combo_card)) == 5 and len(podium(combo_card)) == 3 and len(rows_of(combo_card)) == 2
+        and podium(combo_card)[0][0] == "、".join(COMBOS[0])
         and f'title="{"、".join(COMBOS[0])}"' in full and "查看全部 <span class=\"num\">7</span> 个组合" in full
         and len(rows_of(combos)) == 7)
+    out["完整的表格没有颁奖台（全都是表格行）"] = 'class="podium' not in hot and 'class="podium' not in combos
     out["完整的表格：\"← 全体玩家\"回到卡片那页，没有\"我的 / 全体玩家\"切换"] = (
         '<a class="back-link" href="/stats?view=all&amp;range=all&amp;mode=ranked&amp;tier=all">' in hot
         and "stats-tabs" not in hot and 'class="peek-more"' not in hot)
@@ -287,16 +332,20 @@ def checks():
     out["武器近 7 天：你的局只算 7 天以内（罗芭那局的复仇女神不算），R-301 占 52.0%"] = (
         rows_of(weapon_section(week)) == ["R-301"]
         and weapon_cell(page("/stats/weapons?view=all&range=7d"), "R-301")[2] == "52.0%2局")
+    week_card = week.split('id="h-combos"')[0]
     out["近 7 天：用近 7 天的汇总，你的局只算 7 天以内（罗芭那局 10 天前，不算）"] = (
-        rows_of(week.split('id="h-combos"')[0]) == ["罗芭", "恶灵"] and you_cell(week, "罗芭") == ("—", None)
+        card_rows(week_card) == ["罗芭", "恶灵"] and card_you(week_card, "罗芭") == ("—", None)
         and "5</span> 名玩家" in week)
+    out["不到三个时：颁奖台上有几个放几个，下面没有表格"] = (
+        len(podium(week_card)) == 2 and "podium-rest" not in week_card)
     diamond = page("/stats?view=all&range=all&tier=diamond")
     out["钻石：用钻石的汇总，筛选按钮选中钻石"] = (
-        rows_of(diamond.split('id="h-combos"')[0]) == ["探路者"] and 'aria-current="true">钻石</a>' in diamond)
+        card_rows(diamond.split('id="h-combos"')[0]) == ["探路者"] and 'aria-current="true">钻石</a>' in diamond)
     pubs = page("/stats?view=all&range=all&mode=pubs&tier=diamond")
+    pubs_card = pubs.split('id="h-combos"')[0]
     out["匹配：没有段位按钮；没认出模式的局算匹配（动力小子 1 局，名次 4）"] = (
-        "段位</span>" not in pubs and rows_of(pubs.split('id="h-combos"')[0]) == ["动力小子"]
-        and you_cell(pubs, "动力小子") == ("4.0（比全体好）1局", "better"))
+        "段位</span>" not in pubs and card_rows(pubs_card) == ["动力小子"]
+        and card_you(pubs_card, "动力小子") == ("4.0（比全体好）1局", "better"))
     out["汇总里没有武器（老的统计服务器、还没人发过）：写\"还没有记下武器的对局\"，不写局数"] = (
         "这个范围里还没有记下武器的对局" in weapon_section(pubs) and "记下了武器的" not in weapon_section(pubs))
     deep = page("/stats/legends?view=all&range=all&tier=diamond")
@@ -323,7 +372,8 @@ def checks():
     Handler.body = plain_body
     client.post("/stats/everyone/refresh", data={"token": token})
     out["本赛季：用本赛季的汇总，你的局只算开赛那天以后的（罗芭那局 10 天前，不算），按钮写着从哪天算起"] = (
-        rows_of(season.split('id="h-combos"')[0]) == ["罗芭", "恶灵"] and you_cell(season, "罗芭") == ("—", None)
+        card_rows(season.split('id="h-combos"')[0]) == ["罗芭", "恶灵"]
+        and card_you(season.split('id="h-combos"')[0], "罗芭") == ("—", None)
         and "3</span> 名玩家" in season and f'title="从 {RECENT_FROM[5:].replace("-", "/")} 算起' in season)
 
     # ---- 什么时候重新下载 ----

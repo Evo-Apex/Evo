@@ -15,7 +15,7 @@
 - 战绩页确认（保存）或删除一局时，删掉这一局的截图（discard）
 - 设置页"删除已识别完的截图"按钮（clean_up）：以前存下的也按同样的规则删（总结页截图转成 JPG），正在记录的文件夹不动
 - 一次记录的截图按画面类型分文件夹存（path_for，2026-11-02 合并 PR #3）：captures/live/<开始时间>/summary/、xp/、hud/……；
-  以前平铺存的用设置页"整理截图"按钮（organize）移进去，战绩里的截图位置跟着改
+  以前平铺存的可以用 organize 移进去，战绩里的截图位置跟着改（设置页原来有"整理截图"按钮，2026-11-07 用户删了，函数留着）
 """
 
 import multiprocessing
@@ -73,7 +73,7 @@ def organizable_count(skip=None):
 
 
 def organize(conn, skip=None):
-    """设置页"整理截图"：以前平铺存的截图移进画面类型文件夹，战绩里的截图位置跟着改；正在记录的文件夹（skip）不动。
+    """整理截图（设置页的按钮 2026-11-07 删了）：以前平铺存的截图移进画面类型文件夹，战绩里的截图位置跟着改；正在记录的文件夹（skip）不动。
     按截图实际是哪个文件找对应的局（数据库里可能是相对路径，也可能是完整路径）。返回移了几张。"""
     used = {}  # 截图（绝对路径）→ 用它的局
     for row in conn.execute("SELECT match_id, evidence_path FROM matches WHERE evidence_path IS NOT NULL"):

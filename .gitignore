@@ -5,6 +5,10 @@ captures/
 bugs_test/
 # 整晚重放的队友答案：有队友的名字和 ID，和截图一样只留在本机（找不到时这项检查跳过，见 tests/test_replay.py）
 tests/replay_20261016_teammates.csv
+# 派圈助手用的 ALGS 选手照片（2 GB，EA 授权使用，不能按 AGPL 开源；处理后传到派圈的云存储）
+assets/选手照片/
+# 派圈助手用的战队队标（各战队的商标，不能按 AGPL 开源；派圈 tools/build_pro_logos.py 下载处理后传到派圈的云存储）
+assets/队标/
 # 数据库等运行数据
 data/
 *.db
@@ -65,3 +69,5 @@ tests/test_cloud_sync.py
 tools/cloud_ping.py
 # 宣传片（onetake 做的，见 release/宣传片/分镜.md）：用到 onetake 的 motion.js（PolyForm Noncommercial 许可，不能放进 AGPL 的仓库），视频文件也很大，只留在本机
 release/宣传片/
+# 第二支宣传片（Evo × 派圈助手，2026-11-08）：同上，onetake 做的，只留在本机
+release/宣传片2/

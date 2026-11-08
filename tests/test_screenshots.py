@@ -114,7 +114,7 @@ def switch_checks(frames):
 
 
 def organize_checks():
-    """设置页"整理截图"（以前平铺存的移进画面类型文件夹）、画面类型怎么认、记录结束时删掉空文件夹。"""
+    """整理截图（organize，以前平铺存的移进画面类型文件夹）、画面类型怎么认、记录结束时删掉空文件夹。"""
     live = CAPTURES_DIR / "live"
     folder, recording = live / "20991230_000000", live / "20991231_000000"
     legacy, summary, enter, odd = (folder / name for name in

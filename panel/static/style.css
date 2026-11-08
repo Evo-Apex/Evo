@@ -12,6 +12,7 @@
   --inset: #0D0F13;
   --text: #ECEEF2;
   --muted: #9AA3B2;
+  --thanks: #7D8594;  /* 设置页"特别鸣谢"的浅灰字：比 --muted 淡，和卡片底色的对比度还有 4.8:1 */
   --border: #262C38;
   --row-border: #222733;
   --input-border: #262C38;
@@ -50,6 +51,7 @@
   --inset: #F6F6F3;
   --text: #17191E;
   --muted: #5F6670;
+  --thanks: #6F7680;  /* 设置页"特别鸣谢"的浅灰字：比 --muted 淡，和白色卡片的对比度还有 4.6:1 */
   --border: #E4E4DF;
   --row-border: #EDEDEA;
   --input-border: #D8D8D3;
@@ -525,6 +527,38 @@ table.stats-table { width: 100%; border-collapse: collapse; }
 .peek-table .pick-col { width: 40%; min-width: 120px; }
 .peek-table .pick-bar { min-width: 48px; }
 .peek-table .stats-name { max-width: 180px; }
+/* 全体玩家：传奇热度、热门组合的前三名像颁奖台（2026-11-08 用户要求）。HTML 里是 1、2、3 的顺序（读屏照这个读），
+   用 grid 摆成 左 2、中 1、右 3；台子第一名最高，所以中间那位站得最高。台子颜色和名次的颜色一样：冠军红、第 2–3 名紫，
+   颜色之外台子上写着名次（不只靠颜色）。第四、第五照旧是下面的表格 */
+.podium { list-style: none; margin: 4px 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-areas: "second first third"; align-items: end; gap: 12px; }
+.podium-slot { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; text-align: center; }
+.podium-1 { grid-area: first; } .podium-2 { grid-area: second; } .podium-3 { grid-area: third; }
+.podium-who { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.podium-legend .legend-icon { width: 36px; height: 36px; }
+.podium-legend .podium-1 .legend-icon { width: 44px; height: 44px; }
+.podium-combo .combo-icons { gap: 6px; }
+.podium-combo .legend-icon { width: 26px; height: 26px; }
+.podium-combo .podium-1 .legend-icon { width: 32px; height: 32px; }
+.podium-name { font-weight: 500; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.podium-rate { display: flex; align-items: baseline; gap: 4px; margin-top: 2px; }
+.podium-rate .num { font-size: 20px; font-weight: 600; }
+.podium-1 .podium-rate .num { font-size: 24px; }
+.podium-cap, .podium-meta { color: var(--muted); font-size: 12px; }
+.podium-you .you-value { gap: 2px; }
+.podium-step { --step: var(--p2-bg); align-self: stretch; margin-top: 6px; display: flex; align-items: center; justify-content: center;
+  border-top: 3px solid var(--step); border-radius: 6px 6px 0 0; background: color-mix(in srgb, var(--step) 14%, transparent); }
+.podium-step .num { color: var(--step); font-size: 18px; font-weight: 700; }
+.podium-1 .podium-step { --step: var(--p1-bg); height: 56px; }
+.podium-2 .podium-step { height: 38px; }
+.podium-3 .podium-step { height: 26px; }
+/* 左右两张卡片（传奇热度、热门组合）的颁奖台一样高（用户 2026-11-08 要的，不然组合那张下面空一块）：
+   头像 + 名字那一块按名次留同样的高度，组合没有名字、头像贴着下面放；"你"那一行也总是留着（见 stats_all.html） */
+.podium-who { justify-content: flex-end; height: 64px; }
+.podium-1 .podium-who { height: 72px; }
+.podium-name { line-height: 20px; }
+.podium + .table-wrap { margin-top: 16px; }
+.podium-rest .rest-rank { width: 28px; padding-right: 0; color: var(--muted); font-size: 15px; font-weight: 700; }
 .combo-icons { display: inline-flex; align-items: center; gap: 10px; vertical-align: middle; }
 .combo-name { font-size: 12px; font-weight: 400; }
 .peek-ref { margin: 12px 0 0; color: var(--muted); font-size: 12px; }
@@ -591,7 +625,23 @@ table.stats-table { width: 100%; border-collapse: collapse; }
 /* ---------- 设置页 ---------- */
 .settings-layout { display: grid; grid-template-columns: 1fr minmax(280px, 350px); gap: 20px; align-items: start; }
 .settings-main { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.settings-side { display: flex; flex-direction: column; gap: 20px; min-width: 0; }  /* 右边一列：关于 Evo + 鸣谢 */
 .settings-card, .about-card { padding: 24px; }
+/* 鸣谢卡片（2026-11-07）：三项上下排，中间细线隔开；名字之间至少 8px（ui-ux-pro-max：可点的东西别挤在一起） */
+.credits-card { padding: 8px 24px; }
+.credit { padding: 16px 0; }
+.credit + .credit { border-top: 1px solid var(--row-border); }
+.credit h3 { margin: 0 0 10px; font-size: 14px; }
+.credit .setting-desc { margin: 0; }
+.dev-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 16px; }
+/* 特别鸣谢（用户 2026-11-07 定的）：浅灰字，名字一样大（试过大小不一，用户改回一样大）。字体用户选的：英文 Georgia 斜体、
+   中文楷体，全部斜过来（中文字体没有斜体，由浏览器斜过来）。都是 Windows 自带的，不加字体文件；没装楷体的英文版 Windows 换成普通字体 */
+.thanks-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px;
+  color: var(--thanks); font-size: 15px; line-height: 1.4; font-family: Georgia, "KaiTi", "楷体", "STKaiti", serif; font-style: italic; }
+.thanks-list li { overflow-wrap: anywhere; }
+.dev-list a { display: inline-block; padding: 2px 0; }
+.dev-list a:focus-visible { outline: 2px solid var(--p3-bg); outline-offset: 2px; border-radius: 2px; }
+.credit-partner { margin-left: 0; }
 .settings-card h2, .about-card h2 { margin: 0 0 16px; font-size: 16px; font-weight: 600; }
 .setting { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 0; }
 .setting + .setting { border-top: 1px solid var(--row-border); }

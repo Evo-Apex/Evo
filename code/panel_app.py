@@ -168,6 +168,13 @@ except (OSError, ValueError, KeyError):
 SOURCE_URL = "https://github.com/AugustHuangMX/Evo"
 FEEDBACK_URL = "https://qm.qq.com/q/6L2kTbmCWc"  # "意见反馈"：加 QQ 群（和 README、隐私政策里的是同一个群）
 FEEDBACK_GROUP = "1128519951"
+# 设置页右边"关于 Evo"下面的鸣谢卡片（2026-11-07 用户要求）：特别鸣谢（打赏的人）、开发者、官方合作（派圈助手）。
+# 名单写在这里，不联网（用户决定）：有新的人打赏，改这里、下一个版本显示。开发者显示的名字由各自取，点了用浏览器打开 GitHub 主页
+THANKS = ("伯乐相马", "司渊")  # 打赏的人（显示的名字，用户给的），按时间先后
+DEVELOPERS = (
+    {"name": "黄指导", "url": "https://github.com/AugustHuangMX"},  # 用户
+    {"name": "wzx", "url": "https://github.com/wzxlll33"},  # 学弟 wzxlll33
+)
 # 总览页"关注我"（2026-10-22 用户要求）：开发者的 B 站、小黑盒主页（不带分享追踪参数的正式地址）。
 # 和"意见反馈"一样交给系统浏览器打开，Evo 自己不联网；图标在 panel/static/brands/（单色，颜色跟随文字）
 FOLLOW_LINKS = (
@@ -1489,7 +1496,6 @@ def settings():
         keep_shots=app_settings.get(screenshots.KEEP_ALL_KEY, False) is True,
         shots_locked=screenshots.in_project(),  # 用源码运行：永远保留全部，开关和删除按钮都不能用
         recording=recording is not None,
-        organize_count=screenshots.organizable_count(skip=recording),
         clean_count=clean.deleted,
         clean_convert=clean.converted,
         clean_size=size_text(clean.freed),
@@ -1497,6 +1503,8 @@ def settings():
         source_url=SOURCE_URL,
         feedback_url=FEEDBACK_URL,
         feedback_group=FEEDBACK_GROUP,
+        thanks=THANKS,
+        developers=DEVELOPERS,
         update_auto=app_settings.get("update_auto") is True,
         stats_on=telemetry.consent() is True,
         last_check=app_settings.get("update_last_check"),
@@ -1762,17 +1770,6 @@ def clean_shots():
         flash(f"{stuck} 张截图没处理（可能正被别的程序打开），关掉后再试一次", "error")
     else:
         flash("没有可以删的截图", "ok")
-    return redirect(url_for("settings"))
-
-
-@app.post("/settings/organize-shots")
-def organize_shots():
-    """把以前平铺存放的截图按画面类型整理；正在记录的文件夹不动。"""
-    if screenshots.in_project():
-        abort(400)
-    moved = screenshots.organize(db(), skip=screenshots.recording_folder())
-    flash(f"已按画面类型整理 {moved} 张截图，战绩里的截图链接已同步更新。" if moved
-          else "没有需要整理的旧截图。", "ok")
     return redirect(url_for("settings"))
 
 

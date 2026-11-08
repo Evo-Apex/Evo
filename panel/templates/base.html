@@ -246,7 +246,10 @@
 <script>
   (function () {
     var dialog = document.getElementById("partner-dialog");
-    document.getElementById("partner-open").addEventListener("click", function () { dialog.showModal(); });
+    // 右上角的按钮，和设置页鸣谢卡片里的"派圈助手"（data-partner-open）都弹这个窗口
+    document.querySelectorAll("#partner-open, [data-partner-open]").forEach(function (btn) {
+      btn.addEventListener("click", function () { dialog.showModal(); });
+    });
     dialog.querySelector("[data-partner-close]").addEventListener("click", function () { dialog.close(); });
     dialog.addEventListener("click", function (e) { if (e.target === dialog) dialog.close(); });  // 点弹窗外面（背景）
   })();
