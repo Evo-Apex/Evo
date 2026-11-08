@@ -15,6 +15,7 @@
 import html as htmllib
 import re
 import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fake_game import report  # 要在项目代码之前导入（设置临时数据文件夹）
@@ -104,9 +105,30 @@ def main():
     status = client.get("/seasons/status").get_json()
     out[f"录入中页面每隔几秒问的：开着、还剩几秒、2 项待核对（{status}）"] = (
         status["active"] and status["pending"] == 2 and status["remaining"] > 500)
+    out[f"状态接口：记录程序还没报告时按\"等待数据页\"（{status['state']}）"] = (
+        status["state"]["stage"] == "waiting_page" and status["state"]["message"] == "等待数据页")
+    season_import.report("page_not_recognized", "未识别到数据页", "4:3", 1920, 1080, force=True)
+    status = client.get("/seasons/status").get_json()
+    settings = client.get("/settings").get_data(as_text=True)
+    out[f"状态接口：返回当前阶段、比例、截图尺寸（{status['state']}）"] = (
+        status["state"]["stage"] == "page_not_recognized"
+        and status["state"]["game_aspect"] == "4:3" and status["state"]["screenshot_size"] == "1920×1080")
+    out["设置页显示\"未识别到数据页\"和比例、尺寸"] = (
+        "当前状态：未识别到数据页（游戏画面比例 4:3，截图 1920×1080）" in text(settings))
+    season_import.report("stored", "已存为待核对（第 30 赛季 全部）", "4:3", 1920, 1080, force=True)
+    status = client.get("/seasons/status").get_json()
+    out[f"状态接口：存下后是 stored，待核对数量照常（{status['state']['stage']}，{status['pending']} 项）"] = (
+        status["state"]["stage"] == "stored" and status["pending"] == 2)
+    season_import.report("page_not_recognized", "未识别到数据页", "4:3", 1920, 1080,
+                         now=datetime.now() - timedelta(seconds=season_import.STATUS_STALE_SECONDS + 1), force=True)
+    status = client.get("/seasons/status").get_json()
+    settings = client.get("/settings").get_data(as_text=True)
+    out[f"状态超过 {season_import.STATUS_STALE_SECONDS} 秒没更新：说\"等待记录程序响应\"（{status['state']['stage']}）"] = (
+        status["state"]["stage"] == "stale" and "当前状态：等待记录程序响应" in text(settings))
     r = client.post("/seasons/import/stop", data={"token": token, "next": "https://example.com/"})
     out["结束录入；next 不是这两页时回到\"赛季\"页面"] = (
         not season_import.active() and r.headers["Location"].endswith("/seasons#season-import"))
+    out["结束录入后状态清空（页面不再显示上一阶段）"] = client.get("/seasons/status").get_json()["state"] is None
 
     html = client.get("/seasons").get_data(as_text=True)
     cards = re.findall(r'<article class="card season-card[^"]*" id="season-(\d+)".*?</article>', html, re.S)

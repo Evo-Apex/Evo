@@ -492,6 +492,7 @@ class SeasonWatcher:
                      + ("，到 Evo 窗口的\"赛季\"页面核对、保存" if self.saved else ""))
         self.on = False
         self._reset()
+        season_import.clear_status()
 
     def update(self, screen, frame, now, in_match):
         """每截一帧调用一次。screen：认出的画面（数据页不在里面，是 None）；in_match：正在对局中。"""
@@ -535,6 +536,22 @@ class SeasonWatcher:
                 and (now - self.feedback_at).total_seconds() < self.STATUS_SECONDS):
             return
         self.feedback_key, self.feedback_at = key, now
+        if state.startswith("等待数据页"):
+            stage = "waiting_page"
+        elif state.startswith("未识别"):
+            stage = "page_not_recognized"
+        elif state.startswith("玩家名"):
+            stage = "owner_mismatch"
+        elif state.startswith("数字稳定中"):
+            stage = "stabilizing"
+        elif state.startswith("0 局") or state.startswith("已存为待核对"):
+            stage = "stored"
+        elif "挡住" in state:
+            stage = "obscured"
+        else:
+            stage = "waiting_page"
+        message = {"未识别页面": "未识别到数据页", "玩家名不匹配": "数据页上的玩家名不是你"}.get(state, state)
+        season_import.report(stage, message, aspect, w, h, now, force=force)
         hint = ""
         if aspect != "4:3" and state.startswith(("等待数据页", "未识别页面")):
             hint = "；如果游戏是 4:3，到设置页把“游戏画面比例”选成 4:3 再试"
@@ -563,6 +580,7 @@ class SeasonWatcher:
         if reading["obscured"]:
             self.last.pop(panel, None)
             self._say(("obscured", key), now, f"数据页（{what}）被鼠标弹出的说明框挡住了，把鼠标移开一点")
+            self._feedback("数据页被说明框挡住，把鼠标移开一点", frame, now)
             return
         values = reading["values"]
         stable = self.last.get(panel) == (key, values)

@@ -10,6 +10,7 @@
 这个文件不加载识别用的库。模板 panel/templates/seasons.html，规则见 docs/面板.md"赛季页"。
 """
 
+from datetime import datetime
 from pathlib import Path
 
 from flask import Blueprint, current_app, flash, g, jsonify, redirect, render_template, request, url_for
@@ -84,11 +85,30 @@ def table_row(row):
             **r, "approx_top5": "top5" in approx or "games" in approx, "player": row["player_name"]}
 
 
+def import_state(active):
+    """录入时记录程序报告的状态（season_import.report 写、面板每 3 秒读一次）。
+    没开时 None；开着但一直没报告，就按“等待数据页”；超过 STATUS_STALE_SECONDS 没更新，说“等待记录程序响应”。"""
+    if not active:
+        return None
+    state = season_import.status()
+    if state is None:
+        return {"stage": "waiting_page", "message": "等待数据页", "game_aspect": "", "screenshot_size": "",
+                "updated_at": None}
+    try:
+        age = (datetime.now() - datetime.fromisoformat(state["updated_at"])).total_seconds()
+    except (KeyError, TypeError, ValueError):
+        age = 0
+    if age > season_import.STATUS_STALE_SECONDS:
+        return {**state, "stage": "stale", "message": "等待记录程序响应"}
+    return state
+
+
 def mode_view():
     """录入模式现在的样子（设置页、"赛季"页面都用）：开没开、还剩几秒、待核对几项、能不能开（演示数据时不能）。"""
     pending = len(_mine(storage.season_rows(_db(), "pending")))
-    return {"active": season_import.active(), "remaining": season_import.remaining(), "minutes": season_import.MINUTES,
-            "pending": pending, "demo": _is_demo()}
+    active = season_import.active()
+    return {"active": active, "remaining": season_import.remaining(), "minutes": season_import.MINUTES,
+            "pending": pending, "demo": _is_demo(), "state": import_state(active)}
 
 
 @bp.app_context_processor
@@ -119,7 +139,8 @@ def page():
 def status():
     """录入模式开着时页面每隔几秒问一次：还剩几秒、待核对几项（多了就刷新页面）。"""
     view = mode_view()
-    return jsonify({"active": view["active"], "remaining": view["remaining"], "pending": view["pending"]})
+    return jsonify({"active": view["active"], "remaining": view["remaining"], "pending": view["pending"],
+                    "state": view["state"]})
 
 
 def _back(anchor=""):
