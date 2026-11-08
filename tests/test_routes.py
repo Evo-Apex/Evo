@@ -3,6 +3,7 @@
 import os
 import atexit
 import shutil
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -103,6 +104,20 @@ def main():
     at_start = routes.point_at_time(segmented, 9000)
     out["时间点正好是下段起点时取下段起点"] = (
         at_start["x"] == .6 and at_start["segment_id"] == 1 and not at_start.get("gap"))
+    single_then_line = [
+        {"elapsed_ms": 0, "x": .1, "y": .2, "confidence": .9, "segment_id": 0},
+        {"elapsed_ms": 5000, "x": .8, "y": .8, "confidence": .9, "segment_id": 1},
+        {"elapsed_ms": 6000, "x": .9, "y": .8, "confidence": .9, "segment_id": 1},
+    ]
+    snapped_single = routes.nearest_on_route(single_then_line, .11, .21)
+    out["只有一个点的 segment 也能吸附（全局比较，不跳到远处线段）"] = (
+        snapped_single is not None and snapped_single["segment_id"] == 0
+        and snapped_single["x"] == .1 and snapped_single["y"] == .2
+        and snapped_single["elapsed_ms"] == 0)
+    after_last = routes.point_at_time(segmented, 15000)
+    out["最后定位点之后的死亡用最后位置并标 stale，不标 gap"] = (
+        after_last["x"] == .62 and after_last["y"] == .6 and after_last["gap"] is False
+        and after_last["stale"] is True and after_last["position_age_ms"] == 4000)
     inferred = routes.infer_evo_event({"evo": 1600, "damage": 50}, {"evo": 1055, "damage": 170})
     out["EVO 剩余值下降量扣除伤害后推测地图事件"] = inferred is not None and inferred["key"] == "harvester"
     out["EVO 升级后的剩余值跳高不会误判固定分值事件"] = (
@@ -125,6 +140,11 @@ def main():
     out["断档里的状态点保留时间但不编造位置"] = (
         len(gap_marks) == 1 and gap_marks[0]["elapsed_ms"] == 6000
         and gap_marks[0]["x"] is None and gap_marks[0]["y"] is None)
+    stale_deaths = recorder._with_states(points, states, [(3500, "成盒")])[1]
+    stale_death = [m for m in stale_deaths if m["kind"] == "death"]
+    out["最后定位点之后的死亡标记仍有坐标"] = (
+        len(stale_death) == 1 and stale_death[0]["x"] is not None and stale_death[0]["y"] is not None
+        and stale_death[0].get("stale") is True and not stale_death[0].get("gap"))
     out["系统状态点按时间排序并生成变化说明"] = (
         [m["elapsed_ms"] for m in marks] == [500, 1500] and "伤害 +120" in marks[1]["label"])
     damage_only = [
@@ -194,7 +214,12 @@ def main():
     response = client.post(f"/matches/{match_id}/route/marks", data={"token": panel_app.app.config["TOKEN"], "x": .2, "y": .2})
     conn = storage.connect(db_path)
     out["点击路线接口新增手动时间点"] = response.status_code == 200 and len(storage.route_marks_of(conn, match_id)) == 3
+    storage.add_route_mark(conn, match_id, {**stale_death[0], "kind": "death", "label": "死亡", "note": None,
+                                            "created_at": "2026-11-06 20:00:02"})
     conn.close()
+    body = client.get(f"/matches/{match_id}/route").get_data(as_text=True)
+    out["最后已知位置的死亡标记照常画在地图上（带 stale 提示）"] = (
+        '"stale": 1' in body and '"kind": "death"' in body and '"x": 0.3' in body)
 
     # 旧数据库（第 10 版，没有 segment_id 和 route_raw_points）打开时自动升级；
     # 老路线照样能读，新路线能同时存简化点、原始点和段号。
@@ -207,6 +232,7 @@ def main():
                                         "processed_at": "2026-11-05 21:00:01"}, points)
     old.execute("PRAGMA user_version = 10")
     old.execute("ALTER TABLE route_points DROP COLUMN segment_id")
+    old.execute("ALTER TABLE route_marks DROP COLUMN stale")
     old.execute("DROP TABLE route_raw_points")
     old.commit()
     old.close()
@@ -214,9 +240,10 @@ def main():
     old_columns = {r[1] for r in old.execute("PRAGMA table_info(route_points)")}
     old_tables = {r[0] for r in old.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     old_points = storage.route_points_of(old, old_match)
-    out["旧数据库可以迁移并打开"] = (
+    out["从第 10 版升级：加段号、原始点表和 stale 列"] = (
         old.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
         and "segment_id" in old_columns and "route_raw_points" in old_tables
+        and "stale" in {r[1] for r in old.execute("PRAGMA table_info(route_marks)")}
         and len(old_points) == 3 and all(p["segment_id"] == 0 for p in old_points))
     saved = routes.simplify(two_segments, .05)
     storage.save_route(old, old_match, {"map_name": "残月", "map_asset": "broken-moon-s31.jpg", "status": "ready",
@@ -230,6 +257,53 @@ def main():
         and [p["segment_id"] for p in raw] == [0, 0, 0, 1, 1, 1]
         and abs(raw[3]["x"] - .6) < 1e-9 and raw[0]["confidence"] == .9)
     old.close()
+
+    # 第 9 版（还没有任何路线表）升级到 11：路线表、段号、原始点、stale 都要一次建好，旧数据不受影响。
+    v9_path = TEMP / "route-v9.db"
+    v9 = storage.connect(v9_path)
+    v9_match = storage.insert_match(v9, {"ended_at": "2026-11-05 21:00:00", "map": "残月"})
+    for table in ("route_marks", "route_points", "route_raw_points", "match_routes"):
+        v9.execute(f"DROP TABLE {table}")
+    v9.execute("PRAGMA user_version = 9")
+    v9.commit()
+    v9.close()
+    shutil.copyfile(v9_path, TEMP / "route-v9-copy.db")
+    v9 = storage.connect(v9_path)
+    v9_tables = {r[0] for r in v9.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    out["从第 9 版升级：建路线表并保留旧对局"] = (
+        v9.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
+        and {"match_routes", "route_points", "route_raw_points", "route_marks"} <= v9_tables
+        and v9.execute("SELECT COUNT(*) FROM matches").fetchone()[0] == 1)
+    storage.save_route(v9, v9_match, {"map_name": "残月", "map_asset": "broken-moon-s31.jpg", "status": "ready",
+                                      "started_at": "2026-11-05 20:40:00", "ended_at": "2026-11-05 21:00:00",
+                                      "coverage": .6, "processed_at": "2026-11-05 21:00:01"},
+                       routes.simplify(two_segments, .05), [stale_death[0]], two_segments)
+    v9_marks = storage.route_marks_of(v9, v9_match)
+    out["从第 9 版升级后能存原始点、段号和 stale 死亡点"] = (
+        len(storage.route_raw_points_of(v9, v9_match)) == 6
+        and [p["segment_id"] for p in storage.route_points_of(v9, v9_match)] == [0, 0, 1, 1]
+        and len(v9_marks) == 1 and v9_marks[0]["stale"] == 1 and v9_marks[0]["kind"] == "death")
+    v9.close()
+
+    # 升级事务失败时整个撤回：版本号、旧表都保持原样，之后还能正常打开。
+    fail_path = TEMP / "route-v9-copy.db"
+    original_migration = storage.MIGRATIONS[11]
+    storage.MIGRATIONS[11] = original_migration + ["INSERT INTO no_such_table DEFAULT VALUES"]
+    failed = False
+    try:
+        storage.connect(fail_path)
+    except sqlite3.OperationalError:
+        failed = True
+    finally:
+        storage.MIGRATIONS[11] = original_migration
+    raw = sqlite3.connect(fail_path)
+    rolled_back = (raw.execute("PRAGMA user_version").fetchone()[0] == 9
+                   and not raw.execute("SELECT name FROM sqlite_master WHERE name = 'route_points'").fetchone())
+    raw.close()
+    reopened = storage.connect(fail_path)
+    out["升级失败会撤回，原数据库还能打开"] = (
+        failed and rolled_back and reopened.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION)
+    reopened.close()
 
     located, recovered = synthetic_matcher()
     out["小地图能配准到预置全地图"] = located is not None and abs(located["x"] - .525) < .04 and abs(located["y"] - .5) < .04

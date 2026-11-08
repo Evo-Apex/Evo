@@ -1058,6 +1058,8 @@ body.route-expanded { overflow: hidden; }
 .route-mark.auto { fill: #ffbf3c; }.route-mark.manual { fill: #52a8ff; }
 .route-mark.kill { fill: var(--accent); }.route-mark.assist { fill: var(--good); }
 .route-mark.death { stroke: #eef1f7; }.route-mark.death path { fill: none; }
+/* 最后已知位置：事件发生在最后一次定位之后，图标照画，只是淡一点 */
+.route-mark.stale { opacity: .72; }
 .route-tip { position: absolute; z-index: 2; display: flex; flex-direction: column; gap: 3px; max-width: 260px; padding: 9px 11px; transform: translate(12px, 12px); border: 1px solid var(--border); border-radius: 6px; background: var(--card); box-shadow: 0 8px 24px rgb(0 0 0 / .35); pointer-events: none; font-size: 12px; }
 .route-tip strong { font-variant-numeric: tabular-nums; }.route-tip span { color: var(--muted); }
 .route-help { margin: 12px 2px 0; color: var(--muted); font-size: 12px; }

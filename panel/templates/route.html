@@ -138,7 +138,12 @@
     var kind = markKind(p);
     if (!kind) return;
     var dot = document.createElementNS(ns, "g");
-    dot.setAttribute("class", "route-mark " + kind);
+    dot.setAttribute("class", "route-mark " + kind + (p.stale ? " stale" : ""));
+    if (p.stale) {
+      var tip = document.createElementNS(ns, "title");
+      tip.textContent = "最后已知位置（这之后没有新的定位点）";
+      dot.appendChild(tip);
+    }
     dot.setAttribute("data-cx", p.x * 1000); dot.setAttribute("data-cy", p.y * 1000);
     var shape;
     if (shapes[kind]) {

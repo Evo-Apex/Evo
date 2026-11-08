@@ -180,6 +180,7 @@ ROUTE_MARK_TABLE = """CREATE TABLE IF NOT EXISTS route_marks (
   participation INTEGER,
   squads_left INTEGER,
   rp_delta INTEGER,
+  stale INTEGER,  -- 1 = 最后已知位置（事件发生在最后一次定位之后），位置仍画出来
   note TEXT,
   created_at TEXT
 )"""
@@ -234,7 +235,8 @@ MIGRATIONS = {
     9: [SEASON_TABLE],  # 2026-11-01 历史赛季：游戏里数据页上每个赛季的合计
     10: [ROUTE_TABLE, ROUTE_POINT_TABLE, ROUTE_MARK_TABLE],  # 行进路线、HUD 时间点和用户标记
     11: [("加列", "route_points", "segment_id", "INTEGER NOT NULL DEFAULT 0"),
-         ROUTE_RAW_POINT_TABLE],  # 2026-11-09 重定位断点：段号 + 原始定位点
+         ("加列", "route_marks", "stale", "INTEGER"),
+         ROUTE_RAW_POINT_TABLE],  # 2026-11-09 重定位断点：段号 + 原始定位点 + 最后已知位置
 }
 
 
@@ -527,7 +529,7 @@ def route_marks_of(conn, match_id):
 
 def add_route_mark(conn, match_id, mark, commit=True):
     """添加自动/手动时间点，返回编号。调用方先把点击位置吸附到路线并补好当时状态。"""
-    keys = ("elapsed_ms", "kind", "label", "confidence", "x", "y", *ROUTE_STATE_FIELDS, "note", "created_at")
+    keys = ("elapsed_ms", "kind", "label", "confidence", "x", "y", *ROUTE_STATE_FIELDS, "stale", "note", "created_at")
     cur = conn.execute(
         f"INSERT INTO route_marks (match_id, {', '.join(keys)}) VALUES (?, {', '.join('?' for _ in keys)})",
         [match_id, *(mark.get(k) for k in keys)],

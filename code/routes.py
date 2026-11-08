@@ -128,13 +128,33 @@ def _simplify_one(points, tolerance):
 
 def nearest_on_route(points, x, y):
     """把地图上的点击位置吸附到最近线段，返回坐标、插值后的时间、置信度和前一点的状态。
-    只吸附同一 segment 内的线段：断点两侧没有画出来的路线，不能把点击插到两段中间。"""
+    只吸附同一 segment 内的线段：断点两侧没有画出来的路线，不能把点击插到两段中间。
+    只有一个点的 segment 也是候选：不能因为别处有线段，就把点击吸到很远的另一段。"""
     if not points:
         return None
-    if len(points) == 1:
-        return {**dict(points[0]), "x": float(points[0]["x"]), "y": float(points[0]["y"]),
-                "segment_id": _segment(points[0])}
     best = None
+
+    def consider(distance, candidate):
+        nonlocal best
+        if best is None or distance < best[0]:
+            best = (distance, candidate)
+
+    for i, point in enumerate(points):
+        before = points[i - 1] if i > 0 else None
+        after = points[i + 1] if i + 1 < len(points) else None
+        alone = (before is None or _segment(before) != _segment(point)) and \
+                (after is None or _segment(after) != _segment(point))
+        if not alone:
+            continue
+        # 这一段只有一个点（前后都不属于同一段）：按“点”参与全局比较。
+        px, py = float(point["x"]), float(point["y"])
+        consider(math.hypot(x - px, y - py), {
+            **dict(point),
+            "x": px,
+            "y": py,
+            "segment_id": _segment(point),
+        })
+
     for a, b in zip(points, points[1:]):
         if _segment(a) != _segment(b):
             continue
@@ -144,28 +164,25 @@ def nearest_on_route(points, x, y):
         u = 0.0 if dx == dy == 0 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)))
         px, py = ax + u * dx, ay + u * dy
         distance = math.hypot(x - px, y - py)
-        if best is None or distance < best[0]:
-            state = {k: a[k] for k in storage.ROUTE_STATE_FIELDS if k in a.keys()}
-            best = (distance, {
-                "x": px,
-                "y": py,
-                "elapsed_ms": round(int(a["elapsed_ms"]) + u * (int(b["elapsed_ms"]) - int(a["elapsed_ms"]))),
-                "confidence": min(float(a["confidence"]), float(b["confidence"])),
-                "segment_id": _segment(a),
-                **state,
-            })
-    if best is not None:
-        return best[1]
-    # 每段都只有一个点：退回到最近的那个点，仍然不跨段插值。
-    point = min(points, key=lambda p: math.hypot(x - float(p["x"]), y - float(p["y"])))
-    return {**dict(point), "x": float(point["x"]), "y": float(point["y"]), "segment_id": _segment(point)}
+        state = {k: a[k] for k in storage.ROUTE_STATE_FIELDS if k in a.keys()}
+        consider(distance, {
+            "x": px,
+            "y": py,
+            "elapsed_ms": round(int(a["elapsed_ms"]) + u * (int(b["elapsed_ms"]) - int(a["elapsed_ms"]))),
+            "confidence": min(float(a["confidence"]), float(b["confidence"])),
+            "segment_id": _segment(a),
+            **state,
+        })
+    return best[1] if best is not None else None
 
 
 def point_at_time(points, elapsed_ms):
     """按时间在线段之间插值坐标；状态取这个时间之前最近一个点。
 
     只插值同一 segment 内的相邻点。时间落在两段之间的空档时，返回上一段最后一个点并标 gap=True：
-    不假装知道玩家在空档里走到了哪里。正好落在下一段第一个点时返回那个点。"""
+    不假装知道玩家在空档里走到了哪里。正好落在下一段第一个点时返回那个点。
+    晚于最后一个定位点时用最后已知位置（stale=True，position_age_ms 是距最后定位的毫秒数）：
+    死亡、击杀常常发生在最后一次采样之后几秒，不能因此把图标藏掉。"""
     if not points:
         return None
     if elapsed_ms <= points[0]["elapsed_ms"]:
@@ -175,14 +192,17 @@ def point_at_time(points, elapsed_ms):
             if _segment(a) != _segment(b):
                 if elapsed_ms == b["elapsed_ms"]:
                     return dict(b)
-                return {**dict(a), "elapsed_ms": elapsed_ms, "gap": True}
+                return {**dict(a), "elapsed_ms": elapsed_ms, "gap": True,
+                        "position_age_ms": elapsed_ms - int(a["elapsed_ms"])}
             span = max(1, int(b["elapsed_ms"]) - int(a["elapsed_ms"]))
             u = max(0.0, min(1.0, (elapsed_ms - int(a["elapsed_ms"])) / span))
             return {**dict(a), "x": float(a["x"]) + u * (float(b["x"]) - float(a["x"])),
                     "y": float(a["y"]) + u * (float(b["y"]) - float(a["y"])), "elapsed_ms": elapsed_ms,
                     "confidence": min(float(a["confidence"]), float(b["confidence"]))}
     last = points[-1]
-    return {**dict(last), "elapsed_ms": elapsed_ms, "gap": elapsed_ms > last["elapsed_ms"]}
+    age = max(0, int(elapsed_ms) - int(last["elapsed_ms"]))
+    return {**dict(last), "elapsed_ms": elapsed_ms, "gap": False,
+            "stale": age > 0, "position_age_ms": age}
 
 
 def route_step_ok(previous, current, cfg):
