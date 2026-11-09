@@ -246,27 +246,60 @@ def write_rate_checks():
                              now + timedelta(milliseconds=1200))
         season_import.report("page_not_recognized", "未识别到数据页", "4:3", 1920, 1080,
                              now + timedelta(seconds=2, milliseconds=100))
-    out[f"普通状态至少隔 2 秒：2.1 秒里只写 2 次（{[(v['stage'], v['updated_at']) for _, v in writes]}）"] = (
-        len(writes) == 2 and writes[1][1]["stage"] == "owner_mismatch")
+    out[f"普通状态至少隔 2 秒：2.1 秒时写的是当前状态（{[(v['stage'], v['updated_at']) for _, v in writes]}）"] = (
+        len(writes) == 2 and writes[1][1]["stage"] == "page_not_recognized")
+
+    # R04：A@0 → B@0.5 → A@2.1 → A@10.1。回到 A 以后不能把中间过期的 B 补写出去。
+    writes = []
+    with mock.patch.object(season_import.app_settings, "set_value", side_effect=lambda k, v: writes.append((k, v))):
+        season_import._last_report, season_import._pending = None, None
+        season_import.report("waiting_page", "等待数据页", "4:3", 1920, 1080, now)
+        season_import.report("page_not_recognized", "未识别到数据页", "4:3", 1920, 1080,
+                             now + timedelta(milliseconds=500))
+        season_import.report("waiting_page", "等待数据页", "4:3", 1920, 1080,
+                             now + timedelta(seconds=2, milliseconds=100))
+        season_import.report("waiting_page", "等待数据页", "4:3", 1920, 1080,
+                             now + timedelta(seconds=10, milliseconds=100))
+    out[f"状态回到上一次的值：不补写中间过期的 B（{[(v['stage'], v['updated_at']) for _, v in writes]}）"] = (
+        [v["stage"] for _, v in writes] == ["waiting_page", "waiting_page"]
+        and writes[-1][1]["updated_at"] == (now + timedelta(seconds=10, milliseconds=100)).isoformat(timespec="seconds"))
 
     def run(seconds):
         writes = []
+        log.clear()
         with mock.patch.object(season_import.app_settings, "set_value", side_effect=lambda k, v: writes.append((k, v))):
             season_import._last_report, season_import._pending = None, None
             watcher.status_candidates = {}
+            watcher.feedback_key, watcher.feedback_at = None, None
             frames = seconds * 60
             for i in range(frames):
                 at = now + timedelta(seconds=i / 60)
                 watcher._feedback("数字稳定中（第 30 赛季 全部）", frame, at)
                 watcher._feedback("数字稳定中（生涯合计）", frame, at)
                 watcher._flush_status(at)
-        return len(writes), frames
+        logs = len([line for line in log if "录入历史赛季数据：" in line])
+        return len(writes), logs, frames
 
-    short, short_frames = run(2)
-    long, long_frames = run(10)
-    out[f"10 秒 600 帧来回切换：只写 {long} 次（不是 {long_frames} 次），2 秒写 {short} 次"] = (
+    short, short_logs, short_frames = run(2)
+    long, long_logs, long_frames = run(10)
+    out[f"10 秒 600 帧来回切换：只写 {long} 次、只打 {long_logs} 行（不是各 {long_frames} 次），2 秒写 {short} 次、{short_logs} 行"] = (
         long <= 6 and long <= short + 4 and long < long_frames / 50)
+    out[f"日志也限频：10 秒 {long_logs} 行，不随 {long_frames} 帧线性增长"] = (
+        long_logs <= 6 and long_logs < long_frames / 50)
     out["写盘次数不随帧数线性增长：帧数 5 倍，写盘不到 4 倍"] = long < short * 4
+
+    # 同一帧 season/career 都存下：日志合成一条，设置文件也只写一次。
+    log.clear()
+    writes = []
+    with mock.patch.object(season_import.app_settings, "set_value", side_effect=lambda k, v: writes.append((k, v))):
+        season_import._last_report, season_import._pending = None, None
+        watcher.status_candidates = {}
+        watcher._feedback("已存为待核对（第 30 赛季 全部）", frame, now, force=True)
+        watcher._feedback("已存为待核对（生涯合计）", frame, now, force=True)
+        watcher._flush_status(now)
+    lines = [line for line in log if "录入历史赛季数据：" in line]
+    out[f"同一帧两个已存：状态日志合成一条、设置只写一次（{len(lines)} 行，{len(writes)} 次）"] = (
+        len(lines) == 1 and "第 30 赛季 全部" in lines[0] and "生涯合计" in lines[0] and len(writes) == 1)
 
     conn.close()
     season_import._last_report, season_import._pending = None, None

@@ -475,7 +475,8 @@ class SeasonWatcher:
         self.misses = 0  # 连续多少帧没认出数据页
         self.feedback_key = None  # 上一次状态提示的内容（一样就不重复说）
         self.feedback_at = None
-        self.status_candidates = {}  # 这一帧出现过的状态：stage → 数据；帧末只提交优先级最高的一个
+        self.status_candidates = {}  # 这一帧出现过的状态：stage → {states, messages, ...}；帧末只提交最高优先级
+        self.stored_logs = []  # 这一帧存下的项：帧末合并成一行日志，避免 season/career 各写一行
 
     def check_mode(self, now):
         """看一眼设置里录入模式开没开（记录程序每隔几秒调用一次，和"游戏语言"一样）。"""
@@ -504,6 +505,7 @@ class SeasonWatcher:
         这一帧里 season/career 两栏、稳定/存下可能各报一次状态；先收集，帧末只提交优先级最高的一个，
         避免同一帧连续改两次 settings.json。"""
         self.status_candidates = {}
+        self.stored_logs = []
         self.showing = False
         try:
             if not self.on:
@@ -539,9 +541,9 @@ class SeasonWatcher:
             self._feedback(state, frame, now)
 
     def _feedback(self, state, frame, now, force=False):
-        """记下这一帧的状态（比例、截图尺寸），同一状态最多每 STATUS_SECONDS 秒打一行日志。
+        """记下这一帧的状态（比例、截图尺寸），帧末由 _flush_status 只打一行、只写一次。
 
-        写共享设置文件不在这里做：先放进 status_candidates，update 结束时只提交一个最终状态。"""
+        season/career 两栏在同一帧可能各报一次；这里只收集，不立即写日志或设置文件。"""
         h, w = frame.shape[:2]
         aspect = game_aspect.name(layout.game_aspect() or w / h)
         if state.startswith("等待数据页"):
@@ -559,31 +561,40 @@ class SeasonWatcher:
         else:
             stage = "waiting_page"
         message = {"未识别页面": "未识别到数据页", "玩家名不匹配": "数据页上的玩家名不是你"}.get(state, state)
-        previous = self.status_candidates.get(stage)
-        if previous is None or force or not previous["force"]:
-            self.status_candidates[stage] = {"message": message, "aspect": aspect, "width": w,
-                                             "height": h, "force": force}
-        key = (state, w, h, aspect)
-        if (not force and key == self.feedback_key and self.feedback_at is not None
-                and (now - self.feedback_at).total_seconds() < self.STATUS_SECONDS):
-            return
-        self.feedback_key, self.feedback_at = key, now
-        hint = ""
-        if aspect != "4:3" and state.startswith(("等待数据页", "未识别页面")):
-            hint = "；如果游戏是 4:3，到设置页把“游戏画面比例”选成 4:3 再试"
-        self.log(f"[{now:%H:%M:%S}] 录入历史赛季数据：{state}"
-                 f"（游戏画面比例 {aspect}，截图 {w}×{h}）{hint}")
+        item = self.status_candidates.setdefault(stage, {"states": [], "messages": [], "force": False})
+        if state not in item["states"]:
+            item["states"].append(state)
+        if message not in item["messages"]:
+            item["messages"].append(message)
+        item.update(aspect=aspect, width=w, height=h)
+        item["force"] = item["force"] or force
 
     def _flush_status(self, now):
         """这一帧只提交一个最终状态：优先级 stored > owner_mismatch > obscured > stabilizing >
-        page_not_recognized > waiting_page。"""
-        if not self.status_candidates:
-            return
-        stage = max(self.status_candidates, key=lambda s: self.STATUS_PRIORITY.get(s, 0))
-        item = self.status_candidates[stage]
-        season_import.report(stage, item["message"], item["aspect"], item["width"], item["height"],
-                             now, force=item["force"])
-        self.status_candidates = {}
+        page_not_recognized > waiting_page。日志和设置文件都只写胜出的那一条。"""
+        if self.status_candidates:
+            stage = max(self.status_candidates, key=lambda s: self.STATUS_PRIORITY.get(s, 0))
+            item = self.status_candidates.pop(stage)
+            state = "；".join(item["states"])
+            message = "；".join(item["messages"])
+            key = (stage, state, item["width"], item["height"], item["aspect"])
+            if (item["force"] or key != self.feedback_key or self.feedback_at is None
+                    or (now - self.feedback_at).total_seconds() >= self.STATUS_SECONDS):
+                self.feedback_key, self.feedback_at = key, now
+                hint = ""
+                if item["aspect"] != "4:3" and stage in ("waiting_page", "page_not_recognized"):
+                    hint = "；如果游戏是 4:3，到设置页把“游戏画面比例”选成 4:3 再试"
+                self.log(f"[{now:%H:%M:%S}] 录入历史赛季数据：{state}"
+                         f"（游戏画面比例 {item['aspect']}，截图 {item['width']}×{item['height']}）{hint}")
+            season_import.report(stage, message, item["aspect"], item["width"], item["height"],
+                                 now, force=item["force"])
+            self.status_candidates = {}
+        if self.stored_logs:
+            from season_stats import show
+            when = self.stored_logs[0][3]
+            parts = [f"{what}（{show(values, approx)}）" for what, values, approx, _ in self.stored_logs]
+            self.log(f"[{when:%H:%M:%S}] 数据页：" + "；".join(parts) + " 存成待核对")
+            self.stored_logs = []
 
     def _own(self, frame, now):
         """页面上的名字是不是自己（结果留 OWNER_SECONDS 秒）。"""
@@ -628,7 +639,7 @@ class SeasonWatcher:
             "review_note": "\n".join(problems) or None})
         self.stored[key] = reading["values"]
         self.saved += 1
-        self.log(f"[{now:%H:%M:%S}] 数据页：{what} 存成待核对（{show(values, approx)}）")
+        self.stored_logs.append((what, values, approx, now))
         self._feedback(f"已存为待核对（{what}）", frame, now, force=True)
         for p in problems:
             self.log(f"           ⚠ {p}")

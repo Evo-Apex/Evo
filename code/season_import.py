@@ -60,18 +60,22 @@ def report(stage, message, aspect, width, height, now=None, force=False):
     if force:
         _write(key, payload, now)
         return
-    elapsed = (now - _last_report[1]).total_seconds() if _last_report is not None else MIN_WRITE_SECONDS
-    if _last_report is not None and key == _last_report[0] and elapsed < STATUS_SECONDS:
+    if _last_report is None:
+        _write(key, payload, now)
         return
-    if _last_report is not None and elapsed < MIN_WRITE_SECONDS:
-        _pending = (key, payload, now)
-        return
-    if _pending is not None:
-        # 到点了：先把间隔里留下的最新一条写掉；当前这条下一帧还在的话再写。
-        old_key, old_payload, old_at = _pending
-        _write(old_key, old_payload, now)
-        if old_key == key:
+    elapsed = (now - _last_report[1]).total_seconds()
+    same = key == _last_report[0]
+    if same:
+        # 又回到上一次写过的状态：间隔里留下的、和它冲突的旧状态作废，不再补写。
+        _pending = None
+        if elapsed < STATUS_SECONDS:
             return
+        _write(key, payload, now)
+        return
+    if elapsed < MIN_WRITE_SECONDS:
+        # 还没到写盘间隔：只记下“此刻最新”的这一条；下次到点写的是下次调用时的当前状态，
+        # 不把这条已经过期的状态补写出去。
+        _pending = (key, payload, now)
         return
     _write(key, payload, now)
 
