@@ -346,19 +346,31 @@ def draw(report, out_path):
     for point in report.get("confirmed_errors", []):
         x, y = int(point["x"] * 1599), int(point["y"] * 1599)
         d.rectangle((x - 12, y - 12, x + 12, y + 12), outline=(255, 70, 70, 255), width=5)
-    legend = [("原始匹配锚点", (232, 234, 238, 255)),
-              ("P0 候选连接线（按 segment 分色）", SEGMENT_COLORS[0] + (255,)),
-              ("segment 断点（橙圈，不连线）", (240, 156, 62, 255))]
-    crossing_label = ("疑似障碍穿越（橙虚线 + 红叉）" if report.get("crossings_status") == "checked"
-                      else "疑似障碍穿越：未检测（该地图没有掩码）")
-    legend.append((crossing_label, (240, 156, 62, 255)))
+    legend = [("原始匹配锚点", "dot", (232, 234, 238, 255)),
+              ("P0 候选连接线（按 segment 分色）", "line", SEGMENT_COLORS[0] + (255,)),
+              ("segment 断点（橙圈，不连线）", "ring", (240, 156, 62, 255))]
+    if report.get("crossings_status") == "checked":
+        legend.append(("疑似障碍穿越（橙虚线 + 红叉）", "cross", (240, 156, 62, 255)))
+    else:
+        legend.append(("疑似障碍穿越：未检测（该地图没有掩码）", "none", (150, 156, 166, 255)))
     if report.get("confirmed_errors"):
-        legend.append(("人工已确认错误（红框）", (255, 70, 70, 255)))
-    for i, (text, color) in enumerate(legend):
-        y = 1320 + i * 40
-        d.rectangle((36, y + 10, 80, y + 28), fill=color)
+        legend.append(("人工已确认错误（红框）", "error", (255, 70, 70, 255)))
+    for i, (text, kind, color) in enumerate(legend):
+        y = 1288 + i * 38
+        if kind == "dot":
+            d.ellipse((44, y + 9, 60, y + 25), fill=color)
+        elif kind == "line":
+            d.line((36, y + 17, 68, y + 17), fill=color, width=6)
+        elif kind == "ring":
+            d.ellipse((40, y + 7, 64, y + 27), outline=color, width=4)
+        elif kind == "cross":
+            d.line((36, y + 17, 68, y + 17), fill=color, width=3)
+            d.line((45, y + 8, 59, y + 26), fill=(255, 90, 90, 255), width=3)
+            d.line((45, y + 26, 59, y + 8), fill=(255, 90, 90, 255), width=3)
+        elif kind == "error":
+            d.rectangle((40, y + 8, 64, y + 26), outline=color, width=4)
         d.text((94, y), text, font=_font(20), fill=(235, 238, 244))
-    d.text((36, 1500), "P0 候选连接线不是确认轨迹；同段内仍可能抄近路，掩码未达到生产标准。",
+    d.text((36, 1508), "P0 候选连接线不是确认轨迹；同段内仍可能抄近路，掩码未达到生产标准。",
            font=_font(19), fill=(190, 196, 206))
     base.save(out_path)
     return out_path
