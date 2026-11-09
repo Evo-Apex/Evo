@@ -25,6 +25,7 @@ import tempfile
 from pathlib import Path
 
 FROZEN = getattr(sys, "frozen", False)  # 是不是打包后的 Evo.exe
+STARTUP_WARNINGS = []  # 启动早期（日志还没准备好）遇到的非致命问题，setup_logging 时补写进日志
 APP_DIR = Path(sys._MEIPASS) if FROZEN else Path(__file__).resolve().parent.parent  # 源码：本文件在 code/ 里，上一层是项目文件夹
 EXE_DIR = Path(sys.executable).resolve().parent if FROZEN else APP_DIR  # Evo.exe 所在的文件夹
 DATA_NAME = "Evo Tracker Data"  # 程序旁边的默认位置、设置页里自己选的位置，都叫这个名字（2026-10-20 用户决定）
@@ -46,11 +47,32 @@ def has_data(folder):
     return (Path(folder) / "data" / "evo.db").is_file()
 
 
-def _in_temp(path):
+def _warn(message):
+    """启动早期没有日志可写：记住，setup_logging 时补写；同时打到 stderr（源码运行能看见）。"""
+    STARTUP_WARNINGS.append(message)
     try:
-        Path(path).resolve().relative_to(Path(tempfile.gettempdir()).resolve())
+        print(message, file=sys.stderr)
+    except Exception:  # noqa: BLE001 没有 stderr 的打包环境
+        pass
+
+
+def _tempdir():
+    """系统的临时文件夹；TEMP/TMP 被指到不存在或没权限的地方时返回 None，绝不让启动崩掉。"""
+    try:
+        return Path(tempfile.gettempdir())
+    except OSError as e:
+        _warn(f"拿不到临时目录（TEMP/TMP 可能指到了不存在或不能写的位置）：{e}")
+        return None
+
+
+def _in_temp(path):
+    temp = _tempdir()
+    if temp is None:
+        return False
+    try:
+        Path(path).resolve().relative_to(temp.resolve())
         return True
-    except ValueError:
+    except (ValueError, OSError):
         return False
 
 
@@ -117,7 +139,13 @@ def resolve_data_dir(environ=None, frozen=FROZEN, exe_dir=EXE_DIR, local_dir=LOC
     sibling = Path(exe_dir).parent / DATA_NAME
     if writable(sibling):
         return sibling, "default"
-    return Path(tempfile.gettempdir()) / DATA_NAME, "temp"
+    temp = _tempdir()
+    if temp is not None:
+        return temp / DATA_NAME, "temp"
+    # 连临时目录都拿不到：用用户主文件夹兜底；绝不让 import paths 抛异常，否则 Evo 根本启动不了
+    home = Path(os.environ.get("USERPROFILE") or Path.cwd())
+    _warn(f"没有可用的临时目录，数据文件夹改用 {home / DATA_NAME}")
+    return home / DATA_NAME, "temp"
 
 
 DATA_DIR, DATA_SOURCE = resolve_data_dir()

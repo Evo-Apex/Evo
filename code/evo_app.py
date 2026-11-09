@@ -77,6 +77,7 @@ import webview2  # noqa: E402
 from game_detect import GAME_PROCESSES, game_running  # noqa: E402
 from icons import base_icon  # noqa: E402
 from paths import ASSETS_DIR, CAPTURES_DIR, DATA_DIR, DATA_SOURCE, DB_PATH, FROZEN, LOG_DIR  # noqa: E402
+import paths  # noqa: E402
 
 APP_NAME = "Evo"
 # 同一个数据文件夹只能运行一个 Evo（防止同一局被记两遍）；数据文件夹不同（比如测试用的临时文件夹）互不影响
@@ -102,6 +103,8 @@ def setup_logging():
         logger.addHandler(handler)
     if sys.stdout is not None:  # 用源码运行时同时打印到终端；打包后没有终端
         logger.addHandler(logging.StreamHandler(sys.stdout))
+    for warning in paths.STARTUP_WARNINGS:  # import paths 时日志还没准备好，现在补写
+        logger.warning(warning)
     return logger
 
 

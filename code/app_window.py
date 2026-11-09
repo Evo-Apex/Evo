@@ -13,6 +13,7 @@
 import base64
 import ctypes
 import sys
+import tempfile
 import threading
 from ctypes import wintypes
 from datetime import datetime
@@ -21,6 +22,7 @@ from urllib.parse import urlsplit
 
 import webview
 
+import paths
 import storage
 from paths import DATA_DIR, LOG_DIR
 
@@ -247,6 +249,20 @@ def _watch_focus(api, focus):
             return
 
 
+def _webview_storage():
+    """WebView2 的缓存目录：先用数据文件夹里的 webview；这里不能写时退到临时目录，绝不因权限问题改用浏览器。"""
+    folder = DATA_DIR / "webview"
+    if paths.writable(folder):
+        return folder
+    temp = paths._tempdir()
+    if temp is not None:
+        fallback = temp / "evo-webview"
+        if paths.writable(fallback):
+            paths._warn(f"数据文件夹里的 WebView2 缓存目录不能写（{folder}），改用 {fallback}")
+            return fallback
+    raise RuntimeError(f"WebView2 缓存目录不能写：{folder}")
+
+
 def run(url, focus=None):
     """打开 Evo 窗口，直到窗口关闭才返回。focus：托盘程序用来"把窗口调到最前"的信号（multiprocessing.Event）。"""
     # 再确认一次 pywebview 用的是 WebView2：它找不到 WebView2 时会悄悄改用 IE 内核，面板会乱成一堆文字（见 webview2.py）。
@@ -255,6 +271,7 @@ def run(url, focus=None):
 
     if winforms.renderer != "edgechromium":
         raise RuntimeError(f"没有可用的 WebView2，pywebview 要改用 {winforms.renderer}")
+    storage_path = _webview_storage()
     webview.settings["ALLOW_DOWNLOADS"] = True  # 导出 CSV
     api = WindowApi()
     window = webview.create_window(
@@ -271,7 +288,7 @@ def run(url, focus=None):
     window.events.shown += shown
     if focus is not None:
         threading.Thread(target=_watch_focus, args=(api, focus), name="focus", daemon=True).start()
-    webview.start(gui="edgechromium", private_mode=False, storage_path=str(DATA_DIR / "webview"),
+    webview.start(gui="edgechromium", private_mode=False, storage_path=str(storage_path),
                   user_agent=USER_AGENT)
 
 

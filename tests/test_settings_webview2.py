@@ -149,7 +149,11 @@ def main():
                 window.destroy()
             except Exception:  # noqa: BLE001
                 pass
-        shutil.rmtree(tmp, ignore_errors=True)
+        deadline = time.monotonic() + 5  # WebView2 的子进程可能晚一点放开文件，重试几次
+        while tmp.exists() and time.monotonic() < deadline:
+            shutil.rmtree(tmp, ignore_errors=True)
+            if tmp.exists():
+                time.sleep(0.1)
 
     expected = ["external_called", "page_stayed", "external_failure_prompt", "partner_top_open", "partner_close",
                 "partner_card_open", "partner_esc", "partner_backdrop", "support_1", "support_2", "support_3",
