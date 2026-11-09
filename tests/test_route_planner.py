@@ -60,7 +60,7 @@ def u_shape_checks():
     mask[20:92, 46:51] = False
     mask[20:92, 65:70] = False
     mask[86:92, 46:70] = False
-    result = route_planner.plan_segment(mask, (0.48, 0.72), (0.85, 0.5), max_detour=4.0)
+    result = route_planner.plan_segment(mask, (0.48, 0.68), (0.85, 0.5), max_detour=4.0)
     points = result["points"]
     walls = [(46, 20, 51, 92), (65, 20, 70, 92), (46, 86, 70, 92)]
     out[f"U 型障碍：能从上面绕出去（{result['reason']}, {len(points)} 点）"] = result["status"] == "ok"
@@ -156,10 +156,86 @@ def phase_checks():
     return out
 
 
+def boundary_checks():
+    out = {}
+    mask = np.ones((100, 100), dtype=bool)
+    # 斜穿一个只有对角相邻的缝：两个正交格都堵住，不能切角。
+    mask[49, 50] = False
+    mask[50, 49] = False
+    out["切角：两个正交格都堵时斜线不可见"] = not route_planner._visible(mask, 49, 49, 51, 51)
+
+    # L 型墙：沿墙绕行，抽稀后也不能从墙角的单侧缝隙斜穿。
+    mask = np.ones((100, 100), dtype=bool)
+    mask[20:80, 60:62] = False
+    mask[78:80, 30:60] = False
+    result = route_planner.plan_segment(mask, (0.3, 0.5), (0.8, 0.6), max_detour=4.0)
+    out[f"L 型墙：能绕过、抽稀后不切角（{result['reason']}，{len(result['points'])} 点）"] = (
+        result["status"] == "ok" and _clear(mask, result["points"]))
+    return out
+
+
+def snap_checks():
+    out = {}
+    mask = np.ones((60, 60), dtype=bool)
+    mask[25:36, 25:36] = False
+    inside = {"x": 29 / 59, "y": 29 / 59, "elapsed_ms": 0, "confidence": 0.9, "segment_id": 0}
+    after = {"x": 0.9, "y": 0.9, "elapsed_ms": 3000, "confidence": 0.8, "segment_id": 0}
+    result = route_planner.plan_segment(mask, (inside["x"], inside["y"]), (after["x"], after["y"]))
+    out[f"锚点在障碍里：整对返回 uncertain，不丢原点（{result['reason']}）"] = (
+        result["status"] == "uncertain" and result["reason"].startswith("锚点在硬障碍内"))
+    legs = route_planner.route_with_mask([inside, after], mask)
+    points = legs[0]["points"]
+    out["锚点在障碍里：原始锚点保留、只标这一条边不确定"] = (
+        len(points) == 2 and points[0]["x"] == inside["x"] and points[0]["y"] == inside["y"]
+        and points[1].get("uncertain_before") and legs[0]["uncertain_edges"] == [1])
+    return out
+
+
+def uncertain_edge_checks():
+    out = {}
+    mask = np.ones((80, 80), dtype=bool)
+    mask[30:50, 40:42] = False
+    anchors = [
+        {"x": 0.1, "y": 0.1, "elapsed_ms": 0, "confidence": 1, "segment_id": 0},
+        {"x": 0.2, "y": 0.2, "elapsed_ms": 1000, "confidence": 1, "segment_id": 0},
+        {"x": 41 / 79, "y": 0.5, "elapsed_ms": 2000, "confidence": 1, "segment_id": 0},  # 在墙里
+        {"x": 0.8, "y": 0.8, "elapsed_ms": 3000, "confidence": 1, "segment_id": 0},
+    ]
+    leg = route_planner.route_with_mask(anchors, mask)[0]
+    out["不确定按相邻锚点对记：前面成功的边不跟着标 uncertain"] = (
+        not leg["points"][1].get("uncertain_before") and leg["uncertain_edges"] == [2, 3])
+    out["不确定边数等于失败的相邻对，不是整段一个布尔值"] = len(leg["uncertain_edges"]) == 2
+    return out
+
+
+def time_thinning_checks():
+    out = {}
+    points = [(i / 10, i / 10) for i in range(10)]
+    timed = route_planner._route_points(points, 0, 3, 1.0)
+    times = [p["elapsed_ms"] for p in timed]
+    out[f"时间不够时先抽稀：10 个点放进 3 毫秒（{len(timed)} 点，{times}）"] = (
+        len(timed) <= 4 and times[0] == 0 and times[-1] == 3
+        and all(a < b for a, b in zip(times, times[1:])))
+    out["时间抽稀：中间点不超过终点时间"] = all(0 <= t <= 3 for t in times)
+    return out
+
+
+def mask_semantics_checks():
+    out = {}
+    import tempfile
+    import cv2
+    path = Path(tempfile.mkdtemp(prefix="evo-r04-mask-")) / "m.png"
+    cv2.imwrite(str(path), np.array([[0, 255]], dtype=np.uint8))
+    mask = route_planner.load_mask(path)
+    out["掩码语义：255=可走，0=硬障碍（和 JSON、证据图一致）"] = bool(mask[0, 1]) and not mask[0, 0]
+    return out
+
+
 def main():
     checks = {**rectangle_checks(), **u_shape_checks(), **no_path_checks(), **limit_checks(),
               **time_checks(), **segment_checks(), **storm_mask_checks(),
-              **visibility_checks(), **phase_checks()}
+              **visibility_checks(), **phase_checks(), **boundary_checks(), **snap_checks(),
+              **uncertain_edge_checks(), **time_thinning_checks(), **mask_semantics_checks()}
     for name, ok in checks.items():
         print(("  ✅ " if ok else "  ❌ ") + name)
     bad = sum(not ok for ok in checks.values())

@@ -58,7 +58,7 @@ def _visible(mask, ax, ay, bx, by):
             y += sy
         if not mask[y, x]:
             return False
-        if x != ox and y != oy and not (mask[oy, x] or mask[y, ox]):
+        if x != ox and y != oy and not (mask[oy, x] and mask[y, ox]):
             return False
     return True
 
@@ -107,6 +107,7 @@ def plan_segment(mask, start, goal, *, max_nodes=30000, max_seconds=0.35, max_de
     h, w = mask.shape
     sx, sy = _n(start[0], w), _n(start[1], h)
     gx, gy = _n(goal[0], w), _n(goal[1], h)
+    blocked_start, blocked_goal = not mask[sy, sx], not mask[gy, gx]
     snapped_start = _snap(mask, sx, sy, snap_px)
     snapped_goal = _snap(mask, gx, gy, snap_px)
     if snapped_start is None or snapped_goal is None:
@@ -114,6 +115,11 @@ def plan_segment(mask, start, goal, *, max_nodes=30000, max_seconds=0.35, max_de
                 "reason": "端点附近没有可通行像素"}
     sx, sy = snapped_start
     gx, gy = snapped_goal
+    if blocked_start or blocked_goal:
+        # 原始锚点在障碍里：观测点保留给调用方，绝不能用确定实线连接吸附点。
+        return {"status": "uncertain", "points": [], "nodes": 0, "seconds": 0.0, "length": 0.0,
+                "reason": "锚点在硬障碍内（已吸附，不画确定线）",
+                "snap_start": snapped_start, "snap_goal": snapped_goal}
     straight = math.hypot(gx - sx, gy - sy)
     if straight <= 1:
         return {"status": "ok", "points": [(sx / (w - 1), sy / (h - 1))], "nodes": 0,
@@ -146,8 +152,8 @@ def plan_segment(mask, start, goal, *, max_nodes=30000, max_seconds=0.35, max_de
             nx, ny = x + dx, y + dy
             if not (0 <= nx < w and 0 <= ny < h) or not mask[ny, nx]:
                 continue
-            if dx and dy and not (mask[y, nx] or mask[ny, x]):
-                continue  # 不在两个障碍之间斜穿；一侧可走就允许通过
+            if dx and dy and not (mask[y, nx] and mask[ny, x]):
+                continue  # 两个相邻正交格都必须可走，禁止贴着单侧障碍切角
             new_cost = used + step
             if new_cost >= cost.get((nx, ny), float("inf")):
                 continue
@@ -173,7 +179,24 @@ def plan_segment(mask, start, goal, *, max_nodes=30000, max_seconds=0.35, max_de
 
 
 def _route_points(points, started, ended, confidence):
-    """按累计路径长度分配时间，保证时间严格递增；两端用锚点自己的时间。"""
+    """按累计路径长度分配时间，保证时间严格递增；两端用锚点自己的时间。
+
+    可用毫秒数不够容纳所有点时，先按位置均匀抽稀（保留首尾），绝不靠 last+1 把终点往后推。"""
+    started, ended = int(started), int(ended)
+    if len(points) > 1 and ended <= started:
+        ended = started + 1
+    if len(points) > 1:
+        slots = ended - started + 1
+        if len(points) > slots:
+            if slots <= 1:
+                points = [points[-1]]
+            else:
+                picked = []
+                for i in range(slots):
+                    index = round(i * (len(points) - 1) / (slots - 1))
+                    if not picked or index != picked[-1]:
+                        picked.append(index)
+                points = [points[i] for i in picked]
     if len(points) == 1:
         return [{"x": points[0][0], "y": points[0][1], "elapsed_ms": int(started),
                  "confidence": confidence}]
@@ -182,14 +205,15 @@ def _route_points(points, started, ended, confidence):
         lengths.append(lengths[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
     total = lengths[-1] or 1.0
     out = []
-    last = int(started) - 1
+    last = started - 1
     for i, point in enumerate(points):
         if i == 0:
-            at = int(started)
+            at = started
         elif i == len(points) - 1:
-            at = int(ended)
+            at = ended
         else:
             at = int(round(started + (ended - started) * lengths[i] / total))
+            at = min(max(at, started + 1), ended - 1)
         at = max(at, last + 1)
         last = at
         out.append({"x": point[0], "y": point[1], "elapsed_ms": at, "confidence": confidence})
@@ -207,21 +231,29 @@ def route_with_mask(anchors, mask, *, max_nodes=30000, max_seconds=0.35, max_det
     if not anchors:
         return legs
     current = {"segment_id": anchors[0].get("segment_id", 0), "points": [dict(anchors[0])],
-               "uncertain": False, "reason": ""}
+               "uncertain": False, "uncertain_edges": [], "snaps": [], "reason": ""}
     current["points"][0].setdefault("confidence", 0.0)
     for before, after in zip(anchors, anchors[1:]):
         segment = after.get("segment_id", 0)
         if segment != before.get("segment_id", 0):
             legs.append(current)
-            current = {"segment_id": segment, "points": [dict(after)], "uncertain": False, "reason": ""}
+            current = {"segment_id": segment, "points": [dict(after)], "uncertain": False,
+                       "uncertain_edges": [], "snaps": [], "reason": ""}
             continue
         planned = plan_segment(mask, (before["x"], before["y"]), (after["x"], after["y"]),
                                max_nodes=max_nodes, max_seconds=max_seconds, max_detour=max_detour,
                                snap_px=snap_px)
         if planned["status"] != "ok":
-            current["points"].append(dict(after))
+            # 只标记这一对相邻锚点；后面的区间仍可单独规划，不把整段都当成不确定。
+            point = {**dict(after), "uncertain_before": True, "uncertain_reason": planned["reason"]}
+            current["points"].append(point)
+            current["uncertain_edges"].append(len(current["points"]) - 1)
             current["uncertain"] = True
             current["reason"] = planned["reason"]
+            if planned.get("snap_start") or planned.get("snap_goal"):
+                current["snaps"].append({"to": after["elapsed_ms"],
+                                         "start": planned.get("snap_start"),
+                                         "goal": planned.get("snap_goal")})
             continue
         confidence = min(float(before.get("confidence", 0)), float(after.get("confidence", 0)))
         timed = _route_points(planned["points"], before["elapsed_ms"], after["elapsed_ms"], confidence)
