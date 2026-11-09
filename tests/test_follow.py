@@ -96,6 +96,7 @@ def main():
     checks.update(external_link_checks(client))
     checks.update(window_api_checks())
     checks.update(webview_cache_checks())
+    checks.update(explorer_dll_checks())
     js_checks, js_skip = script_behaviour_checks(client)
     checks.update(js_checks)
     if js_skip:
@@ -293,6 +294,136 @@ def webview_cache_checks():
         "WebView2 临时缓存：名字是 evo-webview-12位十六进制": all(
             re.fullmatch(r"evo-webview-[0-9a-f]{12}", n) for n in names),
     }
+
+
+def explorer_dll_checks():
+    """explorer.exe 之前清空 SetDllDirectoryW，之后恢复；并给子进程干净的 PATH。"""
+    import threading
+    import time
+
+    checks = {}
+    explorer = Path(os.environ.get("WINDIR") or r"C:\Windows") / "explorer.exe"
+    url = "https://example.com/a?b=1&c=2"
+
+    events = []
+
+    class FakePopen:
+        def __init__(self, args, **kwargs):
+            events.append(("popen", args, kwargs))
+
+    def fake_get():
+        events.append("get")
+        return r"C:\bundle\_internal"
+
+    def fake_set(path):
+        events.append(("set", path))
+
+    with mock.patch.object(app_window, "_get_dll_directory", side_effect=fake_get), \
+            mock.patch.object(app_window, "_set_dll_directory", side_effect=fake_set), \
+            mock.patch.object(app_window, "_explorer_env", return_value={"PATH": "clean"}), \
+            mock.patch("subprocess.Popen", FakePopen):
+        app_window._explorer_open(url)
+    checks["explorer：先清空 DLL 目录，再 Popen，最后恢复"] = (
+        [e[0] if isinstance(e, tuple) else e for e in events] == ["get", "set", "popen", "set"]
+        and events[1][1] is None and events[3][1] == r"C:\bundle\_internal"
+        and events[2][1][0] == str(explorer) and events[2][1][1] == url
+        and events[2][2]["shell"] is False)
+
+    events.clear()
+
+    class BoomPopen:
+        def __init__(self, *a, **k):
+            events.append("popen")
+            raise OSError(2, "boom")
+
+    with mock.patch.object(app_window, "_get_dll_directory", side_effect=fake_get), \
+            mock.patch.object(app_window, "_set_dll_directory", side_effect=fake_set), \
+            mock.patch.object(app_window, "_explorer_env", return_value={}), \
+            mock.patch("subprocess.Popen", BoomPopen):
+        try:
+            app_window._explorer_open(url)
+            raised = False
+        except OSError:
+            raised = True
+    checks["explorer：Popen 抛异常也恢复 DLL 目录"] = (
+        raised and events[-1] == ("set", r"C:\bundle\_internal"))
+
+    events.clear()
+    with mock.patch.object(app_window, "_get_dll_directory", side_effect=OSError(5, "get failed")), \
+            mock.patch.object(app_window, "_set_dll_directory", side_effect=fake_set), \
+            mock.patch("subprocess.Popen", FakePopen):
+        try:
+            app_window._explorer_open(url)
+            raised = False
+        except OSError as exc:
+            raised = exc.errno == 5
+    checks["explorer：读不到 DLL 目录就报错，不启动"] = (
+        raised and not any(isinstance(e, tuple) and e[0] == "popen" for e in events))
+
+    events.clear()
+
+    def fail_clear(path):
+        events.append(("set", path))
+        if path is None:
+            raise OSError(5, "clear failed")
+
+    with mock.patch.object(app_window, "_get_dll_directory", side_effect=fake_get), \
+            mock.patch.object(app_window, "_set_dll_directory", side_effect=fail_clear), \
+            mock.patch("subprocess.Popen", FakePopen):
+        try:
+            app_window._explorer_open(url)
+            raised = False
+        except OSError:
+            raised = True
+    checks["explorer：清空 DLL 目录失败就报错，不启动"] = (
+        raised and not any(isinstance(e, tuple) and e[0] == "popen" for e in events))
+
+    order = []
+
+    def slow_set(path):
+        order.append(("set", path))
+        time.sleep(0.03)
+
+    def slow_popen(*a, **k):
+        order.append("popen")
+
+    def worker():
+        app_window._explorer_open(url)
+
+    real_get = app_window._get_dll_directory
+    real_set = app_window._set_dll_directory
+    app_window._get_dll_directory = lambda: "old"
+    app_window._set_dll_directory = slow_set
+    try:
+        with mock.patch("subprocess.Popen", slow_popen):
+            threads = [threading.Thread(target=worker) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+    finally:
+        app_window._get_dll_directory = real_get
+        app_window._set_dll_directory = real_set
+    checks["explorer：两个线程不会交错改 DLL 目录"] = (
+        [x[1] if isinstance(x, tuple) else x for x in order] ==
+        [None, "popen", "old", None, "popen", "old"])
+
+    clean_env = {
+        "PATH": r"C:\bundle\_internal;C:\bundle\_internal\lib;C:\Windows\System32;C:\Tools",
+        "TEMP": r"C:\Temp", "TMP": r"C:\Temp", "WINDIR": r"C:\Windows",
+        "SystemRoot": r"C:\Windows", "USERPROFILE": r"C:\Users\tester",
+    }
+    original_path = os.environ.get("PATH")
+    with mock.patch.dict(os.environ, clean_env, clear=True), \
+            mock.patch.object(app_window.sys, "_MEIPASS", r"C:\bundle\_internal", create=True):
+        env = app_window._explorer_env()
+    env_upper = {k.upper(): v for k, v in env.items()}
+    checks["explorer 环境：去掉 _MEIPASS/_internal 的 PATH 项"] = (
+        env["PATH"].split(os.pathsep) == [r"C:\Windows\System32", r"C:\Tools"])
+    checks["explorer 环境：TEMP/TMP/WINDIR/SystemRoot 都保留"] = all(
+        env_upper.get(k.upper()) == clean_env[k] for k in ("TEMP", "TMP", "WINDIR", "SystemRoot", "USERPROFILE"))
+    checks["explorer 环境：不修改 Evo 自己的环境"] = os.environ.get("PATH") == original_path
+    return checks
 
 
 def script_behaviour_checks(client):

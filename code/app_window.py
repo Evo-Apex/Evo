@@ -43,6 +43,13 @@ _shell32 = ctypes.WinDLL("shell32", use_last_error=True)
 _shell32.ShellExecuteW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR,
                                    wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_int]
 _shell32.ShellExecuteW.restype = wintypes.HINSTANCE
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel32.GetDllDirectoryW.argtypes = [wintypes.DWORD, wintypes.LPWSTR]
+_kernel32.GetDllDirectoryW.restype = wintypes.DWORD
+_kernel32.SetDllDirectoryW.argtypes = [wintypes.LPCWSTR]
+_kernel32.SetDllDirectoryW.restype = wintypes.BOOL
+# SetDllDirectoryW 是进程级状态；读取、清空、Popen、恢复必须整体串行，否则两个同时点击会互相踩。
+_DLL_LOCK = threading.Lock()
 SHELL_EXECUTE_ERRORS = {
     0: "内存不足",
     2: "找不到文件",
@@ -77,22 +84,90 @@ def _shell_execute(url):
     return int(result or 0)
 
 
+def _get_dll_directory():
+    """读取当前进程的 SetDllDirectoryW 值；空字符串表示没有设置。"""
+    ctypes.set_last_error(0)
+    need = _kernel32.GetDllDirectoryW(0, None)
+    if need == 0:
+        error = ctypes.get_last_error()
+        if error:
+            raise OSError(error, "GetDllDirectoryW 读取失败")
+        return ""
+    buffer = ctypes.create_unicode_buffer(need + 1)
+    ctypes.set_last_error(0)
+    got = _kernel32.GetDllDirectoryW(need + 1, buffer)
+    if got == 0 and ctypes.get_last_error():
+        raise OSError(ctypes.get_last_error(), "GetDllDirectoryW 读取失败")
+    return buffer.value
+
+
+def _set_dll_directory(path):
+    """设置 DLL 搜索目录；None 恢复 Windows 标准搜索规则。失败必须报 WinError。"""
+    if not _kernel32.SetDllDirectoryW(path):
+        error = ctypes.get_last_error()
+        raise OSError(error, f"SetDllDirectoryW({path!r}) 失败")
+
+
+def _explorer_env():
+    """给 explorer.exe 的干净环境：去掉 PATH 里 PyInstaller 的 _MEIPASS/_internal 项。
+    TEMP/TMP/WINDIR/SystemRoot 等系统变量原样保留；不修改 Evo 自己的 os.environ。"""
+    env = os.environ.copy()
+    roots = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        roots.append(os.path.normcase(os.path.normpath(meipass)))
+    if getattr(sys, "frozen", False):
+        internal = Path(sys.executable).resolve().parent / "_internal"
+        roots.append(os.path.normcase(os.path.normpath(str(internal))))
+    path = env.get("PATH")
+    if path and roots:
+        keep = []
+        for item in path.split(os.pathsep):
+            if not item:
+                continue
+            item_norm = os.path.normcase(os.path.normpath(item))
+            if any(item_norm == root or item_norm.startswith(root + os.sep) for root in roots):
+                continue
+            keep.append(item)
+        env["PATH"] = os.pathsep.join(keep)
+    return env
+
+
 def _explorer_open(url):
     """用独立的 explorer.exe 打开 URL，URL 只作为一个参数传入。
     ShellExecuteW 从 WebView2 的 JS 调用线程发出时，在部分机器上会返回 42 却没有窗口；
-    explorer 是独立的系统进程，不经过 shell，也不会把 URL 拼成命令行。"""
+    explorer 是独立的系统进程，不经过 shell，也不会把 URL 拼成命令行。
+
+    PyInstaller 的 bootloader 用 SetDllDirectoryW 把 DLL 搜索目录指向 _MEIPASS；
+    子进程会继承这个设置，导致 explorer.exe 加载到打包的 DLL 而报 0xc0000142。
+    这里按 PyInstaller 官方文档在 Popen 前 SetDllDirectoryW(None)，Popen 后恢复。"""
     import subprocess
 
     windir = os.environ.get("WINDIR") or r"C:\Windows"
     explorer = Path(windir) / "explorer.exe"
     if not explorer.is_file():
         raise OSError(f"找不到系统文件：{explorer}")
-    _user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
-    subprocess.Popen(
-        [str(explorer), url],
-        shell=False,
-        creationflags=0x08000000,  # CREATE_NO_WINDOW：不闪黑框
-    )
+
+    with _DLL_LOCK:
+        previous = _get_dll_directory()
+        cleared = False
+        try:
+            _set_dll_directory(None)
+            cleared = True
+            _user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
+            subprocess.Popen(
+                [str(explorer), url],
+                shell=False,
+                env=_explorer_env(),
+                creationflags=0x08000000,  # CREATE_NO_WINDOW：不闪黑框
+            )
+        finally:
+            if cleared:
+                try:
+                    _set_dll_directory(previous or None)
+                except OSError as exc:
+                    _external_log(f"恢复 DLL 搜索目录失败：{exc}")
+                    raise
 
 
 class WindowApi:
