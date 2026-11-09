@@ -91,6 +91,14 @@ def resolve_checks():
         out["程序旁边建不了文件夹：用 C 盘"] = paths.resolve_data_dir({}, True, nowhere, local) == (local, "local")
     out["程序在临时文件夹里（在压缩包里直接双击）：用 C 盘，不在临时文件夹旁边放数据"] = \
         paths.resolve_data_dir({}, True, fresh("r/tmpexe/Evo"), local)[1] == "local"
+    # TEMP/TMP 指到不存在或没权限的地方：不能让 import paths / 启动崩掉（R11）
+    paths.STARTUP_WARNINGS.clear()
+    exe2 = fresh("r/no-temp/Evo")
+    with mock.patch.object(paths.tempfile, "gettempdir", side_effect=FileNotFoundError("没有临时目录")):
+        out["拿不到临时目录：_in_temp 安全返回 False，不抛"] = paths._in_temp(ROOT) is False
+        found = paths.resolve_data_dir({}, True, exe2, fresh("r/no-temp/local"))
+        out[f"拿不到临时目录：仍能选出可写的数据文件夹（{found[1]}）"] = found[1] == "default" and found[0].is_dir()
+        out["拿不到临时目录：写清楚启动警告"] = any("拿不到临时目录" in w for w in paths.STARTUP_WARNINGS)
     return out
 
 

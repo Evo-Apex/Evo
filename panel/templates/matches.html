@@ -118,18 +118,19 @@
       <td colspan="8" class="mate-none">{{ '这局没有总结页，对局中也没认出队友' if r.no_summary else '没有队友的数据' }}</td>
     </tr>
     {% endfor %}
-    {% if not r.needs_review %}
     <tr class="mate-foot">
       <td colspan="9" class="first last">
+        {% if r.has_route %}<a class="btn-text" href="{{ url_for('match_route', match_id=r.id) }}">行进路线</a>{% endif %}
+        {% if not r.needs_review %}
         {% if share %}{{ share_button('分享这局') }}{% endif %}
         <a class="btn-text detail-toggle" href="{{ url_with(open=r.id, detail=None if r.show_detail else '1') }}"
            aria-expanded="{{ 'true' if r.show_detail else 'false' }}">
           {{ '收起详情' if r.show_detail else '详情与修改' }}
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="{{ 'M6 15 L12 9 L18 15' if r.show_detail else 'M6 9 L12 15 L18 9' }}"></path></svg>
         </a>
+        {% endif %}
       </td>
     </tr>
-    {% endif %}
     {% endif %}
     {% if is_open and r.show_detail %}
     <tr class="detail-row {{ 'review' if r.needs_review }}">

@@ -76,8 +76,13 @@ class UpdateError(Exception):
 
 
 def version_tuple(text):
-    """"0.10.2" → (0, 10, 2)，用来比较新旧；格式不对返回 None。"""
-    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", str(text or "").strip())
+    """"0.10.2" → (0, 10, 2)，用来比较新旧；格式不对返回 None。
+
+    2026-11-08：允许带测试后缀（"0.5.5b"、"0.5.5-beta.1"），后缀不参与比较——
+    支线测试版和被他们测试的那一版算同一个号，免得测试版自己提醒自己更新、或者把
+    "0.5.5b" 当成格式错误。"0.5.5" 和 "0.5.5b" 都是 (0, 5, 5)。"""
+    m = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:[-.]?[a-z]+\d*(?:\.\d+)*)?",
+                     str(text or "").strip(), re.IGNORECASE)
     return tuple(int(x) for x in m.groups()) if m else None
 
 

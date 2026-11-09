@@ -1,0 +1,83 @@
+{
+  "_说明": "行进路线：对局中只裁小地图并交给低优先级后台线程；地图配准持续做，忙时自动放慢。成功后只存归一化折线，不保存小地图截图。",
+  "base_resolution": [1920, 1080],
+  "minimap": {
+    "roi": [38, 40, 196, 196],
+    "anchor": "top",
+    "_说明": "小地图外接方框。2026-11-07 用源码实战保存的 2560x1440 自身视角校准（原图约 x=51..312、y=53..314）；前一天的观战录屏纵坐标不适用于自身视角。圆外和中间玩家箭头由 matcher 的 mask 去掉，仍需用 16:10 / 4:3 样本复核。"
+  },
+  "evo": {
+    "roi": [60, 932, 290, 52],
+    "anchor": "bottom",
+    "upscale": 3,
+    "pad": 10,
+    "min_score": 0.62,
+    "range": [0, 5000],
+    "change": 3.0,
+    "patterns": [
+      "(?:下一级|NEXT)[^0-9]{0,12}(\\d{1,4})(?:进化|EVO)?",
+      "(\\d{1,4})(?:进化|EVO)"
+    ],
+    "replace": {"O": "0", "o": "0", "I": "1", "l": "1", "|": "1"},
+    "_说明": "左下角蓝色条上的‘下一级：1,609 进化’，数值是距下一级剩余 EVO。按 2026-11-06 的 2560x1440 中文观战录屏样本校准；只把变化的小块暂存在内存，赛后 OCR 后释放。"
+  },
+  "sample_seconds": 3.0,
+  "max_sample_seconds": 10.0,
+  "simplify_tolerance": 0.003,
+  "min_route_points": 3,
+  "max_state_samples": 60,
+  "_说明_max_state_samples": "右上角状态块、EVO 小块各最多留这么多块（1440p 每块约 200 KB）。满了按时间均匀地减少（routes.thin_by_time：从头到尾每隔「总时长 / (上限 - 1)」留一个，最新的一定留下），不能隔一个丢一个——那样越早的点被丢的次数越多，一条 20 分钟的路线开局会整段没有状态（2026-11-07 实战）。调大＝状态更细，但更吃内存、赛后 OCR 更久",
+  "worker": {
+    "queue": 40,
+    "target_ms": 20.0,
+    "_说明": "最多积压 40 个小地图块。平均一张超过 20ms 或队列变长时，采样间隔自动放慢；不阻塞截屏主循环。"
+  },
+  "planner": {
+    "max_nodes": 30000,
+    "max_seconds_per_edge": 0.35,
+    "max_detour": 2.2,
+    "snap_px": 8,
+    "anchor_snap_px": 8,
+    "_说明": "只在对局结束保存路线时运行。相邻锚点穿硬障碍就限时 A* 绕行；端点或通路不可信时改成 segment 断点，不画穿墙直线。"
+  },
+  "matcher": {
+    "reference_size": 1536,
+    "sample_size": 224,
+    "mask_radius": 0.46,
+    "center_mask": 0.07,
+    "local_radius": 0.13,
+    "local_min_confidence": 0.35,
+    "full_check_every": 6,
+    "local_full_agree_radius": 0.035,
+    "local_full_confidence_margin": 0.18,
+    "local_full_ambiguity_ratio": 0.65,
+    "_说明": "局部结果偏低或每 6 次定位时做全图复核。两者相距很远且没有明显置信度优势时返回未知，不从两个冲突位置里强行选一个。",
+    "ratio": 0.74,
+    "min_matches": 8,
+    "min_inliers": 6,
+    "min_inlier_ratio": 0.45,
+    "ransac_px": 6.0,
+    "min_scale": 0.75,
+    "max_scale": 1.65,
+    "min_query_spread": 0.012,
+    "min_query_quadrants": 2,
+    "ambiguity_distance": 0.08,
+    "ambiguity_ratio": 0.75,
+    "start_confirm_radius": 0.045,
+    "start_confirmations": 3,
+    "min_step_radius": 0.035,
+    "max_speed_per_second": 0.006,
+    "reset_after_rejects": 3,
+    "max_gap_seconds": 20,
+    "max_consecutive_misses": 3,
+    "_轨迹过滤说明": "起点要连续三次在附近、变换尺度和角度也一致才采用；之后按相邻采样的时间限制最大位移。连续异常三次后允许在新位置重新确认，以兼容重生或长时间识别中断。失联超过 20 秒或连续 3 次没有定位结果就结束当前段，新位置重新确认后再开一段。"
+  },
+  "maps": {
+    "风暴点": {"file": "storm-point-s31.jpg", "version": "s31", "mask": "storm-point-s31-mask.png"},
+    "电力区域": {"file": "e-district-night-s31.jpg", "version": "s31", "mask": "e-district-night-s31-mask.png"},
+    "残月": {"file": "broken-moon-s31.jpg", "version": "s31", "mask": "broken-moon-s31-mask.png"},
+    "世界尽头": {"file": "worlds-edge.jpg", "version": "latest"},
+    "奥林匹斯": {"file": "olympus.jpg", "version": "latest"},
+    "诸王峡谷": {"file": "kings-canyon.jpg", "version": "latest"}
+  }
+}

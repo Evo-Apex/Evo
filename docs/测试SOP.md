@@ -33,6 +33,14 @@
 - 有 ❌：先修好再提交。不改测试里的正确答案去迁就代码，除非确认原来的答案错了，并告诉用户
 - 提交说明的"怎么验证的"里写跑了哪几组、结果怎样
 
+## 可选的 Node 前端测试
+
+`tests/test_follow.py` 里的页面脚本检查需要 Node（`tests/js_settings_actions.mjs`，假 DOM 跑 base.html 的点击逻辑）。**Node 只是开发时的可选工具，不是 Evo 的运行依赖，也不是 `tests/run_all.py` 的必需条件**：
+
+- 没装 Node：`test_follow.py` 仍全部通过，只多一行“⏭ 可选 Node 假 DOM 测试未运行”，不算失败。
+- 装了 Node：这些脚本检查会真跑；失败就是失败，不会因为“没找到 Node”而放过。
+- 真实 WebView2 的行为由 `tests/test_settings_webview2.py` 单独验证，不依赖 Node。
+
 ## 测试是怎么做的
 
 - `tests/fake_game.py` 用"假摄像头"把真实截图按顺序喂给记录程序，数据写进临时文件夹（不碰正式数据），时钟是假的。正确答案写在 `tests/` 里的 CSV 和测试文件里

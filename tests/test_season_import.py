@@ -20,14 +20,20 @@ import sqlite3
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import fake_game
+import numpy as np
 from fake_game import SOUNDS_PLAYED, SHOTS, load, report, run_collect  # 要在项目代码之前导入（设置临时数据文件夹）
 
+import app_settings
+import game_aspect
+import layout
 import live_collect
 import ocr
 import season_import
+import season_stats
 import storage
 
 FOLDER = SHOTS / "frames" / "20261101_161135"
@@ -90,6 +96,285 @@ def mode_checks():
     }
     season_import.stop()
     out["点\"结束\"：马上关"] = not season_import.active(now) and season_import.until() is None
+    return out
+
+
+def aspect_checks():
+    """4:3：自动检测（读视频设置文件）、设置页手动选、界面坐标换算。不用截图。"""
+    out = {}
+    path = TEMP / "videoconfig-4x3.txt"
+    path.write_text('"VideoConfig"\n{\n'
+                    '\t"setting.fullscreen"\t\t"1"\n\t"setting.nowindowborder"\t\t"1"\n'
+                    '\t"setting.defaultres"\t\t"1920"\n\t"setting.defaultresheight"\t\t"1440"\n}\n',
+                    encoding="utf-16")
+    found, why = game_aspect.from_video_config(path)
+    out[f"自动检测：全屏 1920×1440 → 4:3（{game_aspect.name(found)}，{why}）"] = (
+        found == 4 / 3 and game_aspect.name(found) == "4:3" and "1920×1440" in why)
+
+    box = layout.Mapping((1080, 1920), (1920, 1080), "top", aspect=4 / 3).box([1335, 264, 90, 46])
+    name_box = layout.Mapping((1080, 1920), (1920, 1080), "top", aspect=4 / 3).box([440, 96, 1040, 76])
+    out[f"1920×1080 截图、游戏 4:3：数据页 ROI 从 y=264 换到 y=198（{box}），玩家名从 96 换到 72（{name_box}）"] = (
+        box == (1335, 198, 1425, 232) and name_box == (440, 72, 1480, 129))
+
+    log = []
+    clock = [0.0]
+    watcher = game_aspect.AspectWatcher(log.append, clock=lambda: clock[0], path=path)
+    watcher.check(np.zeros((1080, 1920, 3), np.uint8))
+    out[f"记录程序：自动检测出 4:3，日志写出截图尺寸（{log[0] if log else '没有日志'}）"] = (
+        layout.game_aspect() == 4 / 3 and bool(log) and "4:3" in log[0] and "1920×1080" in log[0])
+    watcher.reset()
+
+    app_settings.set_value(game_aspect.SETTING_KEY, "4:3")
+    manual, why = game_aspect.current(path=TEMP / "not-there.txt")
+    out[f"设置页手动选 4:3：不看视频设置文件，直接用 4:3（{why}）"] = (
+        manual == 4 / 3 and "手动选的 4:3" in why)
+    app_settings.set_value(game_aspect.SETTING_KEY, "auto")
+    path.unlink()
+    return out
+
+
+SEASON_VALUES = {"games": 100, "wins": 5, "top5": 20, "damage": 2000, "damage_max": 800, "damage_avg": 20.0,
+                 "kills": 200, "deaths": 100, "kd": 2.0, "kills_max": 8, "knockdowns": 150, "assists": 50,
+                 "win_streak": 3, "revives": 10, "respawns": 5}
+
+
+class FakeSeasonPage:
+    """替身：不跑 OCR，只验证 4:3 下从录入模式到待核对的整条路。"""
+
+    def __init__(self, engine, values=None, on=True, player="ImperialHzd"):
+        self.values = dict(SEASON_VALUES if values is None else values)
+        self.on, self.player, self.reads = on, player, 0
+
+    def on_page(self, frame):
+        return self.on
+
+    def name(self, frame):
+        return self.player
+
+    def label(self, frame, memo=None):
+        return 30, "all", "诸神烙印", "第30赛季：诸神烙印"
+
+    def read(self, frame, panel="season", memo=None):
+        self.reads += 1
+        return {"panel": panel, "values": dict(self.values), "approx": {}, "obscured": False}
+
+
+def feedback_checks():
+    """录入模式开着、一直没认出数据页：日志要说清比例、截图尺寸、卡在哪一步；认出后数字稳定两帧才存。"""
+    out = {}
+    now = datetime(2026, 11, 1, 16, 0, 0)
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    conn = storage.connect(TEMP / "feedback.db")
+    page = FakeSeasonPage(None, values={})
+    log = []
+    watcher = live_collect.SeasonWatcher(None, conn, SimpleNamespace(player_name="ImperialHzd"), log.append, page=page)
+    season_import.start(now)
+    watcher.check_mode(now)
+    layout.set_game_aspect(4 / 3)
+    watcher.update(None, frame, now, False)  # 认出一次数据页（空数据），之后用不上的画面
+    page.on = False
+    for i in range(1, 5):
+        watcher.update(None, frame, now + timedelta(seconds=i), False)
+    lines = [line for line in log if "录入历史赛季数据：" in line]
+    out[f"连续几帧没认出：日志说“未识别页面”、4:3、截图 1920×1080（{lines[-1] if lines else '没有'}）"] = (
+        any("未识别页面" in line and "4:3" in line and "1920×1080" in line for line in lines)
+        and sum("未识别页面" in line for line in lines) == 1)
+
+    page.on, page.player, watcher.owner = True, None, None
+    watcher.update(None, frame, now + timedelta(seconds=6), False)
+    out["页面上的名字读不出来：日志说“玩家名不匹配”，带上比例和截图尺寸"] = any(
+        "玩家名不匹配" in line and "4:3" in line and "1920×1080" in line for line in log)
+
+    page.player, page.values, watcher.owner = "ImperialHzd", dict(SEASON_VALUES), None
+    watcher.update(None, frame, now + timedelta(seconds=7), False)
+    first = any("数字稳定中" in line for line in log)
+    watcher.update(None, frame, now + timedelta(seconds=8), False)
+    rows = storage.season_rows(conn)
+    out[f"4:3 连续两帧数字一样：存成待核对，日志说“已存为待核对”（{len(rows)} 行）"] = (
+        first and any("已存为待核对" in line for line in log)
+        and {(r["season"], r["kind"]) for r in rows} == {(30, "all"), (None, "career")})
+
+    season_import.stop()
+    watcher.check_mode(now + timedelta(seconds=9))
+    page.on, page.reads = True, 0
+    watcher.update(None, frame, now + timedelta(seconds=9), False)
+    out["录入关掉后：不再跑数据页 OCR（read 一次都没调）"] = page.reads == 0
+
+    season_import.start(now + timedelta(seconds=10))
+    watcher.check_mode(now + timedelta(seconds=10))
+    layout.set_game_aspect(None)  # 1920×1080 截图 = 16:9
+    page.on, page.player = False, "ImperialHzd"
+    watcher.seen_page, watcher.misses, watcher.feedback_key = False, 0, None
+    for i in range(3, 6):
+        watcher.update(None, frame, now + timedelta(seconds=10 + i), False)
+    out["16:9 下没认出：日志写“等待数据页”、16:9（不会当成 4:3），也给出截图尺寸"] = any(
+        "等待数据页" in line and "游戏画面比例 16:9" in line and "1920×1080" in line for line in log)
+    conn.close()
+    layout.set_game_aspect(None)
+    season_import.stop()
+    return out
+
+
+def write_rate_checks():
+    """状态写盘：同一帧只报一个最终状态；普通状态至少隔 2 秒；几百帧不能线性写文件。"""
+    out = {}
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    conn = storage.connect(TEMP / "write-rate.db")
+    log = []
+    watcher = live_collect.SeasonWatcher(None, conn, SimpleNamespace(player_name="ImperialHzd"), log.append,
+                                         page=FakeSeasonPage(None, values={}))
+    watcher.on = True
+    now = datetime(2026, 11, 1, 17, 0, 0)
+
+    writes = []
+    with mock.patch.object(season_import.app_settings, "set_value", side_effect=lambda k, v: writes.append((k, v))):
+        season_import._last_report, season_import._pending = None, None
+        watcher.status_candidates = {}
+        watcher._feedback("等待数据页", frame, now)
+        watcher._feedback("已存为待核对（第 30 赛季 全部）", frame, now, force=True)
+        watcher._flush_status(now)
+    out["同一帧有等待和已存：只写已存，不先写等待"] = (
+        len(writes) == 1 and writes[0][1]["stage"] == "stored")
+
+    writes = []
+    with mock.patch.object(season_import.app_settings, "set_value", side_effect=lambda k, v: writes.append((k, v))):
+        season_import._last_report, season_import._pending = None, None
+        season_import.report("waiting_page", "等待数据页", "4:3", 1920, 1080, now)
+        season_import.report("page_not_recognized", "未识别到数据页", "4:3", 1920, 1080,
+                             now + timedelta(milliseconds=500))
+        season_import.report("owner_mismatch", "数据页上的玩家名不是你", "4:3", 1920, 1080,
+                             now + timedelta(milliseconds=1200))
+        season_import.report("page_not_recognized", "未识别到数据页", "4:3", 1920, 1080,
+                             now + timedelta(seconds=2, milliseconds=100))
+    out[f"普通状态至少隔 2 秒：2.1 秒时写的是当前状态（{[(v['stage'], v['updated_at']) for _, v in writes]}）"] = (
+        len(writes) == 2 and writes[1][1]["stage"] == "page_not_recognized")
+
+    # R04：A@0 → B@0.5 → A@2.1 → A@10.1。回到 A 以后不能把中间过期的 B 补写出去。
+    writes = []
+    with mock.patch.object(season_import.app_settings, "set_value", side_effect=lambda k, v: writes.append((k, v))):
+        season_import._last_report, season_import._pending = None, None
+        season_import.report("waiting_page", "等待数据页", "4:3", 1920, 1080, now)
+        season_import.report("page_not_recognized", "未识别到数据页", "4:3", 1920, 1080,
+                             now + timedelta(milliseconds=500))
+        season_import.report("waiting_page", "等待数据页", "4:3", 1920, 1080,
+                             now + timedelta(seconds=2, milliseconds=100))
+        season_import.report("waiting_page", "等待数据页", "4:3", 1920, 1080,
+                             now + timedelta(seconds=10, milliseconds=100))
+    out[f"状态回到上一次的值：不补写中间过期的 B（{[(v['stage'], v['updated_at']) for _, v in writes]}）"] = (
+        [v["stage"] for _, v in writes] == ["waiting_page", "waiting_page"]
+        and writes[-1][1]["updated_at"] == (now + timedelta(seconds=10, milliseconds=100)).isoformat(timespec="seconds"))
+
+    def run(seconds):
+        writes = []
+        log.clear()
+        with mock.patch.object(season_import.app_settings, "set_value", side_effect=lambda k, v: writes.append((k, v))):
+            season_import._last_report, season_import._pending = None, None
+            watcher.status_candidates = {}
+            watcher.feedback_key, watcher.feedback_at = None, None
+            frames = seconds * 60
+            for i in range(frames):
+                at = now + timedelta(seconds=i / 60)
+                watcher._feedback("数字稳定中（第 30 赛季 全部）", frame, at)
+                watcher._feedback("数字稳定中（生涯合计）", frame, at)
+                watcher._flush_status(at)
+        logs = len([line for line in log if "录入历史赛季数据：" in line])
+        return len(writes), logs, frames
+
+    short, short_logs, short_frames = run(2)
+    long, long_logs, long_frames = run(10)
+    out[f"10 秒 600 帧来回切换：只写 {long} 次、只打 {long_logs} 行（不是各 {long_frames} 次），2 秒写 {short} 次、{short_logs} 行"] = (
+        long <= 6 and long <= short + 4 and long < long_frames / 50)
+    out[f"日志也限频：10 秒 {long_logs} 行，不随 {long_frames} 帧线性增长"] = (
+        long_logs <= 6 and long_logs < long_frames / 50)
+    out["写盘次数不随帧数线性增长：帧数 5 倍，写盘不到 4 倍"] = long < short * 4
+
+    # 同一帧 season/career 都存下：日志合成一条，设置文件也只写一次。
+    log.clear()
+    writes = []
+    with mock.patch.object(season_import.app_settings, "set_value", side_effect=lambda k, v: writes.append((k, v))):
+        season_import._last_report, season_import._pending = None, None
+        watcher.status_candidates = {}
+        watcher._feedback("已存为待核对（第 30 赛季 全部）", frame, now, force=True)
+        watcher._feedback("已存为待核对（生涯合计）", frame, now, force=True)
+        watcher._flush_status(now)
+    lines = [line for line in log if "录入历史赛季数据：" in line]
+    out[f"同一帧两个已存：状态日志合成一条、设置只写一次（{len(lines)} 行，{len(writes)} 次）"] = (
+        len(lines) == 1 and "第 30 赛季 全部" in lines[0] and "生涯合计" in lines[0] and len(writes) == 1)
+
+    conn.close()
+    season_import._last_report, season_import._pending = None, None
+    return out
+
+
+def replay_checks():
+    """离线复现工具：显式 4:3 时 1920×1080 的拉伸截图仍按 4:3 换算，不退回 16:9。"""
+    out = {}
+    from ocr import load_config
+    import season_replay
+
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    cfg = load_config("season_stats.json")
+    aspect, why = season_replay.resolve_aspect("4:3", frame, 16 / 9)
+    boxes = season_replay.roi_boxes(cfg, frame.shape, aspect)
+    out[f"复现工具：显式 4:3 不被 1920×1080 截图改成 16:9（{why}）"] = (
+        abs(aspect - 4 / 3) < 1e-6 and "显式" in why)
+    out[f"复现工具：4:3 的数据页 ROI 从 y=264 换到 y=198（{boxes['detect'][1]}）"] = (
+        boxes["detect"][1] == (1335, 198, 1425, 232) and boxes["name"][1] == (440, 72, 1480, 129))
+    auto, why_auto = season_replay.resolve_aspect("auto", frame, None)
+    out[f"复现工具：auto 读不到视频设置时按截图比例，不瞎猜 4:3（{why_auto}）"] = (
+        abs(auto - 16 / 9) < 1e-6)
+    return out
+
+
+def import_checks():
+    """4:3 整条录入：自动检测、设置页手动选，各喂两张数据页，应该各存一项待核对、响一声。"""
+    out = {}
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+
+    def picture(key):
+        return frame
+
+    def rows_of(db):
+        conn = storage.connect(db)
+        rows = storage.season_rows(conn)
+        conn.close()
+        return rows
+
+    def run(label, prepare):
+        season_import.stop()
+        prepare()
+        season_import.start()
+        SOUNDS_PLAYED.clear()
+        with mock.patch.object(season_stats, "SeasonPage", FakeSeasonPage):
+            _, _, log = run_collect(["A1", "A2"], picture, game_aspect=None)
+        rows = rows_of(fake_game.last_db)
+        seasons = [r for r in rows if r["kind"] != "career"]
+        out[f"{label}：连续两帧稳定后存下 1 个赛季 + 生涯，待核对（{[(r['season'], r['kind'], r['games']) for r in rows]}）"] = (
+            len(seasons) == 1 and seasons[0]["season"] == 30 and seasons[0]["games"] == 100
+            and any(r["kind"] == "career" for r in rows) and all(r["status"] == "pending" for r in rows))
+        out[f"{label}：成功读取时响一声（{list(SOUNDS_PLAYED)}）"] = list(SOUNDS_PLAYED) == ["summary"]
+        out[f"{label}：日志写出 4:3、截图 1920×1080（{[l for l in log if '游戏画面比例' in l]}）"] = any(
+            "游戏画面比例：4:3" in line and "1920×1080" in line for line in log)
+
+    config = game_aspect.VIDEO_CONFIG
+    config.write_text('"VideoConfig"\n{\n'
+                      '\t"setting.fullscreen"\t\t"1"\n\t"setting.nowindowborder"\t\t"1"\n'
+                      '\t"setting.defaultres"\t\t"1920"\n\t"setting.defaultresheight"\t\t"1440"\n}\n',
+                      encoding="utf-16")
+    app_settings.set_value(game_aspect.SETTING_KEY, "auto")
+    run("自动检测 4:3", lambda: None)
+
+    config.write_text('"VideoConfig"\n{\n'
+                      '\t"setting.fullscreen"\t\t"1"\n\t"setting.nowindowborder"\t\t"1"\n'
+                      '\t"setting.defaultres"\t\t"2560"\n\t"setting.defaultresheight"\t\t"1440"\n}\n',
+                      encoding="utf-16")
+    app_settings.set_value(game_aspect.SETTING_KEY, "4:3")
+    run("设置页手动 4:3", lambda: None)
+
+    app_settings.set_value(game_aspect.SETTING_KEY, "auto")
+    config.unlink()
+    season_import.stop()
+    layout.set_game_aspect(None)
     return out
 
 
@@ -178,7 +463,8 @@ def collect_checks():
 
 def main():
     print("录入历史赛季数据（新表、录入模式、记录程序读数据页）")
-    checks = {**table_checks(), **mode_checks()}
+    checks = {**table_checks(), **mode_checks(), **aspect_checks(), **feedback_checks(), **write_rate_checks(),
+              **replay_checks(), **import_checks()}
     shots = collect_checks()
     if shots is None:
         print(f"  ⏭ 截图部分跳过：找不到 {FOLDER}（截图只在开发者电脑上，不在仓库里）")

@@ -1,0 +1,303 @@
+{% extends "base.html" %}
+{# 单局行进路线：底图叠加矢量折线，悬停看状态，点击加入按时间排序的标记。 #}
+{% block title %}行进路线 · Evo{% endblock %}
+
+{% block content %}
+<div class="sub-head">
+  <a class="back" href="{{ url_for('matches', open=match.id) }}">← 战绩</a>
+  <div>
+    <h1>行进路线</h1>
+    <p class="muted">{{ match.time }} · {{ route.meta.map_name }} · {{ route.points|length }} 个路线点</p>
+  </div>
+</div>
+
+<div class="route-layout">
+  <section class="card route-card">
+    {% if route.meta.asset_available %}
+    <div class="route-map" id="route-map" tabindex="0" aria-label="本局行进路线，移动鼠标查看，点击加入时间点">
+      <div class="route-stage" id="route-stage">
+        <div class="route-canvas" id="route-canvas">
+          <img src="{{ url_for('route_map', name=route.meta.map_asset) }}" alt="{{ route.meta.map_name }} 全地图">
+          <svg viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true">
+            <g id="route-lines"></g>
+            <g id="route-marks"></g>
+            <circle id="route-cursor" r="9" hidden></circle>
+          </svg>
+        </div>
+      </div>
+      <div class="route-tip" id="route-tip" hidden></div>
+      <button class="route-fullscreen" id="route-fullscreen" type="button" aria-pressed="false" title="全屏查看路线">
+        <span aria-hidden="true">⛶</span><b>全屏查看</b>
+      </button>
+    </div>
+    <p class="route-legend">
+      <span><i class="route-key kill"></i>击杀</span>
+      <span><i class="route-key assist"></i>助攻</span>
+      <span><i class="route-key death"></i>死亡</span>
+    </p>
+    {% else %}
+    <div class="chart-empty">这局没有可显示的地图底图。</div>
+    {% endif %}
+  </section>
+
+  <aside class="card route-summary">
+    <div><span>处理结果</span><strong>{{ {'ready':'完整', 'partial':'部分', 'failed':'未定位'}.get(route.meta.status, route.meta.status) }}</strong></div>
+    <div><span>路线覆盖</span><strong class="num">{{ (route.meta.coverage * 100)|round|int }}%</strong></div>
+    <div><span>最终伤害</span><strong class="num">{{ match.damage }}</strong></div>
+    <div><span>击杀 / 助攻 / 参与</span><strong class="num">{{ match.kills if match.kills is not none else '—' }} / {{ match.assists if match.assists is not none else '—' }} / {{ match.participation }}</strong></div>
+    <div><span>本局 RP</span><strong class="num">{{ match.rp }}</strong></div>
+  </aside>
+</div>
+
+<section class="card route-events">
+  <div class="card-head">
+    <div><h2>时间点</h2></div>
+  </div>
+  <div class="table-wrap">
+    <table class="stats-table">
+      <thead><tr><th>时间</th><th>来源</th><th>事件</th><th class="right">伤害</th><th class="right">距下一级 EVO</th><th class="right">击杀</th><th class="right">助攻</th><th class="right">参与</th><th class="right">右上角 RP</th><th></th></tr></thead>
+      <tbody>
+      {% for mark in route.marks %}
+      <tr data-elapsed="{{ mark.elapsed_ms }}">
+        <td class="num">{{ mark.time }}</td><td>{{ '手动' if mark.kind == 'manual' else '系统' }}</td>
+        <td>{% if mark.kind == 'death' %}<i class="route-event death"></i>{% elif mark.events %}<i class="route-event {{ 'kill' if 'kills' in mark.events else 'assist' }}"></i>{% endif %}{{ mark.label }}</td>
+        {% for name in ('damage', 'evo', 'kills', 'assists', 'participation') %}<td class="right num">{{ mark[name] if mark[name] is not none else '—' }}</td>{% endfor %}
+        <td class="right num">{% if mark.rp_delta %}{{ '+' if mark.rp_delta > 0 }}{{ mark.rp_delta }}{% else %}—{% endif %}</td>
+        <td class="right">{% if mark.kind == 'manual' %}<form method="post" action="{{ url_for('delete_route_mark', match_id=match.id, mark_id=mark.mark_id) }}"><input type="hidden" name="token" value="{{ token }}"><button class="btn-text" type="submit">移除</button></form>{% endif %}</td>
+      </tr>
+      {% else %}<tr><td colspan="10" class="empty">暂时没有时间点。点击上面的路线即可加入。</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+{% if route.meta.asset_available and route.points %}
+<script>
+(function () {
+  var points = {{ route.points|tojson }};
+  var marks = {{ route.marks|tojson }};
+  var map = document.getElementById("route-map");
+  var stage = document.getElementById("route-stage");
+  var canvas = document.getElementById("route-canvas");
+  var lineLayer = document.getElementById("route-lines");
+  var layer = document.getElementById("route-marks");
+  var cursor = document.getElementById("route-cursor");
+  var tip = document.getElementById("route-tip");
+  var fullscreen = document.getElementById("route-fullscreen");
+  var zoom = 1, panX = 0, panY = 0, dragging = null, suppressClick = false;
+  // 重定位会开新的一段。每段单独一条 polyline：段与段之间留空，绝不把新位置和上一段用实线连起来。
+  // 只有一段里只有一个点时画一个小圆点；缺口没有画出来，也就不给点击/时间插值跨过去的机会。
+  var ns = "http://www.w3.org/2000/svg";
+  function drawSegments() {
+    var groups = [];
+    points.forEach(function (p) {
+      var seg = (p.segment_id === null || p.segment_id === undefined) ? 0 : p.segment_id;
+      var g = groups[groups.length - 1];
+      if (!g || g.seg !== seg) { g = {seg:seg, pts:[]}; groups.push(g); }
+      g.pts.push(p);
+    });
+    groups.forEach(function (g) {
+      if (g.pts.length === 1) {
+        var dot = document.createElementNS(ns, "circle");
+        dot.setAttribute("class", "route-point");
+        dot.setAttribute("cx", g.pts[0].x * 1000); dot.setAttribute("cy", g.pts[0].y * 1000);
+        dot.setAttribute("r", 5 / zoom);
+        lineLayer.appendChild(dot);
+        return;
+      }
+      var line = document.createElementNS(ns, "polyline");
+      line.setAttribute("class", "route-line");
+      line.setAttribute("points", g.pts.map(function (p) {
+        return (p.x * 1000) + "," + (p.y * 1000);
+      }).join(" "));
+      lineLayer.appendChild(line);
+    });
+  }
+  drawSegments();
+  // 地图上只画这一局的事件：击杀＝红菱形、助攻＝绿三角、死亡＝白色叉。
+  // 其余时间点（系统读数的黄点、手动蓝点）不在图上出现，只在下面的表格里（2026-11-08 用户要求）。
+  // 形状在 1000x1000 的图坐标里画，再按 1/zoom 缩回去，放大时不跟着变粗。
+  var shapes = {kill: "M0 -10 L10 0 L0 10 L-10 0 Z", assist: "M0 -10 L10 9 L-10 9 Z",
+                death: "M-7 -7 L7 7 M7 -7 L-7 7"};
+  function markKind(p) {
+    if (p.gap || p.x === null || p.x === undefined || p.y === null || p.y === undefined) return null;
+    if (p.kind === "death") return "death";
+    if (p.kind !== "auto") return null;
+    var events = p.events || [];
+    if (events.indexOf("kills") >= 0) return "kill";
+    if (events.indexOf("assists") >= 0) return "assist";
+    return null;
+  }
+  function placeMark(dot) {
+    dot.setAttribute("transform", "translate(" + dot.getAttribute("data-cx") + " " + dot.getAttribute("data-cy")
+                      + ") scale(" + (1 / zoom) + ")");
+  }
+  marks.forEach(function (p) {
+    var kind = markKind(p);
+    if (!kind) return;
+    var dot = document.createElementNS(ns, "g");
+    dot.setAttribute("class", "route-mark " + kind + (p.stale ? " stale" : ""));
+    if (p.stale) {
+      var tip = document.createElementNS(ns, "title");
+      tip.textContent = "最后已知位置（这之后没有新的定位点）";
+      dot.appendChild(tip);
+    }
+    dot.setAttribute("data-cx", p.x * 1000); dot.setAttribute("data-cy", p.y * 1000);
+    var shape;
+    if (shapes[kind]) {
+      shape = document.createElementNS(ns, "path"); shape.setAttribute("d", shapes[kind]);
+    } else {
+      shape = document.createElementNS(ns, "circle"); shape.setAttribute("r", kind === "manual" ? 6 : 8);
+    }
+    dot.appendChild(shape); layer.appendChild(dot); placeMark(dot);
+  });
+  function clock(ms) { var s = Math.max(0, Math.round(ms / 1000)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
+  function nearest(x, y) {
+    var best = points[0], d = Infinity;
+    points.forEach(function (p) { var n = Math.hypot(p.x - x, p.y - y); if (n < d) { d = n; best = p; } });
+    return best;
+  }
+  function nearestMark(q) {
+    // 光标离某个时间点不到 14 像素就算指着它（缩放、平移都算进去）
+    var best = null, bestD = Infinity, r = q.rect;
+    marks.forEach(function (p) {
+      if (!markKind(p)) return;  // 图上没画的时间点不接悬停
+      var d = Math.hypot((p.x * zoom + panX - q.screenX) * r.width, (p.y * zoom + panY - q.screenY) * r.height);
+      if (d < bestD) { bestD = d; best = p; }
+    });
+    return bestD <= 14 ? best : null;
+  }
+  function status(p) {
+    var values = [["伤害", p.damage], ["距下一级 EVO", p.evo], ["击杀", p.kills], ["助攻", p.assists], ["参与", p.participation]];
+    return values.filter(function (x) { return x[1] !== null && x[1] !== undefined; }).map(function (x) { return x[0] + " " + x[1]; }).join(" · ") || "这一刻还没有读到状态";
+  }
+  function expanded() { return document.fullscreenElement === map || map.classList.contains("is-expanded"); }
+  function drawingRect() { return stage.getBoundingClientRect(); }
+  // 放大到"一个底图像素对一个屏幕像素"为止：再往上只是把同一张图拉大，只会更糊。
+  // 底图 3072、地图在页面上约 745 像素宽时约 4 倍；全屏更大、缩放 150% 的屏幕更小，自动跟着变（2026-11-08）。
+  function maxZoom() {
+    var img = canvas.querySelector("img");
+    var width = drawingRect().width;
+    var dpr = window.devicePixelRatio || 1;
+    var natural = (img && img.naturalWidth) || 3072;
+    return Math.min(6, Math.max(2, width > 0 ? natural / (width * dpr) : 4));
+  }
+  function clampPan() {
+    panX = Math.min(0, Math.max(1 - zoom, panX));
+    panY = Math.min(0, Math.max(1 - zoom, panY));
+    if (zoom <= 1.001) { zoom = 1; panX = panY = 0; }
+  }
+  function resizeOverlays() {
+    lineLayer.querySelectorAll(".route-line").forEach(function (line) {
+      line.style.strokeWidth = (5 / zoom) + "px";
+    });
+    lineLayer.querySelectorAll(".route-point").forEach(function (dot) {
+      dot.setAttribute("r", 5 / zoom);
+      dot.style.strokeWidth = (2 / zoom) + "px";
+    });
+    cursor.setAttribute("r", 9 / zoom);
+    cursor.style.strokeWidth = (4 / zoom) + "px";
+    layer.querySelectorAll(".route-mark").forEach(function (dot) {
+      dot.style.strokeWidth = (3 / zoom) + "px";
+      placeMark(dot);
+    });
+  }
+  function applyView() {
+    clampPan();
+    canvas.style.transform = "translate(" + (panX * 100) + "%," + (panY * 100) + "%) scale(" + zoom + ")";
+    resizeOverlays();
+    map.classList.toggle("is-zoomed", zoom > 1.001);
+    cursor.hidden = true; tip.hidden = true;
+  }
+  function position(e) {
+    var r = drawingRect();
+    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return null;
+    var sx = (e.clientX-r.left)/r.width, sy = (e.clientY-r.top)/r.height;
+    var x = (sx-panX)/zoom, y = (sy-panY)/zoom;
+    if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+    return {x:x, y:y, screenX:sx, screenY:sy, rect:r};
+  }
+  function placeTip(q) {
+    var box = map.getBoundingClientRect();
+    var left = q.rect.left - box.left, top = q.rect.top - box.top;
+    tip.style.left = Math.min(left + q.rect.width - 272, Math.max(left + 12, left + q.screenX * q.rect.width + 12)) + "px";
+    tip.style.top = Math.min(top + q.rect.height - 82, Math.max(top + 12, top + q.screenY * q.rect.height + 12)) + "px";
+  }
+  map.addEventListener("pointermove", function (e) {
+    if (e.target.closest("#route-fullscreen")) { cursor.hidden = true; tip.hidden = true; return; }
+    if (dragging) {
+      var r = drawingRect();
+      panX = dragging.panX + (e.clientX - dragging.x) / r.width;
+      panY = dragging.panY + (e.clientY - dragging.y) / r.height;
+      if (Math.hypot(e.clientX - dragging.x, e.clientY - dragging.y) > 4) dragging.moved = true;
+      applyView(); return;
+    }
+    var q = position(e); if (!q) { cursor.hidden = true; tip.hidden = true; return; }
+    var hit = nearestMark(q);
+    var p = hit || nearest(q.x, q.y);
+    cursor.hidden = false; cursor.setAttribute("cx", p.x * 1000); cursor.setAttribute("cy", p.y * 1000);
+    tip.hidden = false; placeTip(q);
+    tip.innerHTML = "<strong>" + clock(p.elapsed_ms) + (hit ? " " + hit.label : "") + "</strong><span>" + status(p) + "</span>";
+  });
+  map.addEventListener("pointerleave", function () { if (!dragging) { cursor.hidden = true; tip.hidden = true; } });
+  map.addEventListener("wheel", function (e) {
+    if (e.target.closest("#route-fullscreen")) return;
+    var r = drawingRect();
+    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
+    e.preventDefault();
+    var sx = (e.clientX-r.left)/r.width, sy = (e.clientY-r.top)/r.height;
+    var worldX = (sx-panX)/zoom, worldY = (sy-panY)/zoom;
+    var next = Math.min(maxZoom(), Math.max(1, zoom * Math.exp(-e.deltaY * .0015)));
+    panX = sx - worldX * next; panY = sy - worldY * next; zoom = next; applyView();
+  }, {passive:false});
+  map.addEventListener("pointerdown", function (e) {
+    if (zoom <= 1.001 || e.button !== 0 || e.target.closest("#route-fullscreen")) return;
+    dragging = {x:e.clientX, y:e.clientY, panX:panX, panY:panY, moved:false};
+    map.classList.add("is-dragging"); map.setPointerCapture(e.pointerId); e.preventDefault();
+  });
+  function finishDrag(e) {
+    if (!dragging) return;
+    suppressClick = dragging.moved; dragging = null; map.classList.remove("is-dragging");
+    if (suppressClick) setTimeout(function () { suppressClick = false; }, 0);
+    if (map.hasPointerCapture(e.pointerId)) map.releasePointerCapture(e.pointerId);
+  }
+  map.addEventListener("pointerup", finishDrag);
+  map.addEventListener("pointercancel", finishDrag);
+  map.addEventListener("click", function (e) {
+    if (e.target.closest("#route-fullscreen")) return;
+    if (suppressClick) { suppressClick = false; return; }
+    var q = position(e); if (!q) return;
+    var body = new FormData(); body.append("token", {{ token|tojson }}); body.append("x", q.x); body.append("y", q.y);
+    fetch({{ url_for('add_route_mark', match_id=match.id)|tojson }}, {method:"POST", body:body}).then(function (r) { if (!r.ok) throw Error(); return r.json(); }).then(function () { location.reload(); }).catch(function () { tip.hidden=false; tip.textContent="没有保存成功，请重试"; });
+  });
+  function reflectFullscreen() {
+    var on = expanded();
+    fullscreen.setAttribute("aria-pressed", on ? "true" : "false");
+    fullscreen.title = on ? "退出全屏" : "全屏查看路线";
+    fullscreen.querySelector("b").textContent = on ? "退出全屏" : "全屏查看";
+    document.body.classList.toggle("route-expanded", on);
+    applyView();
+  }
+  function fallbackExpand() { map.classList.add("is-expanded"); reflectFullscreen(); map.focus(); }
+  fullscreen.addEventListener("click", function (e) {
+    e.stopPropagation();
+    if (expanded()) {
+      if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen();
+      else { map.classList.remove("is-expanded"); reflectFullscreen(); }
+    } else if (map.requestFullscreen) {
+      map.requestFullscreen().catch(fallbackExpand);
+    } else fallbackExpand();
+  });
+  document.addEventListener("fullscreenchange", reflectFullscreen);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && map.classList.contains("is-expanded")) {
+      map.classList.remove("is-expanded"); reflectFullscreen(); fullscreen.focus();
+    }
+  });
+  resizeOverlays();
+})();
+</script>
+{% endif %}
+{% endblock %}

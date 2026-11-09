@@ -37,6 +37,7 @@ import notice_check
 import panel_seasons
 import radar
 import ranks
+import routes
 import screenshots
 import seasons
 import sounds
@@ -172,7 +173,7 @@ FEEDBACK_GROUP = "1128519951"
 THANKS = ("伯乐相马", "司渊", "素语落")  # 打赏的人（显示的名字，用户给的），按时间先后
 DEVELOPERS = (
     {"name": "黄指导", "url": "https://github.com/AugustHuangMX"},  # 用户
-    {"name": "wzx", "url": "https://github.com/wzxlll33"},  # 学弟 wzxlll33
+    {"name": "M0MoNa", "url": "https://github.com/wzxlll33"},  # 学弟 wzxlll33（显示名 M0MoNa）
 )
 # 总览页"关注我"（2026-10-22 用户要求）：开发者的 B 站、小黑盒主页（不带分享追踪参数的正式地址）。
 # 和"意见反馈"一样交给系统浏览器打开，Evo 自己不联网；图标在 panel/static/brands/（单色，颜色跟随文字）
@@ -432,6 +433,8 @@ def view(row):
         "title": " · ".join(x for x in (row["legend"], row["map"]) if x) or "传奇、地图未识别",
         "subtitle": " · ".join(x for x in (MODES.get(row["mode"]), time_text(row["ended_at"])) if x),
         "kda": " / ".join(dash(row[k]) for k in ("kills", "assists", "knockdowns")),
+        "kills": row["kills"],
+        "assists": row["assists"],
         "participation": dash(row["participation"]),
         "damage": dash(row["damage"], "{:,}"),
         "survival": storage.mmss(row["survival_time"]).replace("-", "—"),
@@ -1092,6 +1095,9 @@ def matches():
     rows, total = storage.query_matches(db(), mode, only_review, legend, PER_PAGE, (page - 1) * PER_PAGE, names,
                                         between)
     rows = [view(r) for r in rows]
+    for r in rows:
+        saved_route = storage.route_of(db(), r["id"])
+        r["has_route"] = bool(saved_route and saved_route["point_count"])
     if only_review and open_id is None and rows:
         open_id = rows[0]["id"]  # "只看待确认"时，自动展开第一局
     # 点开一局：先只展开两名队友；识别截图和修改表单要再点"详情与修改"（detail=1）。待确认的局直接全部展开
@@ -1130,6 +1136,60 @@ def matches():
         ranges=match_ranges(),
         range_titles=range_titles(),
     )
+
+
+def route_time(milliseconds):
+    seconds = max(0, round(milliseconds / 1000))
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+@app.route("/matches/<int:match_id>/route")
+def match_route(match_id):
+    match = storage.get_match(db(), match_id)
+    if match is None:
+        abort(404)
+    data = routes.route_view(db(), match_id)
+    if data is None:
+        abort(404)
+    for mark in data["marks"]:
+        mark["time"] = route_time(mark["elapsed_ms"])
+    return render_template("route.html", match=view(match), route=data)
+
+
+@app.route("/route-map/<path:name>")
+def route_map(name):
+    # 只允许 routes.json 里列出的文件名，不能借这个网址读程序目录里的别的文件。
+    allowed = {item["file"] for item in routes.load_route_config()["maps"].values()}
+    if name not in allowed or Path(name).name != name:
+        abort(404)
+    path = routes.ASSET_DIR / name
+    if not path.is_file():
+        abort(404)
+    return send_file(path, conditional=True)
+
+
+@app.post("/matches/<int:match_id>/route/marks")
+def add_route_mark(match_id):
+    points = storage.route_points_of(db(), match_id)
+    if storage.get_match(db(), match_id) is None or not points:
+        abort(404)
+    try:
+        x, y = float(request.form["x"]), float(request.form["y"])
+    except (KeyError, TypeError, ValueError):
+        abort(400)
+    if not (0 <= x <= 1 and 0 <= y <= 1):
+        abort(400)
+    mark = routes.nearest_on_route(points, x, y)
+    mark.update({"kind": "manual", "label": "手动标记", "created_at": f"{datetime.now():%Y-%m-%d %H:%M:%S}"})
+    mark_id = storage.add_route_mark(db(), match_id, mark)
+    return jsonify({"ok": True, "mark_id": mark_id, "elapsed_ms": mark["elapsed_ms"],
+                    "time": route_time(mark["elapsed_ms"])})
+
+
+@app.post("/matches/<int:match_id>/route/marks/<int:mark_id>/delete")
+def delete_route_mark(match_id, mark_id):
+    storage.delete_route_mark(db(), match_id, mark_id)
+    return redirect(url_for("match_route", match_id=match_id))
 
 
 def match_ranges():

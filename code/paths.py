@@ -25,6 +25,7 @@ import tempfile
 from pathlib import Path
 
 FROZEN = getattr(sys, "frozen", False)  # 是不是打包后的 Evo.exe
+STARTUP_WARNINGS = []  # 启动早期（日志还没准备好）遇到的非致命问题，setup_logging 时补写进日志
 APP_DIR = Path(sys._MEIPASS) if FROZEN else Path(__file__).resolve().parent.parent  # 源码：本文件在 code/ 里，上一层是项目文件夹
 EXE_DIR = Path(sys.executable).resolve().parent if FROZEN else APP_DIR  # Evo.exe 所在的文件夹
 DATA_NAME = "Evo Tracker Data"  # 程序旁边的默认位置、设置页里自己选的位置，都叫这个名字（2026-10-20 用户决定）
@@ -46,12 +47,52 @@ def has_data(folder):
     return (Path(folder) / "data" / "evo.db").is_file()
 
 
-def _in_temp(path):
+def _warn(message):
+    """启动早期没有日志可写：记住，setup_logging 时补写；同时打到 stderr（源码运行能看见）。"""
+    STARTUP_WARNINGS.append(message)
     try:
-        Path(path).resolve().relative_to(Path(tempfile.gettempdir()).resolve())
-        return True
-    except ValueError:
+        print(message, file=sys.stderr)
+    except Exception:  # noqa: BLE001 没有 stderr 的打包环境
+        pass
+
+
+def _tempdir():
+    """系统的临时文件夹；TEMP/TMP 被指到不存在或没权限的地方时返回 None，绝不让启动崩掉。"""
+    try:
+        return Path(tempfile.gettempdir())
+    except OSError as e:
+        _warn(f"拿不到临时目录（TEMP/TMP 可能指到了不存在或不能写的位置）：{e}")
+        return None
+
+
+def _in_temp(path):
+    temp = _tempdir()
+    if temp is None:
         return False
+    try:
+        Path(path).resolve().relative_to(temp.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def writable(folder):
+    """这个文件夹能不能真的写进去（建目录 + 写一个测试文件）。
+    只看 is_dir 不够：受限用户、被改过权限的 AppData、只读介质里建目录能成功但写不了文件。"""
+    folder = Path(folder)
+    probe = folder / f".evo-write-test-{os.getpid()}"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
 
 
 def default_data_dir(exe_dir=EXE_DIR):
@@ -73,7 +114,8 @@ def default_data_dir(exe_dir=EXE_DIR):
 def resolve_data_dir(environ=None, frozen=FROZEN, exe_dir=EXE_DIR, local_dir=LOCAL_DIR, app_dir=APP_DIR):
     """数据文件夹在哪里，返回 (文件夹, 来源)。来源："env" 环境变量 / "project" 用源码运行 / "program" 程序旁边的
     data_location.txt / "pointer" 指路文件 / "legacy" C 盘旧的默认位置（有数据，等着搬）/ "default" 程序旁边的
-    Evo Tracker Data / "local" 程序旁边用不了，只好用 C 盘。参数都是测试时替换用的。"""
+    Evo Tracker Data / "local" 程序旁边用不了，只好用 C 盘 / "temp" 哪儿都写不进去，只好写临时文件夹。
+    每个候选都要先过 writable()：写不进去的候选跳过，免得后面 setup_logging / 数据库一碰就抛 PermissionError。"""
     environ = os.environ if environ is None else environ
     if environ.get("EVO_DATA_DIR"):
         return Path(environ["EVO_DATA_DIR"]).resolve(), "env"
@@ -83,12 +125,27 @@ def resolve_data_dir(environ=None, frozen=FROZEN, exe_dir=EXE_DIR, local_dir=LOC
     if found is not None:
         return found, "program"
     found = read_pointer(Path(local_dir) / POINTER_NAME)
-    if found is not None and found.is_dir():
+    if found is not None and found.is_dir() and writable(found):
         return found, "pointer"
-    if has_data(local_dir):
+    if has_data(local_dir) and writable(local_dir):
         return Path(local_dir), "legacy"
     folder = default_data_dir(exe_dir)
-    return (folder, "default") if folder is not None else (Path(local_dir), "local")
+    if folder is not None and writable(folder):
+        return folder, "default"
+    if writable(local_dir):
+        return Path(local_dir), "local"
+    # 上面都不行：多半是 TEMP 环境变量被指到了程序文件夹（于是 default_data_dir 以为"在压缩包里运行"）。
+    # 只要程序旁边的 Evo Tracker Data 还写得进去，就还是用它——总比 C 盘那个写不进去的位置强。
+    sibling = Path(exe_dir).parent / DATA_NAME
+    if writable(sibling):
+        return sibling, "default"
+    temp = _tempdir()
+    if temp is not None:
+        return temp / DATA_NAME, "temp"
+    # 连临时目录都拿不到：用用户主文件夹兜底；绝不让 import paths 抛异常，否则 Evo 根本启动不了
+    home = Path(os.environ.get("USERPROFILE") or Path.cwd())
+    _warn(f"没有可用的临时目录，数据文件夹改用 {home / DATA_NAME}")
+    return home / DATA_NAME, "temp"
 
 
 DATA_DIR, DATA_SOURCE = resolve_data_dir()

@@ -47,6 +47,28 @@ INSTALLED_DATA = source_run.use_installed_data() if __name__ == "__main__" else 
 import pystray  # noqa: E402
 from PIL import Image, ImageDraw, ImageOps  # noqa: E402
 
+# pystray 建托盘窗口时会调 ChangeWindowMessageFilterEx（让托盘图标收得到任务栏、拖放的消息）。
+# 受限用户 / 被 UIPI 卡住的进程里这一步会抛 PermissionError: [WinError 5]，整个程序直接退出——
+# 但它只影响"收不收得到那几类消息"，托盘图标本身不需要它，所以失败就当没调过。
+def _make_message_filter_optional():
+    try:
+        from pystray._util import win32 as _pystray_win32
+    except ImportError:
+        return
+    original = getattr(_pystray_win32, "ChangeWindowMessageFilterEx", None)
+    if original is None or getattr(original, "_evo_safe", False):
+        return
+    def safe(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except OSError:
+            return False
+    safe._evo_safe = True
+    _pystray_win32.ChangeWindowMessageFilterEx = safe
+
+
+_make_message_filter_optional()
+
 import app_settings  # noqa: E402
 import autostart  # noqa: E402
 import data_move  # noqa: E402
@@ -54,7 +76,8 @@ import storage  # noqa: E402
 import webview2  # noqa: E402
 from game_detect import GAME_PROCESSES, game_running  # noqa: E402
 from icons import base_icon  # noqa: E402
-from paths import ASSETS_DIR, CAPTURES_DIR, DATA_DIR, DB_PATH, FROZEN, LOG_DIR  # noqa: E402
+from paths import ASSETS_DIR, CAPTURES_DIR, DATA_DIR, DATA_SOURCE, DB_PATH, FROZEN, LOG_DIR  # noqa: E402
+import paths  # noqa: E402
 
 APP_NAME = "Evo"
 # 同一个数据文件夹只能运行一个 Evo（防止同一局被记两遍）；数据文件夹不同（比如测试用的临时文件夹）互不影响
@@ -67,14 +90,21 @@ PANEL_PORTS = range(5000, 5020)
 # ---------- 运行记录 ----------
 
 def setup_logging():
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("evo")
     logger.setLevel(logging.INFO)
-    handler = RotatingFileHandler(LOG_DIR / "evo.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S"))
-    logger.addHandler(handler)
+    handler = None
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(LOG_DIR / "evo.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    except OSError:
+        handler = None  # 日志写不进去也不能因此打不开程序（受限用户、被改过权限的 AppData）
+    if handler is not None:
+        handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S"))
+        logger.addHandler(handler)
     if sys.stdout is not None:  # 用源码运行时同时打印到终端；打包后没有终端
         logger.addHandler(logging.StreamHandler(sys.stdout))
+    for warning in paths.STARTUP_WARNINGS:  # import paths 时日志还没准备好，现在补写
+        logger.warning(warning)
     return logger
 
 
@@ -643,7 +673,7 @@ def main():
     # 后台线程里没接住的错误也写进日志（打包后没有终端窗口，出了问题只能看日志）
     threading.excepthook = lambda a: logger.error(f"后台线程 {a.thread.name if a.thread else ''} 出错",
                                                   exc_info=(a.exc_type, a.exc_value, a.exc_traceback))
-    log(f"Evo {storage.APP_VERSION} 启动{'（源码运行）' if not FROZEN else ''}。数据文件夹：{DATA_DIR}；"
+    log(f"Evo {storage.APP_VERSION} 启动{'（源码运行）' if not FROZEN else ''}。数据文件夹：{DATA_DIR}（来源 {DATA_SOURCE}）；"
         f"把这些进程当作游戏：{'、'.join(args.game)}" + ("；只进托盘、不弹窗口（--background）" if args.background else ""))
     if INSTALLED_DATA is not None:
         backup_before_source_run(log)
@@ -742,4 +772,22 @@ def main():
 
 
 if __name__ == "__main__":
+    import sys
+    import time
+    import traceback
+
+    def _crash_hook(kind, value, tb):
+        """打包版没有终端，Python 的报错会以弹窗的形式一闪而过、抄不下来。这里先把完整
+        traceback 追加到 logs\\evo_crash.log，再交给默认处理（弹窗照旧）。"""
+        try:
+            from paths import LOG_DIR
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            with open(LOG_DIR / "evo_crash.log", "a", encoding="utf-8") as fh:
+                fh.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
+                fh.write("".join(traceback.format_exception(kind, value, tb)))
+        except Exception:  # noqa: BLE001  连写日志都失败就放弃，别掩盖原始错误
+            pass
+        sys.__excepthook__(kind, value, tb)
+
+    sys.excepthook = _crash_hook
     main()

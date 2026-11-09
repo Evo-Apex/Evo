@@ -65,11 +65,6 @@ class Snip:
         """roi 这一块缩放成基准尺寸的灰度图（比外观用）。"""
         return cv2.cvtColor(self.crop(roi, 1, gray=False), cv2.COLOR_BGR2GRAY)
 
-    def thumb(self):
-        """缩小的灰度图，用来判断"和上一次存的比，内容变了没有"。"""
-        g = cv2.cvtColor(self.img, cv2.COLOR_BGR2GRAY)
-        return cv2.resize(g, (max(1, g.shape[1] // 4), max(1, g.shape[0] // 4)), interpolation=cv2.INTER_AREA)
-
 
 def load_hud_template(name, lang=None):
     """对局中的一张参照图（灰度），没有返回 None。lang：游戏语言，带文字的（"观战"标签）每种语言一张，见 game_lang.py。"""
@@ -126,6 +121,7 @@ class Hud:
         self.missing = [n for n, t in (("spectate", self.spectate_template), ("damage_icon", self.icon_template),
                                        *((icons[k]["template"], self.kp_templates[k]) for k in KP_ROW))
                         if t is None]  # 没有参照图的（认不出观战、读不出伤害等）
+        self.last_raw = {}
 
     # ---------- 只看外观、不用识别引擎 ----------
 
@@ -166,14 +162,23 @@ class Hud:
     def own_name_snip(self, frame, roi, anchor=None):
         return Snip(frame, roi, self.base, anchor)
 
+    def readout_rois(self):
+        """右上角显示着读数的那几块（基准坐标）：剩余小队、击杀/助攻/老板分那一行、伤害、RP。
+        判断"变了没有"只看这几块（见 changed）。"""
+        top = self.cfg["top_right"]
+        return (top["fields"]["squads_left"]["roi"], top["kp_row"]["area"],
+                top["damage"]["cell"], top["fields"]["rp_delta"]["roi"])
+
     def changed(self, a, b):
-        """两块右上角的内容是不是不一样（只存变了的，读的时候少读几张）。"""
-        if a is None or b is None:
+        """两块右上角的内容是不是不一样（只存变了的，读的时候少读几张）。
+        只看读数那几块，不比整块：整块缩到 1/4 再取平均，一个数字变了也只差 0.1–0.8，被整块（以及面板缝隙里的
+        战场）稀释得看不见。2026-11-07 实战就是这样：整局的击杀、助攻、伤害一次都没算"变了"，路线上的节点
+        到快结束前全是 0。"""
+        if a is None or b is None or a.img.shape != b.img.shape:
             return True
-        ta, tb = a.thumb(), b.thumb()
-        if ta.shape != tb.shape:
-            return True
-        return float(np.mean(cv2.absdiff(ta, tb))) >= self.cfg["top_right"]["change"]
+        limit = self.cfg["top_right"]["change"]
+        return any(float(np.mean(cv2.absdiff(a.gray(roi), b.gray(roi)))) >= limit
+                   for roi in self.readout_rois())
 
     # ---------- 用识别引擎读（一局结束时才调用） ----------
 
@@ -181,10 +186,17 @@ class Hud:
         result = self.engine(piece)
         return list(zip(result.txts or (), result.scores or ()))
 
-    def _number(self, piece, pattern, bounds, top):
-        """读一小块里的一个整数（格式和范围都对、置信度够高才算），读不到返回 (None, 置信度或 None)。"""
+    def _number(self, piece, pattern, bounds, top, field=None):
+        """读一小块里的一个整数（格式和范围都对、置信度够高才算），读不到返回 (None, 置信度或 None)。
+        field 只给离线诊断用：把这一块 OCR 的原文和置信度留在 last_raw，方便调参。"""
         best = (None, None)
-        for text, score in self._texts(piece):
+        texts = self._texts(piece)
+        if field is not None:
+            if not hasattr(self, "last_raw"):
+                self.last_raw = {}
+            self.last_raw.setdefault(field, []).extend({"text": text, "score": round(float(score), 4)}
+                                                       for text, score in texts)
+        for text, score in texts:
             m = re.search(pattern, clean_number(text, top["replace"]))
             if not m:
                 continue
@@ -201,9 +213,10 @@ class Hud:
         老板分的图标不在、但这一行显示着：老板分留空（用户说过老板分不是每次都有，不知道没显示是不是 0）"""
         top = self.cfg["top_right"]
         values, scores = {}, {}
+        self.last_raw = {}
         for name, spec in top["fields"].items():  # 剩余小队数、RP（击杀那一行见下面）
             piece = snip.crop(spec["roi"], top["upscale"], pad=top["pad"])
-            values[name], scores[name] = self._number(piece, spec["pattern"], spec["range"], top)
+            values[name], scores[name] = self._number(piece, spec["pattern"], spec["range"], top, name)
         values["damage"], scores["damage"], icon = self._damage(snip, top)
         icons = self._kp_icons(snip, top["kp_row"])
         row_shown = "kills" in icons or "assists" in icons
@@ -215,6 +228,39 @@ class Hud:
         if icon:
             shown.add("damage")
         return values, scores, shown
+
+    def read_evo(self, crop, spec):
+        """读左下角‘距下一级’的 EVO 数值。crop 是 routes.py 已按当前分辨率裁好的小块。
+
+        录屏样本里文字和数字可能被 OCR 拆成几段，所以既试每一段，也试按画面顺序拼起来的整行；
+        必须同时符合带‘下一级 / 进化 / EVO’的格式，避免把等级、血量或直播水印当成 EVO。
+        """
+        _, _, width, height = spec["roi"]
+        piece = cv2.resize(crop, (round(width * spec["upscale"]), round(height * spec["upscale"])),
+                           interpolation=cv2.INTER_CUBIC)
+        piece = cv2.cvtColor(cv2.cvtColor(piece, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
+        pad = int(spec.get("pad", 0))
+        if pad:
+            piece = cv2.copyMakeBorder(piece, pad, pad, pad, pad, cv2.BORDER_REPLICATE)
+        texts = self._texts(piece)
+        if not hasattr(self, "last_raw"):
+            self.last_raw = {}
+        self.last_raw["evo"] = [{"text": text, "score": round(float(score), 4)} for text, score in texts]
+        candidates = list(texts)
+        if len(texts) > 1:
+            candidates.append(("".join(text for text, _score in texts), min(score for _text, score in texts)))
+        best = (None, None)
+        for text, score in candidates:
+            cleaned = clean_number(text, spec.get("replace", {}))
+            for pattern in spec["patterns"]:
+                found = re.search(pattern, cleaned, re.IGNORECASE)
+                if not found:
+                    continue
+                value = int(found[1])
+                if (score >= spec["min_score"] and spec["range"][0] <= value <= spec["range"][1]
+                        and (best[1] is None or score > best[1])):
+                    best = (value, float(score))
+        return best
 
     def _kp_icons(self, snip, row):
         """击杀 / 助攻 / 老板分那一行每个图标的左右边（基准坐标），{项: (左, 右)}，没找到的不在里面。
@@ -246,7 +292,7 @@ class Hud:
         if right - left < 6:
             return None, None
         piece = snip.crop([left, y, right - left, h], top["upscale"], pad=top["pad"])
-        return self._number(piece, r"^(\d{1,3})$", row["range"], top)
+        return self._number(piece, r"^(\d{1,3})$", row["range"], top, name)
 
     def _damage(self, snip, top):
         """伤害：先找到前面的图标，只读图标右边的数字。返回 (值, 置信度, 图标在不在)。
@@ -261,7 +307,7 @@ class Hud:
         if right - left < 6:
             return None, None, True
         piece = snip.crop([left, cell[1], right - left, cell[3]], top["upscale"], pad=top["pad"])
-        return (*self._number(piece, r"^(\d{1,5})$", d["range"], top), True)
+        return (*self._number(piece, r"^(\d{1,5})$", d["range"], top, "damage"), True)
 
     def read_name(self, snip, left_range=None):
         return read_name(self.engine, snip, left_range)

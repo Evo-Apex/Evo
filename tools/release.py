@@ -147,7 +147,8 @@ def sha256(path):
 
 
 def version_tuple(text):
-    return tuple(int(x) for x in text.split("."))
+    """「0.5.5」→ (0, 5, 5)；测试版的后缀（「0.5.5b」）不参与比较（2026-11-08，同 update_check）。"""
+    return tuple(int(x) for x in re.match(r"\d+(?:\.\d+)*", str(text)).group(0).split("."))
 
 
 def old_packages():

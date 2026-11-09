@@ -12,15 +12,21 @@
 
 import base64
 import ctypes
+import hashlib
+import os
 import sys
+import tempfile
 import threading
 from ctypes import wintypes
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import webview
 
+import paths
 import storage
-from paths import DATA_DIR
+from paths import DATA_DIR, LOG_DIR
 
 USER_AGENT = (f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
               f"EvoApp/{storage.APP_VERSION}")  # 面板网页看到 EvoApp，就显示自定义标题栏
@@ -33,6 +39,34 @@ _user32 = ctypes.WinDLL("user32")
 _user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 _user32.SendMessageW.restype = ctypes.c_ssize_t
 _dwmapi = ctypes.WinDLL("dwmapi")
+_shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+_shell32.ShellExecuteW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                                   wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_int]
+_shell32.ShellExecuteW.restype = wintypes.HINSTANCE
+SHELL_EXECUTE_ERRORS = {
+    0: "内存不足",
+    2: "找不到文件",
+    3: "找不到路径",
+    5: "拒绝访问",
+    8: "内存不足",
+    26: "文件共享冲突",
+    27: "文件关联不完整",
+    28: "DDE 超时",
+    29: "DDE 失败",
+    30: "DDE 忙",
+    31: "没有关联的程序",
+    32: "找不到所需的 DLL",
+}
+
+
+def _external_log(message):
+    """把外链调用写进 logs/evo.log；日志失败不能影响打开浏览器。"""
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOG_DIR / "evo.log", "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} [外链] {message}\n")
+    except OSError:
+        pass
 
 
 class WindowApi:
@@ -46,10 +80,15 @@ class WindowApi:
         return self._window.native  # WinForms 的窗口对象
 
     def _on_ui(self, func):
-        """在窗口自己的线程里执行（WinForms 要求窗口操作都在这个线程里做）。"""
+        """在窗口自己的线程里执行（WinForms 要求窗口操作都在这个线程里做）。
+        如果当前已经在这个线程上，直接执行，避免 Invoke 自己造成死锁。"""
+        form = self._form()
+        if not getattr(form, "InvokeRequired", False):
+            func()
+            return
         from System import Action
 
-        self._form().Invoke(Action(func))
+        form.Invoke(Action(func))
 
     def _maximized(self):
         from System.Windows.Forms import FormWindowState
@@ -105,6 +144,56 @@ class WindowApi:
         """设置页"更改位置"的"浏览…"（data_move.py）：弹出 Windows 选文件夹的对话框，返回选的文件夹，没选返回 None。"""
         chosen = self._window.create_file_dialog(webview.FileDialog.FOLDER, directory=start or "")
         return chosen[0] if chosen else None
+
+    def _shell_execute_on_ui(self, url):
+        """在 WinForms UI 线程调用 ShellExecuteW，hwnd 用 Evo 窗口真实句柄。
+        返回 ShellExecuteW 的原始返回值；UI 调度或调用异常向上抛，由 open_external 兜底。"""
+        result = {}
+
+        def go():
+            form = self._form()
+            hwnd = form.Handle.ToInt64()
+            _user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
+            _external_log(f"在 WinForms UI 线程调用 ShellExecuteW（hwnd={hwnd}，url={url}）")
+            result["code"] = _shell32.ShellExecuteW(hwnd, "open", url, None, None, 1)  # SW_SHOWNORMAL
+
+        self._on_ui(go)
+        return int(result.get("code") or 0)
+
+    def open_external(self, url):
+        """把明确标记的外部链接交给 Windows 默认浏览器（base.html 的 data-external-link）。
+        只收 http/https；其他协议（javascript:、file:、data:、本地路径）一律拒绝。
+        返回 {"ok": bool, "url": str, "code": int|None, "error": str|None}，页面脚本不会因为异常崩掉。"""
+        raw = url if isinstance(url, str) else ""
+        try:
+            if not isinstance(url, str):
+                error = "地址不是字符串"
+                _external_log(f"拒绝：{error}；收到 {type(url).__name__}")
+                return {"ok": False, "url": "", "code": None, "error": error}
+            url = url.strip()
+            if any(ch in url for ch in ("\r", "\n", "\t", "\0")):
+                error = "地址里有控制字符"
+                _external_log(f"拒绝：{error}；收到 {raw!r}")
+                return {"ok": False, "url": url, "code": None, "error": error}
+            parts = urlsplit(url)
+            if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+                error = "只允许 http:// 或 https:// 地址"
+                _external_log(f"拒绝：{error}；收到 {url!r}")
+                return {"ok": False, "url": url, "code": None, "error": error}
+
+            _external_log(f"收到 {url}；在 WinForms UI 线程调用 ShellExecuteW")
+            code = self._shell_execute_on_ui(url)
+            if code > 32:
+                _external_log(f"成功：ShellExecuteW 返回 {code}；{url}")
+                return {"ok": True, "url": url, "code": code, "error": None}
+            reason = SHELL_EXECUTE_ERRORS.get(code, "未知错误")
+            error = f"打开系统浏览器失败（Windows 错误码 {code}：{reason}）"
+            _external_log(f"失败：ShellExecuteW 返回 {code}（{reason}）；{url}")
+            return {"ok": False, "url": url, "code": code, "error": error}
+        except Exception as exc:  # noqa: BLE001 浏览器/系统异常不能让页面脚本崩掉
+            error = f"打开系统浏览器失败：{exc}"
+            _external_log(f"异常：{exc!r}；{url!r}")
+            return {"ok": False, "url": raw, "code": None, "error": error}
 
     def save_image(self, filename, data_url):
         """分享战绩的"保存图片…"（panel/templates/_share.html）：弹出 Windows 的"另存为"，默认放在"图片"文件夹，
@@ -174,6 +263,23 @@ def _watch_focus(api, focus):
             return
 
 
+def _webview_storage():
+    """WebView2 的缓存目录：先用数据文件夹里的 webview；这里不能写时退到临时目录，绝不因权限问题改用浏览器。"""
+    folder = DATA_DIR / "webview"
+    if paths.writable(folder):
+        return folder
+    temp = paths._tempdir()
+    if temp is not None:
+        # 每个数据目录一个稳定短摘要，避免不同数据目录共用同一份 WebView2 缓存。
+        # 不用内置 hash()：它每个进程可能不同。
+        digest = hashlib.sha256(os.path.normcase(str(DATA_DIR.resolve())).encode("utf-8")).hexdigest()[:12]
+        fallback = temp / f"evo-webview-{digest}"
+        if paths.writable(fallback):
+            paths._warn(f"数据文件夹里的 WebView2 缓存目录不能写（{folder}），改用 {fallback}")
+            return fallback
+    raise RuntimeError(f"WebView2 缓存目录不能写：{folder}")
+
+
 def run(url, focus=None):
     """打开 Evo 窗口，直到窗口关闭才返回。focus：托盘程序用来"把窗口调到最前"的信号（multiprocessing.Event）。"""
     # 再确认一次 pywebview 用的是 WebView2：它找不到 WebView2 时会悄悄改用 IE 内核，面板会乱成一堆文字（见 webview2.py）。
@@ -182,6 +288,7 @@ def run(url, focus=None):
 
     if winforms.renderer != "edgechromium":
         raise RuntimeError(f"没有可用的 WebView2，pywebview 要改用 {winforms.renderer}")
+    storage_path = _webview_storage()
     webview.settings["ALLOW_DOWNLOADS"] = True  # 导出 CSV
     api = WindowApi()
     window = webview.create_window(
@@ -198,7 +305,7 @@ def run(url, focus=None):
     window.events.shown += shown
     if focus is not None:
         threading.Thread(target=_watch_focus, args=(api, focus), name="focus", daemon=True).start()
-    webview.start(gui="edgechromium", private_mode=False, storage_path=str(DATA_DIR / "webview"),
+    webview.start(gui="edgechromium", private_mode=False, storage_path=str(storage_path),
                   user_agent=USER_AGENT)
 
 

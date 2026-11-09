@@ -133,11 +133,11 @@ def unblock(log, root=APP_DIR):
     for folder in NET_FOLDERS:
         for path in sorted((root / folder).rglob("*.dll")):
             mark = f"{path}{MARK}"
-            if not os.path.exists(mark):  # 没有标记；不是 NTFS 的盘（FAT32、exFAT）也没有
-                continue
             try:
                 os.remove(mark)
                 removed += 1
+            except FileNotFoundError:  # 本来就没有标记；不是 NTFS 的盘（FAT32、exFAT）也一样
+                continue
             except OSError:  # 程序文件夹不能写入（如 C:\Program Files）、被杀毒软件拦住
                 failed.append(path)
     if removed:

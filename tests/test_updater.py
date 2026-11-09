@@ -649,11 +649,23 @@ def panel_checks(base):
     return out
 
 
+def version_checks():
+    """支线测试版的版本号（2026-11-08）：后缀不参与比较，免得测试版自己提醒自己更新、或者把 “0.5.5b” 当成格式错误。"""
+    out = {}
+    out["测试版后缀不影响版本比较"] = (update_check.version_tuple("0.5.5b") == (0, 5, 5)
+                                  and update_check.version_tuple("0.5.5") == (0, 5, 5)
+                                  and update_check.version_tuple("0.5.5-beta.1") == (0, 5, 5))
+    out["格式不对的版本号还是认不出来"] = (update_check.version_tuple("0.5") is None
+                                    and update_check.version_tuple("beta") is None)
+    return out
+
+
 def main():
     print("一键更新：下载、核对、安装、恢复、面板")
     server, base = start_server()
     try:
-        checks = download_info_checks()
+        checks = version_checks()
+        checks.update(download_info_checks())
         checks.update(latest_checks(base))
         checks.update(download_checks(base))
         checks.update(mirror_checks(base))

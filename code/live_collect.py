@@ -47,11 +47,14 @@ from time import perf_counter, process_time  # 单独导入：测试会把本文
 import cv2
 
 import capture
+import game_aspect
 import game_lang
+import layout
 import screenshots
 import season_import
 import sounds
 import storage
+import routes
 from eliminated import read_eliminated
 from game_aspect import AspectWatcher
 from hud import Hud
@@ -446,6 +449,11 @@ class SeasonWatcher:
     对局中不读。认这一页、读数都只在录入模式里做，平时一点不多花。"""
 
     OWNER_SECONDS = 30  # 读过一次页面上的名字，这么久之内回到数据页（比如下拉菜单收起来）不再读
+    STATUS_SECONDS = 10  # 录入时状态提示最多这么久说一次，不要每帧刷屏
+    STATUS_AFTER = 3  # 连续这么多帧没认出数据页才提示（刚切到数据页的那一两帧不算）
+    # 同一帧里可能先看到 season 再看到 career、先“稳定中”再“已存”：只报最终那一个。
+    STATUS_PRIORITY = {"waiting_page": 0, "page_not_recognized": 1, "stabilizing": 2,
+                       "obscured": 3, "owner_mismatch": 4, "stored": 5}
 
     def __init__(self, engine, conn, post, log, play=None, page=None):
         """page：season_stats.SeasonPage（不给就在第一次用到时新建：读规则、参照图）。"""
@@ -463,6 +471,12 @@ class SeasonWatcher:
         self.said = set()  # 已经在日志里说过的（被挡住、0 局、不是自己的），每项只说一次
         self.owner = None  # 页面上的名字和它是不是自己：(名字, 是不是自己, 读的时刻)
         self.showing = False  # 上一张是数据页（截图加快）
+        self.seen_page = False  # 这次录入里认出过数据页没有（决定提示“等待数据页”还是“未识别页面”）
+        self.misses = 0  # 连续多少帧没认出数据页
+        self.feedback_key = None  # 上一次状态提示的内容（一样就不重复说）
+        self.feedback_at = None
+        self.status_candidates = {}  # 这一帧出现过的状态：stage → {states, messages, ...}；帧末只提交最高优先级
+        self.stored_logs = []  # 这一帧存下的项：帧末合并成一行日志，避免 season/career 各写一行
 
     def check_mode(self, now):
         """看一眼设置里录入模式开没开（记录程序每隔几秒调用一次，和"游戏语言"一样）。"""
@@ -483,24 +497,104 @@ class SeasonWatcher:
                      + ("，到 Evo 窗口的\"赛季\"页面核对、保存" if self.saved else ""))
         self.on = False
         self._reset()
+        season_import.clear_status()
 
     def update(self, screen, frame, now, in_match):
-        """每截一帧调用一次。screen：认出的画面（数据页不在里面，是 None）；in_match：正在对局中。"""
+        """每截一帧调用一次。screen：认出的画面（数据页不在里面，是 None）；in_match：正在对局中。
+
+        这一帧里 season/career 两栏、稳定/存下可能各报一次状态；先收集，帧末只提交优先级最高的一个，
+        避免同一帧连续改两次 settings.json。"""
+        self.status_candidates = {}
+        self.stored_logs = []
         self.showing = False
-        if not self.on or screen is not None or in_match:
-            return
-        if self.page is None:
-            from season_stats import SeasonPage
-            self.page = SeasonPage(self.engine)
-        if not self.page.on_page(frame):
-            return
-        self.showing = True
-        if not self._own(frame, now):
-            return
-        season, kind, season_name, raw = self.page.label(frame, self.memo)
-        if season is not None:
-            self._panel("season", (season, kind), season_name, frame, now)
-        self._panel("career", (None, "career"), "大逃杀", frame, now)
+        try:
+            if not self.on:
+                return
+            if in_match:
+                self._miss(frame, now, "等待数据页（对局中不读）")
+                return
+            if screen is not None:
+                self._miss(frame, now, "等待数据页（当前画面不是数据页）")
+                return
+            if self.page is None:
+                from season_stats import SeasonPage
+                self.page = SeasonPage(self.engine)
+            if not self.page.on_page(frame):
+                self._miss(frame, now, "未识别页面" if self.seen_page else "等待数据页")
+                return
+            self.seen_page, self.misses = True, 0
+            self.showing = True
+            if not self._own(frame, now):
+                self._feedback("玩家名不匹配", frame, now)
+                return
+            season, kind, season_name, raw = self.page.label(frame, self.memo)
+            if season is not None:
+                self._panel("season", (season, kind), season_name, frame, now)
+            self._panel("career", (None, "career"), "大逃杀", frame, now)
+        finally:
+            self._flush_status(now)
+
+    def _miss(self, frame, now, state):
+        """没认出数据页：连续几帧以后在日志里说清现在用的比例、截图尺寸和卡在哪一步。"""
+        self.misses += 1
+        if self.misses >= self.STATUS_AFTER:
+            self._feedback(state, frame, now)
+
+    def _feedback(self, state, frame, now, force=False):
+        """记下这一帧的状态（比例、截图尺寸），帧末由 _flush_status 只打一行、只写一次。
+
+        season/career 两栏在同一帧可能各报一次；这里只收集，不立即写日志或设置文件。"""
+        h, w = frame.shape[:2]
+        aspect = game_aspect.name(layout.game_aspect() or w / h)
+        if state.startswith("等待数据页"):
+            stage = "waiting_page"
+        elif state.startswith("未识别"):
+            stage = "page_not_recognized"
+        elif state.startswith("玩家名"):
+            stage = "owner_mismatch"
+        elif state.startswith("数字稳定中"):
+            stage = "stabilizing"
+        elif state.startswith("0 局") or state.startswith("已存为待核对"):
+            stage = "stored"
+        elif "挡住" in state:
+            stage = "obscured"
+        else:
+            stage = "waiting_page"
+        message = {"未识别页面": "未识别到数据页", "玩家名不匹配": "数据页上的玩家名不是你"}.get(state, state)
+        item = self.status_candidates.setdefault(stage, {"states": [], "messages": [], "force": False})
+        if state not in item["states"]:
+            item["states"].append(state)
+        if message not in item["messages"]:
+            item["messages"].append(message)
+        item.update(aspect=aspect, width=w, height=h)
+        item["force"] = item["force"] or force
+
+    def _flush_status(self, now):
+        """这一帧只提交一个最终状态：优先级 stored > owner_mismatch > obscured > stabilizing >
+        page_not_recognized > waiting_page。日志和设置文件都只写胜出的那一条。"""
+        if self.status_candidates:
+            stage = max(self.status_candidates, key=lambda s: self.STATUS_PRIORITY.get(s, 0))
+            item = self.status_candidates.pop(stage)
+            state = "；".join(item["states"])
+            message = "；".join(item["messages"])
+            key = (stage, state, item["width"], item["height"], item["aspect"])
+            if (item["force"] or key != self.feedback_key or self.feedback_at is None
+                    or (now - self.feedback_at).total_seconds() >= self.STATUS_SECONDS):
+                self.feedback_key, self.feedback_at = key, now
+                hint = ""
+                if item["aspect"] != "4:3" and stage in ("waiting_page", "page_not_recognized"):
+                    hint = "；如果游戏是 4:3，到设置页把“游戏画面比例”选成 4:3 再试"
+                self.log(f"[{now:%H:%M:%S}] 录入历史赛季数据：{state}"
+                         f"（游戏画面比例 {item['aspect']}，截图 {item['width']}×{item['height']}）{hint}")
+            season_import.report(stage, message, item["aspect"], item["width"], item["height"],
+                                 now, force=item["force"])
+            self.status_candidates = {}
+        if self.stored_logs:
+            from season_stats import show
+            when = self.stored_logs[0][3]
+            parts = [f"{what}（{show(values, approx)}）" for what, values, approx, _ in self.stored_logs]
+            self.log(f"[{when:%H:%M:%S}] 数据页：" + "；".join(parts) + " 存成待核对")
+            self.stored_logs = []
 
     def _own(self, frame, now):
         """页面上的名字是不是自己（结果留 OWNER_SECONDS 秒）。"""
@@ -524,16 +618,20 @@ class SeasonWatcher:
         if reading["obscured"]:
             self.last.pop(panel, None)
             self._say(("obscured", key), now, f"数据页（{what}）被鼠标弹出的说明框挡住了，把鼠标移开一点")
+            self._feedback("数据页被说明框挡住，把鼠标移开一点", frame, now)
             return
         values = reading["values"]
         stable = self.last.get(panel) == (key, values)
         self.last[panel] = (key, values)
         if not stable or self.stored.get(key) == values:
+            if not stable:
+                self._feedback(f"数字稳定中（{what}）", frame, now)
             return
         values, approx, problems = check(values, reading["approx"])
         if empty(values):
             self.stored[key] = reading["values"]
             self._say(("empty", key), now, f"数据页：{what} 0 局，不记")
+            self._feedback(f"0 局，不记（{what}）", frame, now)
             return
         storage.save_season_pending(self.conn, {
             "player_name": self.owner[0], "season": key[0], "kind": key[1], "season_name": season_name,
@@ -541,7 +639,8 @@ class SeasonWatcher:
             "review_note": "\n".join(problems) or None})
         self.stored[key] = reading["values"]
         self.saved += 1
-        self.log(f"[{now:%H:%M:%S}] 数据页：{what} 存成待核对（{show(values, approx)}）")
+        self.stored_logs.append((what, values, approx, now))
+        self._feedback(f"已存为待核对（{what}）", frame, now, force=True)
         for p in problems:
             self.log(f"           ⚠ {p}")
         if key[0] is not None:
@@ -624,7 +723,9 @@ def collect(db_path=storage.DB_PATH, interval=1.0, fast=0.3, summary_timeout=10.
                 f"（腾出 {done.freed / 2 ** 20:.0f} MB）")
 
     name_cfg = load_config("player_name.json")
-    post = PostMatch(conn, log=log, name_slip=name_cfg["slip_similarity"], on_round_end=round_end)
+    route = routes.RouteRecorder(conn, log=log)
+    post = PostMatch(conn, log=log, name_slip=name_cfg["slip_similarity"], on_round_end=round_end,
+                     on_match_saved=route.bind_match)
 
     # clock 用 lambda 包一层：测试时会把本文件的 time 换成假时钟
     engine = LazyEngine(SMALL_CROP_PARAMS, MODEL_IDLE_SECONDS, clock=lambda: time.monotonic(), log=log)
@@ -645,7 +746,8 @@ def collect(db_path=storage.DB_PATH, interval=1.0, fast=0.3, summary_timeout=10.
         save_png(path, frame)
 
     in_match = InMatchWatcher(hud, post, log, name_cfg, save=save_hud,
-                              keep_all=lambda: other.keep_all, before_hand_over=summary.catch_up)
+                              keep_all=lambda: other.keep_all, before_hand_over=summary.catch_up,
+                              on_top_change=route.record_top, on_state=route.record_state)
     lobby = LobbyWatcher(LobbyReader(engine, load_config("lobby.json", lang)), post, conn, log)
     seasons = SeasonWatcher(engine, conn, post, log)  # 录入历史赛季数据（设置页的按钮）
     aspect = AspectWatcher(log, clock=lambda: time.monotonic(), fixed=game_aspect)
@@ -715,8 +817,11 @@ def collect(db_path=storage.DB_PATH, interval=1.0, fast=0.3, summary_timeout=10.
                     summary.catch_up()  # 存总结页时先留着的队友、名字：回到大厅、下一局开局时读，在交对局中的数据之前
                 in_match.update(screen, frame, now)  # 一局结束时先记下；回到大厅、下一局开局时交对局中的数据（先交才收尾）
                 other.update(None if on_summary else screen, frame, now)  # 总结页还没存下时，经验值页先不读
+                route.update(screen, frame, now, in_match.active, post.info.get("map"))
                 lobby.update(screen, frame, now)
                 seasons.update(screen, frame, now, in_match.active)  # 录入模式里：游戏里的数据页
+                if not in_match.active and not summary.waiting and not on_xp and not seasons.showing:
+                    route.idle_step(hud)  # 对局中不跑 OCR；空闲时每轮消化一个路线状态点
                 if screen is not None:
                     last_seen, warned = tick, False
                 elif not warned and tick - last_seen > NO_SCREEN_WARNING_MINUTES * 60 and not in_match.active:
@@ -747,6 +852,7 @@ def collect(db_path=storage.DB_PATH, interval=1.0, fast=0.3, summary_timeout=10.
         post.finish()
         aspect.reset()
         seasons.stop(now)
+        route.stop(now, hud)
         speed.stop()
         camera.release()
         conn.close()
