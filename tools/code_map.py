@@ -89,6 +89,7 @@ SECTIONS = [
         "tools/replay_season_frame.py", "tools/code_map.py", "tools/map_assets.py"]),
     ("测试（tests/）", None, [
         "tests/run_all.py", "tests/fake_game.py", "tests/test_*.py",
+        ("tests/*.mjs", "可选的前端脚本测试（Node 假 DOM，跑设置页外链/派圈助手点击；没装 Node 时 test_follow 会跳过，Evo 运行不依赖 Node）"),
         ("tests/*.csv", "正确答案（整晚重放、数据页、武器）；队友名字的答案只在本机")]),
     ("其他", None, [
         ("assets/", "素材原图：icon/ 图标、legends/ 传奇头像（各自的许可在 LICENSE.txt）、ranks/ 段位、sounds/ 提示音"),

@@ -8,12 +8,15 @@
 - 右上角"Evo 官方合作小程序：派圈助手"（2026-10-28，每一页都有）：前面是派圈助手的图标，点了弹出小程序码（弹窗、码、扫码说明、关闭）；
   每一页都有；没有小程序码图片时不显示；有图片时两张都是真的 PNG、面板能取到，文件夹里有许可说明
 - 设置页"关于 Evo"下面的鸣谢卡片（2026-11-07）：开发者（链到 GitHub）→ 官方合作（派圈助手，弹同一个小程序码）→ 特别鸣谢
+- 可选：装了 Node 时，再用 tests/js_settings_actions.mjs 跑一遍假 DOM 脚本测试；没装就明确跳过。
+  Evo 运行不依赖 Node，真实 WebView2 行为由 tests/test_settings_webview2.py 单独验证。
 
 运行：python tests/test_follow.py
 """
 
 import json
 import re
+import shutil
 import subprocess
 import tempfile
 from unittest import mock
@@ -90,7 +93,10 @@ def main():
     checks.update(credits_checks(client))
     checks.update(external_link_checks(client))
     checks.update(window_api_checks())
-    checks.update(script_behaviour_checks(client))
+    js_checks, js_skip = script_behaviour_checks(client)
+    checks.update(js_checks)
+    if js_skip:
+        print(f"  ⏭ {js_skip}")
     return report(checks)
 
 
@@ -202,13 +208,20 @@ def window_api_checks():
 
 
 def script_behaviour_checks(client):
-    """执行 base.html 里的外部链接/派圈助手脚本逻辑（Node + 假 DOM），不是只查字符串。"""
+    """可选的前端脚本测试（Node + 假 DOM）；没装 Node 时返回空检查 + 跳过原因。
+
+    这不是 Evo 的运行依赖：普通 Python 测试、tests/run_all.py 都不要求 Node。
+    真实 WebView2 行为由 tests/test_settings_webview2.py 单独验证。
+    """
+    node = shutil.which("node")
+    if not node:
+        return {}, "可选 Node 假 DOM 测试未运行（找不到 node；Evo 运行不依赖 Node）"
     page = client.get("/settings").get_data(as_text=True)
     html = FOLDER / "settings-rendered.html"
     html.write_text(page, encoding="utf-8")
     script = Path(__file__).with_name("js_settings_actions.mjs")
     try:
-        done = subprocess.run(["node", str(script), str(html)], capture_output=True, text=True,
+        done = subprocess.run([node, str(script), str(html)], capture_output=True, text=True,
                               encoding="utf-8", timeout=30)
         result = json.loads(done.stdout) if done.returncode == 0 else {}
     except (OSError, ValueError, subprocess.TimeoutExpired):
@@ -221,7 +234,7 @@ def script_behaviour_checks(client):
         "可执行 JS：鸣谢卡片派圈助手能打开同一个弹窗": result.get("partner_card_opens"),
         "可执行 JS：关闭按钮/Esc/点背景都能关": result.get("partner_close_button")
             and result.get("partner_esc_closes") and result.get("partner_backdrop_closes"),
-    }
+    }, None
 
 
 SUPPORT_TEXTS = (  # 用户写的原文（"Evo" 后面照面板的习惯加了空格）
