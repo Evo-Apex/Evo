@@ -1,5 +1,4 @@
 """真实 WebView2 DOM 点击验证：外部链接走 open_external、派圈助手弹窗、支持我三步。
-
 会短暂打开一个 Evo 的 WebView2 窗口，不需要人工点击。
 运行：python tests/test_settings_webview2.py
 
@@ -35,13 +34,15 @@ def main():
 
     server = None
     window = None
-    real_open = app_window.webbrowser.open
+    timer = None
+    real_shell = app_window._shell_execute
     opened = []
+    fail_next = [False]
     result = {}
 
-    def fake_open(target, new=0):
+    def fake_shell(target):
         opened.append(target)
-        return True
+        return 5 if fail_next[0] else 33
 
     def js(code):
         return window.evaluate_js(code)
@@ -72,6 +73,14 @@ def main():
             js("document.querySelector('a[data-external-link]').click()")
             result["external_called"] = wait_py(lambda: bool(opened) and opened[0].startswith("https://"))
             result["page_stayed"] = js("location.pathname") == "/settings"
+
+            # 1b) 模拟 ShellExecuteW 失败：页面必须出现可见提示
+            fail_next[0] = True
+            js("document.querySelector('a[data-external-link]').click()")
+            result["external_failure_prompt"] = wait_js(
+                "(function(){var e=document.getElementById('external-link-error');"
+                "return !!e && !e.hidden && e.textContent.indexOf('没有成功打开系统浏览器')>=0;})()")
+            fail_next[0] = False
 
             # 2) 顶栏派圈助手
             js("document.getElementById('partner-open').click()")
@@ -108,22 +117,33 @@ def main():
                 pass
 
     try:
-        app_window.webbrowser.open = fake_open
+        app_window._shell_execute = fake_shell
         server = make_server("127.0.0.1", 0, panel_app.app)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         url = f"http://127.0.0.1:{server.server_port}/settings"
-        window = webview.create_window("Evo R09 test", url, js_api=WindowApi(), width=1200, height=900)
+        window = webview.create_window("Evo R10 test", url, js_api=WindowApi(), width=1200, height=900)
         window.events.loaded += lambda: threading.Thread(target=run, daemon=True).start()
-        # 兜底：WebView2 初始化失败时不让测试永远挂着
-        threading.Timer(25, lambda: window.destroy() if window else None).start()
+
+        # 兜底：WebView2 初始化失败时不让测试永远挂着；成功跑完会在 finally 里取消。
+        def force_close():
+            try:
+                window.destroy()
+            except Exception:  # noqa: BLE001 窗口已经销毁
+                pass
+
+        timer = threading.Timer(25, force_close)
+        timer.daemon = True
+        timer.start()
         webview.start(gui="edgechromium", private_mode=False, storage_path=str(tmp / "webview"))
     except Exception as exc:  # noqa: BLE001
         result["error"] = repr(exc)
     finally:
+        if timer is not None:
+            timer.cancel()
         if server is not None:
             server.shutdown()
             server.server_close()
-        app_window.webbrowser.open = real_open
+        app_window._shell_execute = real_shell
         if window is not None:
             try:
                 window.destroy()
@@ -131,12 +151,14 @@ def main():
                 pass
         shutil.rmtree(tmp, ignore_errors=True)
 
-    expected = ["external_called", "page_stayed", "partner_top_open", "partner_close", "partner_card_open",
-                "partner_esc", "partner_backdrop", "support_1", "support_2", "support_3", "support_closed"]
-    result["browser_restored"] = app_window.webbrowser.open is real_open
+    expected = ["external_called", "page_stayed", "external_failure_prompt", "partner_top_open", "partner_close",
+                "partner_card_open", "partner_esc", "partner_backdrop", "support_1", "support_2", "support_3",
+                "support_closed"]
+    result["browser_restored"] = app_window._shell_execute is real_shell
     result["temp_cleaned"] = not tmp.exists()
+    result["timer_cancelled"] = timer is None or timer.finished.is_set()
     ok = all(result.get(k) for k in expected) and result["browser_restored"] and result["temp_cleaned"] \
-        and "error" not in result
+        and result["timer_cancelled"] and "error" not in result
     print(json.dumps(result, ensure_ascii=False, indent=2))
     print(f"临时目录已清理：{not tmp.exists()}")
     print("通过" if ok else "失败")

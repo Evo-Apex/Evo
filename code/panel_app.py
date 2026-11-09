@@ -173,7 +173,7 @@ FEEDBACK_GROUP = "1128519951"
 THANKS = ("伯乐相马", "司渊")  # 打赏的人（显示的名字，用户给的），按时间先后
 DEVELOPERS = (
     {"name": "黄指导", "url": "https://github.com/AugustHuangMX"},  # 用户
-    {"name": "wzx", "url": "https://github.com/wzxlll33"},  # 学弟 wzxlll33
+    {"name": "M0MoNa", "url": "https://github.com/wzxlll33"},  # 学弟 wzxlll33（显示名 M0MoNa）
 )
 # 总览页"关注我"（2026-10-22 用户要求）：开发者的 B 站、小黑盒主页（不带分享追踪参数的正式地址）。
 # 和"意见反馈"一样交给系统浏览器打开，Evo 自己不联网；图标在 panel/static/brands/（单色，颜色跟随文字）

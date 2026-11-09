@@ -18,13 +18,21 @@ function makeDocument() {
   const document = {
     addEventListener(type, fn) { (handlers[type] ||= []).push(fn); },
     getElementById(id) { return document.__elements[id] || null; },
+    createElement() {
+      const el = { id: "", className: "", textContent: "", hidden: true,
+        setAttribute(name, value) { this[name] = value; } };
+      document.__created.push(el);
+      return el;
+    },
     dispatch(type, target, extra = {}) {
       const event = { type, target, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...extra };
       for (const fn of handlers[type] || []) fn(event);
       return event;
     },
     __elements: {},
+    __created: [],
   };
+  document.body = { appendChild(el) { document.__elements[el.id] = el; } };
   return document;
 }
 
@@ -40,6 +48,18 @@ if (external) {
   let event = document.dispatch("click", link);
   results.external_calls_api = calls.length === 1 && calls[0] === link.href;
   results.external_keeps_page = event.defaultPrevented;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  results.external_success_no_prompt = document.getElementById("external-link-error") === null;
+
+  const document3 = makeDocument();
+  const window3 = { pywebview: { api: { open_external: () => Promise.resolve({ ok: false, error: "错误码 5" }) } } };
+  new Function("document", "window", external)(document3, window3);
+  const link3 = { href: "https://example.com/fail", closest: (sel) => sel === "a[data-external-link]" ? link3 : null };
+  document3.dispatch("click", link3);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const box = document3.getElementById("external-link-error");
+  results.external_failure_prompt = Boolean(box && box.hidden === false
+    && box.textContent.includes("没有成功打开系统浏览器"));
 
   const document2 = makeDocument();
   const window2 = {};
@@ -51,6 +71,8 @@ if (external) {
   results.external_calls_api = false;
   results.external_keeps_page = false;
   results.external_browser_keeps_default = false;
+  results.external_success_no_prompt = false;
+  results.external_failure_prompt = false;
 }
 
 if (partner) {

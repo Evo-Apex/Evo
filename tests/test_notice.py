@@ -139,8 +139,9 @@ def fetch_checks(out, base):
 def show_checks(out, base):
     cos = "/cos/notice.json"
     today = date(2026, 11, 2)
+    base_version = VERSION.split("b")[0]
     serve(cos, [one(nid="old", until="2026-11-01"), one(nid="today", until="2026-11-02"),
-                one(nid="mine", versions=f"<={VERSION}"), one(nid="newer", versions=f">{VERSION}"),
+                one(nid="mine", versions=f"<={base_version}"), one(nid="newer", versions=f">{base_version}"),
                 one(nid="imp", level="important", text="重要的事")])
     notice_check.check()
     shown = [n["id"] for n in notice_check.visible(today)]
@@ -177,7 +178,8 @@ def panel_checks(out):
     out["正文只当纯文字显示（HTML 原样显示出来，不生效）"] = (
         "&lt;b&gt;周末&lt;/b&gt;服务器维护 &amp; 测试" in found[0] and "<b>周末</b>" not in page)
     out["自己网站的链接显示\"详情 ↗\"、交给浏览器打开；别的网站的链接不显示"] = (
-        'href="https://evotracker.cn/news" target="_blank" rel="noopener noreferrer">详情 ↗' in found[0]
+        'class="banner-link"' in found[0] and 'href="https://evotracker.cn/news"' in found[0]
+        and 'target="_blank"' in found[0] and "data-external-link" in found[0] and ">详情 ↗</a>" in found[0]
         and "evil.example.com" not in page and "详情" not in found[1])
     reply = client.post("/notice/dismiss", data={"token": token, "id": "info", "next": "/stats"})
     after = client.get("/").get_data(as_text=True)

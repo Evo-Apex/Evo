@@ -172,7 +172,11 @@ def external_link_checks(client):
     return {
         "设置页外部链接都标了 data-external-link": bool(external) and all("data-external-link" in tag for tag in external),
         "设置页覆盖查看源代码/意见反馈/开发者/Mirror酱": all(
-            marker in settings for marker in ("查看源代码 ↗", "意见反馈 ↗", "黄指导", "wzx", "了解 Mirror酱")),
+            marker in settings for marker in ("查看源代码 ↗", "意见反馈 ↗", "黄指导", "M0MoNa", "了解 Mirror酱")),
+        "开发者改名 M0MoNa，GitHub 地址不变": "M0MoNa" in settings
+            and "https://github.com/wzxlll33" in settings and ">wzx" not in settings,
+        "base.html 外部链接失败会显示提示，不静默吞掉": "没有成功打开系统浏览器" in settings
+            and "showOpenError" in settings and "catch(showOpenError)" in settings,
         "总览页关注我也标了 data-external-link":
             all("data-external-link" in tag for tag in re.findall(r"<a [^>]*target=\"_blank\"[^>]*>", overview)
                 if "https://" in tag),
@@ -185,25 +189,38 @@ def external_link_checks(client):
 
 
 def window_api_checks():
-    """WindowApi.open_external：只放行 http/https，异常返回失败而不是抛给页面。"""
+    """WindowApi.open_external：只放行 http/https，走 Windows ShellExecuteW，异常返回失败而不是抛给页面。"""
     api = app_window.WindowApi()
-    with mock.patch.object(app_window.webbrowser, "open", return_value=True) as opened:
+    with mock.patch.object(app_window, "_shell_execute", return_value=33) as shell, \
+            mock.patch.object(app_window, "_external_log") as logged:
         good = api.open_external("https://github.com/Evo-Apex/Evo")
-    with mock.patch.object(app_window.webbrowser, "open", return_value=True) as opened_http:
+    with mock.patch.object(app_window, "_shell_execute", return_value=33) as shell_http:
         good_http = api.open_external("http://example.com/a?b=1")
-    bad = [api.open_external(url) for url in
-           ("javascript:alert(1)", "file:///C:/Windows/win.ini", "data:text/html,x", "C:\\Windows\\win.ini", "ftp://x/")]
-    with mock.patch.object(app_window.webbrowser, "open", side_effect=RuntimeError("没有浏览器")):
+    with mock.patch.object(app_window, "_shell_execute", return_value=33) as shell_bad:
+        bad = [api.open_external(url) for url in
+               ("javascript:alert(1)", "file:///C:/Windows/win.ini", "data:text/html,x",
+                "C:\\Windows\\win.ini", "ftp://x/")]
+    with mock.patch.object(app_window, "_shell_execute", return_value=5):
+        denied = api.open_external("https://example.com/")
+    with mock.patch.object(app_window, "_shell_execute", side_effect=RuntimeError("没有浏览器")):
         broken = api.open_external("https://example.com/")
-    with mock.patch.object(app_window.webbrowser, "open", return_value=False) as not_opened:
-        reported = api.open_external("https://example.com/")
+    with mock.patch.object(app_window._shell32, "ShellExecuteW", return_value=42) as native, \
+            mock.patch.object(app_window._user32, "AllowSetForegroundWindow", return_value=True) as allow:
+        code = app_window._shell_execute("https://example.com/native")
+    log_text = " ".join(str(c) for c in logged.call_args_list)
     return {
-        "open_external：https 调 webbrowser.open 一次": good["ok"] and opened.call_count == 1,
-        "open_external：http 也放行": good_http["ok"] and opened_http.call_count == 1,
-        "open_external：javascript/file/data/本地路径/ftp 全拒绝": all(not r["ok"] for r in bad)
-            and all(r["error"] for r in bad),
-        "open_external：浏览器异常返回失败、不抛出": broken["ok"] is False and "没有浏览器" in broken["error"],
-        "open_external：系统没打开也如实返回失败": reported["ok"] is False and not_opened.call_count == 1,
+        "open_external：https 走 ShellExecuteW 一次": good["ok"] and good["code"] == 33
+            and shell.call_count == 1,
+        "open_external：http 也放行": good_http["ok"] and shell_http.call_count == 1,
+        "open_external：javascript/file/data/本地路径/ftp 全拒绝且不调系统": all(not r["ok"] for r in bad)
+            and all(r["error"] for r in bad) and shell_bad.call_count == 0,
+        "open_external：ShellExecuteW <=32 返回失败和错误码": denied["ok"] is False and denied["code"] == 5
+            and "错误码 5" in denied["error"],
+        "open_external：异常返回失败、不抛出": broken["ok"] is False and "没有浏览器" in broken["error"],
+        "open_external：日志写 URL、调用和返回码": "https://github.com/Evo-Apex/Evo" in log_text
+            and "ShellExecuteW" in log_text and "33" in log_text,
+        "ShellExecuteW：先 AllowSetForegroundWindow，再传 URL": code == 42 and allow.called
+            and native.call_args[0][2] == "https://example.com/native",
     }
 
 
@@ -229,6 +246,8 @@ def script_behaviour_checks(client):
     return {
         "可执行 JS：pywebview 里点外链会调 open_external 且页面不跳": result.get("external_calls_api")
             and result.get("external_keeps_page"),
+        "可执行 JS：打开成功不弹错误提示": result.get("external_success_no_prompt"),
+        "可执行 JS：打开失败显示可见错误提示": result.get("external_failure_prompt"),
         "可执行 JS：普通浏览器不阻止原生链接": result.get("external_browser_keeps_default"),
         "可执行 JS：顶栏派圈助手能打开弹窗": result.get("partner_top_opens"),
         "可执行 JS：鸣谢卡片派圈助手能打开同一个弹窗": result.get("partner_card_opens"),

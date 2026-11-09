@@ -14,15 +14,15 @@ import base64
 import ctypes
 import sys
 import threading
-import webbrowser
 from ctypes import wintypes
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import webview
 
 import storage
-from paths import DATA_DIR
+from paths import DATA_DIR, LOG_DIR
 
 USER_AGENT = (f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
               f"EvoApp/{storage.APP_VERSION}")  # 面板网页看到 EvoApp，就显示自定义标题栏
@@ -35,6 +35,42 @@ _user32 = ctypes.WinDLL("user32")
 _user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 _user32.SendMessageW.restype = ctypes.c_ssize_t
 _dwmapi = ctypes.WinDLL("dwmapi")
+_shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+_shell32.ShellExecuteW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                                   wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_int]
+_shell32.ShellExecuteW.restype = wintypes.HINSTANCE
+SHELL_EXECUTE_ERRORS = {
+    0: "内存不足",
+    2: "找不到文件",
+    3: "找不到路径",
+    5: "拒绝访问",
+    8: "内存不足",
+    26: "文件共享冲突",
+    27: "文件关联不完整",
+    28: "DDE 超时",
+    29: "DDE 失败",
+    30: "DDE 忙",
+    31: "没有关联的程序",
+    32: "找不到所需的 DLL",
+}
+
+
+def _external_log(message):
+    """把外链调用写进 logs/evo.log；日志失败不能影响打开浏览器。"""
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOG_DIR / "evo.log", "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} [外链] {message}\n")
+    except OSError:
+        pass
+
+
+def _shell_execute(url):
+    """让 Windows 用默认浏览器打开 URL，返回 ShellExecuteW 的返回值。
+    调用前允许浏览器到前台（用户刚点了 Evo，Evo 有前台权限）。不开 shell、不拼命令。"""
+    _user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
+    result = _shell32.ShellExecuteW(None, "open", url, None, None, 1)  # SW_SHOWNORMAL
+    return int(result or 0)
 
 
 class WindowApi:
@@ -109,22 +145,39 @@ class WindowApi:
         return chosen[0] if chosen else None
 
     def open_external(self, url):
-        """把明确标记的外部链接交给系统默认浏览器（base.html 的 data-external-link）。
+        """把明确标记的外部链接交给 Windows 默认浏览器（base.html 的 data-external-link）。
         只收 http/https；其他协议（javascript:、file:、data:、本地路径）一律拒绝。
-        返回 {"ok": bool, "url": str, "error": str|None}，页面脚本不会因为异常崩掉。"""
+        返回 {"ok": bool, "url": str, "code": int|None, "error": str|None}，页面脚本不会因为异常崩掉。"""
+        raw = url if isinstance(url, str) else ""
         try:
             if not isinstance(url, str):
-                return {"ok": False, "url": "", "error": "地址不是字符串"}
+                error = "地址不是字符串"
+                _external_log(f"拒绝：{error}；收到 {type(url).__name__}")
+                return {"ok": False, "url": "", "code": None, "error": error}
             url = url.strip()
             if any(ch in url for ch in ("\r", "\n", "\t", "\0")):
-                return {"ok": False, "url": url, "error": "地址里有控制字符"}
+                error = "地址里有控制字符"
+                _external_log(f"拒绝：{error}；收到 {raw!r}")
+                return {"ok": False, "url": url, "code": None, "error": error}
             parts = urlsplit(url)
             if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
-                return {"ok": False, "url": url, "error": "只允许 http:// 或 https:// 地址"}
-            opened = webbrowser.open(url, new=2)
-            return {"ok": bool(opened), "url": url, "error": None if opened else "系统没有打开浏览器"}
+                error = "只允许 http:// 或 https:// 地址"
+                _external_log(f"拒绝：{error}；收到 {url!r}")
+                return {"ok": False, "url": url, "code": None, "error": error}
+
+            _external_log(f"收到 {url}；调用 Windows ShellExecuteW")
+            code = _shell_execute(url)
+            if code > 32:
+                _external_log(f"成功：ShellExecuteW 返回 {code}；{url}")
+                return {"ok": True, "url": url, "code": code, "error": None}
+            reason = SHELL_EXECUTE_ERRORS.get(code, "未知错误")
+            error = f"打开系统浏览器失败（Windows 错误码 {code}：{reason}）"
+            _external_log(f"失败：ShellExecuteW 返回 {code}（{reason}）；{url}")
+            return {"ok": False, "url": url, "code": code, "error": error}
         except Exception as exc:  # noqa: BLE001 浏览器/系统异常不能让页面脚本崩掉
-            return {"ok": False, "url": url if isinstance(url, str) else "", "error": str(exc)}
+            error = f"打开系统浏览器失败：{exc}"
+            _external_log(f"异常：{exc!r}；{url!r}")
+            return {"ok": False, "url": raw, "code": None, "error": error}
 
     def save_image(self, filename, data_url):
         """分享战绩的"保存图片…"（panel/templates/_share.html）：弹出 Windows 的"另存为"，默认放在"图片"文件夹，

@@ -145,7 +145,7 @@
 <div class="banner-info notice-banner{{ ' notice-important' if notice.level == 'important' }}" role="status">
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11 L21 6 V18 L3 14 Z"></path><path d="M11.6 16.8 a3 3 0 1 1 -5.8 -1.6"></path></svg>
   <span class="grow"><span class="notice-tag">{{ '重要公告' if notice.level == 'important' else '公告' }}</span>{{ notice.text }}</span>
-  {% if notice.link %}<a class="banner-link" href="{{ notice.link }}" target="_blank" rel="noopener noreferrer" data-external-link>详情 ↗</a>{% endif %}
+  {% if notice.link %}<a class="banner-link" href="{{ notice.link }}" data-external-link target="_blank" rel="noopener noreferrer">详情 ↗</a>{% endif %}
   <form method="post" action="{{ url_for('dismiss_notice') }}">
     <input type="hidden" name="token" value="{{ token }}">
     <input type="hidden" name="id" value="{{ notice.id }}">
@@ -482,16 +482,37 @@
 <script>
   // 明确标了 data-external-link 的链接：Evo 窗口里交给系统默认浏览器，页面本身不离开本地面板。
   // 普通浏览器没有 pywebview API，保留原生 target="_blank" 行为。
-  document.addEventListener("click", function (e) {
-    var link = e.target.closest && e.target.closest("a[data-external-link]");
-    if (!link) return;
-    var api = window.pywebview && window.pywebview.api;
-    if (!api || typeof api.open_external !== "function") return;
-    e.preventDefault();
-    try {
-      Promise.resolve(api.open_external(link.href)).catch(function () {});
-    } catch (err) { /* 页面脚本不能因为打开浏览器失败而崩 */ }
-  });
+  (function () {
+    var hideTimer = null;
+    function showOpenError() {
+      var box = document.getElementById("external-link-error");
+      if (!box) {
+        box = document.createElement("div");
+        box.id = "external-link-error";
+        box.className = "flash flash-error external-link-error";
+        box.setAttribute("role", "alert");
+        document.body.appendChild(box);
+      }
+      box.textContent = "没有成功打开系统浏览器，请检查默认浏览器设置。";
+      box.hidden = false;
+      if (hideTimer) clearTimeout(hideTimer);
+      hideTimer = setTimeout(function () { box.hidden = true; }, 8000);
+    }
+    document.addEventListener("click", function (e) {
+      var link = e.target.closest && e.target.closest("a[data-external-link]");
+      if (!link) return;
+      var api = window.pywebview && window.pywebview.api;
+      if (!api || typeof api.open_external !== "function") return;
+      e.preventDefault();
+      try {
+        Promise.resolve(api.open_external(link.href)).then(function (result) {
+          if (!result || !result.ok) showOpenError();
+        }).catch(showOpenError);
+      } catch (err) {
+        showOpenError();
+      }
+    });
+  })();
 </script>
 {% if in_app %}
 <script>
