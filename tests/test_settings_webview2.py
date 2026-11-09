@@ -1,4 +1,4 @@
-"""真实 WebView2 DOM 点击验证：外部链接走 open_external、派圈助手弹窗、支持我三步。
+﻿"""真实 WebView2 DOM 点击验证：外部链接走 open_external、派圈助手弹窗、支持我三步。
 会短暂打开一个 Evo 的 WebView2 窗口，不需要人工点击。
 运行：python tests/test_settings_webview2.py
 
@@ -36,12 +36,12 @@ def main():
     window = None
     timer = None
     real_shell = app_window._shell_execute
-    real_cmd = app_window._cmd_start
+    real_explorer = app_window._explorer_open
     opened = []
     fail_next = [False]
     result = {}
 
-    def fake_cmd(target):
+    def fake_explorer(target):
         if fail_next[0]:
             raise OSError("cmd 起不来（测试）")
         opened.append(target)
@@ -123,7 +123,7 @@ def main():
                 pass
 
     try:
-        app_window._cmd_start = fake_cmd
+        app_window._explorer_open = fake_explorer
         app_window._shell_execute = fake_shell
         server = make_server("127.0.0.1", 0, panel_app.app)
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -150,7 +150,7 @@ def main():
         if server is not None:
             server.shutdown()
             server.server_close()
-        app_window._cmd_start = real_cmd
+        app_window._explorer_open = real_explorer
         app_window._shell_execute = real_shell
         if window is not None:
             try:
@@ -167,10 +167,10 @@ def main():
                 "partner_card_open", "partner_esc", "partner_backdrop", "support_1", "support_2", "support_3",
                 "support_closed"]
     result["browser_restored"] = app_window._shell_execute is real_shell
-    result["cmd_restored"] = app_window._cmd_start is real_cmd
+    result["explorer_restored"] = app_window._explorer_open is real_explorer
     result["temp_cleaned"] = not tmp.exists()
     result["timer_cancelled"] = timer is None or timer.finished.is_set()
-    ok = all(result.get(k) for k in expected) and result["browser_restored"] and result["cmd_restored"] \
+    ok = all(result.get(k) for k in expected) and result["browser_restored"] and result["explorer_restored"] \
         and result["temp_cleaned"] and result["timer_cancelled"] and "error" not in result
     print(json.dumps(result, ensure_ascii=False, indent=2))
     print(f"临时目录已清理：{not tmp.exists()}")

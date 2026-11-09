@@ -14,7 +14,9 @@
 运行：python tests/test_follow.py
 """
 
+import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -93,6 +95,7 @@ def main():
     checks.update(credits_checks(client))
     checks.update(external_link_checks(client))
     checks.update(window_api_checks())
+    checks.update(webview_cache_checks())
     js_checks, js_skip = script_behaviour_checks(client)
     checks.update(js_checks)
     if js_skip:
@@ -189,50 +192,106 @@ def external_link_checks(client):
 
 
 def window_api_checks():
-    """WindowApi.open_external：只放行 http/https；先走 cmd start，失败才退回 ShellExecuteW；
+    """WindowApi.open_external：只放行 http/https；先走 explorer 独立进程，失败才退回 ShellExecuteW；
     异常返回失败而不是抛给页面。"""
     api = app_window.WindowApi()
-    with mock.patch.object(app_window, "_cmd_start") as start_cmd, \
+    with mock.patch.object(app_window, "_explorer_open") as start, \
             mock.patch.object(app_window, "_external_log") as logged:
         good = api.open_external("https://github.com/Evo-Apex/Evo")
-    with mock.patch.object(app_window, "_cmd_start") as start_http:
+    with mock.patch.object(app_window, "_explorer_open") as start_http:
         good_http = api.open_external("http://example.com/a?b=1")
-    with mock.patch.object(app_window, "_cmd_start") as start_bad:
+    with mock.patch.object(app_window, "_explorer_open") as start_bad:
         bad = [api.open_external(url) for url in
                ("javascript:alert(1)", "file:///C:/Windows/win.ini", "data:text/html,x",
                 "C:\\Windows\\win.ini", "ftp://x/")]
-    with mock.patch.object(app_window, "_cmd_start", side_effect=OSError("cmd 起不来")), \
+    with mock.patch.object(app_window, "_explorer_open", side_effect=OSError("explorer 起不来")), \
             mock.patch.object(app_window, "_shell_execute", return_value=33) as shell_ok:
         fallback = api.open_external("https://example.com/fallback")
-    with mock.patch.object(app_window, "_cmd_start", side_effect=OSError("cmd 起不来")), \
+    with mock.patch.object(app_window, "_explorer_open", side_effect=OSError("explorer 起不来")), \
             mock.patch.object(app_window, "_shell_execute", return_value=5):
         denied = api.open_external("https://example.com/")
-    with mock.patch.object(app_window, "_cmd_start", side_effect=OSError("cmd 起不来")), \
+    with mock.patch.object(app_window, "_explorer_open", side_effect=OSError("explorer 起不来")), \
             mock.patch.object(app_window, "_shell_execute", side_effect=RuntimeError("没有浏览器")):
         broken = api.open_external("https://example.com/")
     with mock.patch.object(app_window._shell32, "ShellExecuteW", return_value=42) as native, \
             mock.patch.object(app_window._user32, "AllowSetForegroundWindow", return_value=True) as allow:
         code = app_window._shell_execute("https://example.com/native")
-    with mock.patch("subprocess.Popen") as popen:
-        app_window._cmd_start("https://example.com/a?b=1&c=2")
-    cmd = popen.call_args[0][0]
+
+    tricky = [
+        "https://example.com/a?b=1&c=2",
+        "https://example.com/a?b=1|2",
+        "https://example.com/a?b=1^2",
+        "https://example.com/a?b=1%202",
+        'https://example.com/a?b="quoted"',
+        "https://example.com/a path with spaces",
+    ]
+    popen_calls = []
+    with mock.patch.object(app_window.Path, "is_file", return_value=True), \
+            mock.patch("subprocess.Popen") as popen:
+        for url in tricky:
+            app_window._explorer_open(url)
+            popen_calls.append((popen.call_args, url))
     log_text = " ".join(str(c) for c in logged.call_args_list)
+
+    def one_arg(call_url):
+        call, url = call_url
+        args, kwargs = call
+        argv = args[0]
+        return (isinstance(argv, list) and len(argv) == 2 and argv[1] == url
+                and kwargs.get("shell") is False
+                and kwargs.get("creationflags") == 0x08000000)
+
     return {
-        "open_external：https 走 cmd start 一次": good["ok"] and good["code"] is None
-            and start_cmd.call_count == 1,
+        "open_external：https 走 explorer 一次": good["ok"] and good["code"] is None
+            and start.call_count == 1,
         "open_external：http 也放行": good_http["ok"] and start_http.call_count == 1,
         "open_external：javascript/file/data/本地路径/ftp 全拒绝且不调系统": all(not r["ok"] for r in bad)
             and all(r["error"] for r in bad) and start_bad.call_count == 0,
-        "open_external：cmd start 失败时退回 ShellExecuteW 并成功": fallback["ok"]
+        "open_external：explorer 失败时退回 ShellExecuteW 并成功": fallback["ok"]
             and fallback["code"] == 33 and shell_ok.call_count == 1,
         "open_external：ShellExecuteW <=32 返回失败和错误码": denied["ok"] is False and denied["code"] == 5
             and "错误码 5" in denied["error"],
         "open_external：异常返回失败、不抛出": broken["ok"] is False and "没有浏览器" in broken["error"],
-        "open_external：日志写 URL 和 cmd start": "https://github.com/Evo-Apex/Evo" in log_text
-            and "cmd start" in log_text,
+        "open_external：日志写 URL 和 explorer": "https://github.com/Evo-Apex/Evo" in log_text
+            and "explorer" in log_text,
         "ShellExecuteW：先 AllowSetForegroundWindow，再传 URL": code == 42 and allow.called
             and native.call_args[0][2] == "https://example.com/native",
-        "cmd start：URL 带查询参数时整段加引号": 'start "" "https://example.com/a?b=1&c=2"' in cmd,
+        "explorer：Popen 参数是列表，shell=False，URL 只占一个参数": all(one_arg(c) for c in popen_calls),
+        "explorer：& | ^ % 引号 空格 都不会多出参数": len(popen_calls) == len(tricky)
+            and all(one_arg(c) for c in popen_calls),
+        "explorer：旧的 _cmd_start 已移除": not hasattr(app_window, "_cmd_start"),
+    }
+
+
+def webview_cache_checks():
+    """不能写 DATA_DIR/webview 时，临时缓存目录按 DATA_DIR 的 SHA-256 摘要区分。"""
+    import tempfile
+    from pathlib import Path
+
+    tmp = Path(tempfile.mkdtemp(prefix="evo-cache-test-"))
+    names = []
+    try:
+        for name in ("data-a", "data-b"):
+            with mock.patch.object(app_window, "DATA_DIR", tmp / name), \
+                    mock.patch.object(app_window.paths, "_tempdir", return_value=tmp), \
+                    mock.patch.object(app_window.paths, "writable", side_effect=lambda p: p.parent == tmp), \
+                    mock.patch.object(app_window.paths, "_warn"):
+                names.append(app_window._webview_storage().name)
+        again = None
+        with mock.patch.object(app_window, "DATA_DIR", tmp / "data-a"), \
+                mock.patch.object(app_window.paths, "_tempdir", return_value=tmp), \
+                mock.patch.object(app_window.paths, "writable", side_effect=lambda p: p.parent == tmp), \
+                mock.patch.object(app_window.paths, "_warn"):
+            again = app_window._webview_storage().name
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    expected_a = "evo-webview-" + hashlib.sha256(
+        os.path.normcase(str((tmp / "data-a").resolve())).encode("utf-8")).hexdigest()[:12]
+    return {
+        "WebView2 临时缓存：不同 DATA_DIR 用不同摘要": len(set(names)) == 2,
+        "WebView2 临时缓存：同一 DATA_DIR 摘要稳定": names[0] == again == expected_a,
+        "WebView2 临时缓存：名字是 evo-webview-12位十六进制": all(
+            re.fullmatch(r"evo-webview-[0-9a-f]{12}", n) for n in names),
     }
 
 

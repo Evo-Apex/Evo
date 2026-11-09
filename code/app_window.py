@@ -12,6 +12,8 @@
 
 import base64
 import ctypes
+import hashlib
+import os
 import sys
 import tempfile
 import threading
@@ -75,16 +77,20 @@ def _shell_execute(url):
     return int(result or 0)
 
 
-def _cmd_start(url):
-    """用独立的 cmd.exe 执行 `start "" URL`。
-    ShellExecuteW 从 WebView2 的 JS 调用线程发出时，在部分机器上会返回 42 却没有窗口
-    （DDE/默认浏览器单实例问题）；cmd 自己的主线程有消息循环，走同一套默认浏览器关联，
-    实测能正常打开。URL 已在 open_external 里限制为 http/https。"""
+def _explorer_open(url):
+    """用独立的 explorer.exe 打开 URL，URL 只作为一个参数传入。
+    ShellExecuteW 从 WebView2 的 JS 调用线程发出时，在部分机器上会返回 42 却没有窗口；
+    explorer 是独立的系统进程，不经过 shell，也不会把 URL 拼成命令行。"""
     import subprocess
 
+    windir = os.environ.get("WINDIR") or r"C:\Windows"
+    explorer = Path(windir) / "explorer.exe"
+    if not explorer.is_file():
+        raise OSError(f"找不到系统文件：{explorer}")
+    _user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
     subprocess.Popen(
-        f'start "" "{url}"',
-        shell=True,
+        [str(explorer), url],
+        shell=False,
         creationflags=0x08000000,  # CREATE_NO_WINDOW：不闪黑框
     )
 
@@ -181,12 +187,12 @@ class WindowApi:
                 _external_log(f"拒绝：{error}；收到 {url!r}")
                 return {"ok": False, "url": url, "code": None, "error": error}
 
-            _external_log(f"收到 {url}；调用 cmd start（默认浏览器）")
+            _external_log(f"收到 {url}；调用 explorer 打开（默认浏览器）")
             try:
-                _cmd_start(url)
+                _explorer_open(url)
             except OSError:
-                # cmd 都起不来时才退回 ShellExecuteW；正常情况下不再用它。
-                _external_log("cmd start 失败，改用 ShellExecuteW")
+                # explorer 起不来时才退回 ShellExecuteW；同样不开 shell。
+                _external_log("explorer 打开失败，改用 ShellExecuteW")
                 code = _shell_execute(url)
                 if code > 32:
                     _external_log(f"成功：ShellExecuteW 返回 {code}；{url}")
@@ -195,7 +201,7 @@ class WindowApi:
                 error = f"打开系统浏览器失败（Windows 错误码 {code}：{reason}）"
                 _external_log(f"失败：ShellExecuteW 返回 {code}（{reason}）；{url}")
                 return {"ok": False, "url": url, "code": code, "error": error}
-            _external_log(f"已交给 cmd start；{url}")
+            _external_log(f"已交给 explorer；{url}")
             return {"ok": True, "url": url, "code": None, "error": None}
         except Exception as exc:  # noqa: BLE001 浏览器/系统异常不能让页面脚本崩掉
             error = f"打开系统浏览器失败：{exc}"
@@ -277,7 +283,10 @@ def _webview_storage():
         return folder
     temp = paths._tempdir()
     if temp is not None:
-        fallback = temp / "evo-webview"
+        # 每个数据目录一个稳定短摘要，避免不同数据目录共用同一份 WebView2 缓存。
+        # 不用内置 hash()：它每个进程可能不同。
+        digest = hashlib.sha256(os.path.normcase(str(DATA_DIR.resolve())).encode("utf-8")).hexdigest()[:12]
+        fallback = temp / f"evo-webview-{digest}"
         if paths.writable(fallback):
             paths._warn(f"数据文件夹里的 WebView2 缓存目录不能写（{folder}），改用 {fallback}")
             return fallback
