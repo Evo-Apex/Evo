@@ -36,9 +36,15 @@ def main():
     window = None
     timer = None
     real_shell = app_window._shell_execute
+    real_cmd = app_window._cmd_start
     opened = []
     fail_next = [False]
     result = {}
+
+    def fake_cmd(target):
+        if fail_next[0]:
+            raise OSError("cmd 起不来（测试）")
+        opened.append(target)
 
     def fake_shell(target):
         opened.append(target)
@@ -117,6 +123,7 @@ def main():
                 pass
 
     try:
+        app_window._cmd_start = fake_cmd
         app_window._shell_execute = fake_shell
         server = make_server("127.0.0.1", 0, panel_app.app)
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -143,6 +150,7 @@ def main():
         if server is not None:
             server.shutdown()
             server.server_close()
+        app_window._cmd_start = real_cmd
         app_window._shell_execute = real_shell
         if window is not None:
             try:
@@ -159,10 +167,11 @@ def main():
                 "partner_card_open", "partner_esc", "partner_backdrop", "support_1", "support_2", "support_3",
                 "support_closed"]
     result["browser_restored"] = app_window._shell_execute is real_shell
+    result["cmd_restored"] = app_window._cmd_start is real_cmd
     result["temp_cleaned"] = not tmp.exists()
     result["timer_cancelled"] = timer is None or timer.finished.is_set()
-    ok = all(result.get(k) for k in expected) and result["browser_restored"] and result["temp_cleaned"] \
-        and result["timer_cancelled"] and "error" not in result
+    ok = all(result.get(k) for k in expected) and result["browser_restored"] and result["cmd_restored"] \
+        and result["temp_cleaned"] and result["timer_cancelled"] and "error" not in result
     print(json.dumps(result, ensure_ascii=False, indent=2))
     print(f"临时目录已清理：{not tmp.exists()}")
     print("通过" if ok else "失败")

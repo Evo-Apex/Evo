@@ -75,6 +75,20 @@ def _shell_execute(url):
     return int(result or 0)
 
 
+def _cmd_start(url):
+    """用独立的 cmd.exe 执行 `start "" URL`。
+    ShellExecuteW 从 WebView2 的 JS 调用线程发出时，在部分机器上会返回 42 却没有窗口
+    （DDE/默认浏览器单实例问题）；cmd 自己的主线程有消息循环，走同一套默认浏览器关联，
+    实测能正常打开。URL 已在 open_external 里限制为 http/https。"""
+    import subprocess
+
+    subprocess.Popen(
+        f'start "" "{url}"',
+        shell=True,
+        creationflags=0x08000000,  # CREATE_NO_WINDOW：不闪黑框
+    )
+
+
 class WindowApi:
     """网页里的标题栏按钮、拖动、改大小，通过 window.pywebview.api.xxx() 调用这里。
     （下划线开头的属性和方法不会暴露给网页。）"""
@@ -167,15 +181,22 @@ class WindowApi:
                 _external_log(f"拒绝：{error}；收到 {url!r}")
                 return {"ok": False, "url": url, "code": None, "error": error}
 
-            _external_log(f"收到 {url}；调用 Windows ShellExecuteW")
-            code = _shell_execute(url)
-            if code > 32:
-                _external_log(f"成功：ShellExecuteW 返回 {code}；{url}")
-                return {"ok": True, "url": url, "code": code, "error": None}
-            reason = SHELL_EXECUTE_ERRORS.get(code, "未知错误")
-            error = f"打开系统浏览器失败（Windows 错误码 {code}：{reason}）"
-            _external_log(f"失败：ShellExecuteW 返回 {code}（{reason}）；{url}")
-            return {"ok": False, "url": url, "code": code, "error": error}
+            _external_log(f"收到 {url}；调用 cmd start（默认浏览器）")
+            try:
+                _cmd_start(url)
+            except OSError:
+                # cmd 都起不来时才退回 ShellExecuteW；正常情况下不再用它。
+                _external_log("cmd start 失败，改用 ShellExecuteW")
+                code = _shell_execute(url)
+                if code > 32:
+                    _external_log(f"成功：ShellExecuteW 返回 {code}；{url}")
+                    return {"ok": True, "url": url, "code": code, "error": None}
+                reason = SHELL_EXECUTE_ERRORS.get(code, "未知错误")
+                error = f"打开系统浏览器失败（Windows 错误码 {code}：{reason}）"
+                _external_log(f"失败：ShellExecuteW 返回 {code}（{reason}）；{url}")
+                return {"ok": False, "url": url, "code": code, "error": error}
+            _external_log(f"已交给 cmd start；{url}")
+            return {"ok": True, "url": url, "code": None, "error": None}
         except Exception as exc:  # noqa: BLE001 浏览器/系统异常不能让页面脚本崩掉
             error = f"打开系统浏览器失败：{exc}"
             _external_log(f"异常：{exc!r}；{url!r}")

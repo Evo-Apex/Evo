@@ -189,38 +189,50 @@ def external_link_checks(client):
 
 
 def window_api_checks():
-    """WindowApi.open_external：只放行 http/https，走 Windows ShellExecuteW，异常返回失败而不是抛给页面。"""
+    """WindowApi.open_external：只放行 http/https；先走 cmd start，失败才退回 ShellExecuteW；
+    异常返回失败而不是抛给页面。"""
     api = app_window.WindowApi()
-    with mock.patch.object(app_window, "_shell_execute", return_value=33) as shell, \
+    with mock.patch.object(app_window, "_cmd_start") as start_cmd, \
             mock.patch.object(app_window, "_external_log") as logged:
         good = api.open_external("https://github.com/Evo-Apex/Evo")
-    with mock.patch.object(app_window, "_shell_execute", return_value=33) as shell_http:
+    with mock.patch.object(app_window, "_cmd_start") as start_http:
         good_http = api.open_external("http://example.com/a?b=1")
-    with mock.patch.object(app_window, "_shell_execute", return_value=33) as shell_bad:
+    with mock.patch.object(app_window, "_cmd_start") as start_bad:
         bad = [api.open_external(url) for url in
                ("javascript:alert(1)", "file:///C:/Windows/win.ini", "data:text/html,x",
                 "C:\\Windows\\win.ini", "ftp://x/")]
-    with mock.patch.object(app_window, "_shell_execute", return_value=5):
+    with mock.patch.object(app_window, "_cmd_start", side_effect=OSError("cmd 起不来")), \
+            mock.patch.object(app_window, "_shell_execute", return_value=33) as shell_ok:
+        fallback = api.open_external("https://example.com/fallback")
+    with mock.patch.object(app_window, "_cmd_start", side_effect=OSError("cmd 起不来")), \
+            mock.patch.object(app_window, "_shell_execute", return_value=5):
         denied = api.open_external("https://example.com/")
-    with mock.patch.object(app_window, "_shell_execute", side_effect=RuntimeError("没有浏览器")):
+    with mock.patch.object(app_window, "_cmd_start", side_effect=OSError("cmd 起不来")), \
+            mock.patch.object(app_window, "_shell_execute", side_effect=RuntimeError("没有浏览器")):
         broken = api.open_external("https://example.com/")
     with mock.patch.object(app_window._shell32, "ShellExecuteW", return_value=42) as native, \
             mock.patch.object(app_window._user32, "AllowSetForegroundWindow", return_value=True) as allow:
         code = app_window._shell_execute("https://example.com/native")
+    with mock.patch("subprocess.Popen") as popen:
+        app_window._cmd_start("https://example.com/a?b=1&c=2")
+    cmd = popen.call_args[0][0]
     log_text = " ".join(str(c) for c in logged.call_args_list)
     return {
-        "open_external：https 走 ShellExecuteW 一次": good["ok"] and good["code"] == 33
-            and shell.call_count == 1,
-        "open_external：http 也放行": good_http["ok"] and shell_http.call_count == 1,
+        "open_external：https 走 cmd start 一次": good["ok"] and good["code"] is None
+            and start_cmd.call_count == 1,
+        "open_external：http 也放行": good_http["ok"] and start_http.call_count == 1,
         "open_external：javascript/file/data/本地路径/ftp 全拒绝且不调系统": all(not r["ok"] for r in bad)
-            and all(r["error"] for r in bad) and shell_bad.call_count == 0,
+            and all(r["error"] for r in bad) and start_bad.call_count == 0,
+        "open_external：cmd start 失败时退回 ShellExecuteW 并成功": fallback["ok"]
+            and fallback["code"] == 33 and shell_ok.call_count == 1,
         "open_external：ShellExecuteW <=32 返回失败和错误码": denied["ok"] is False and denied["code"] == 5
             and "错误码 5" in denied["error"],
         "open_external：异常返回失败、不抛出": broken["ok"] is False and "没有浏览器" in broken["error"],
-        "open_external：日志写 URL、调用和返回码": "https://github.com/Evo-Apex/Evo" in log_text
-            and "ShellExecuteW" in log_text and "33" in log_text,
+        "open_external：日志写 URL 和 cmd start": "https://github.com/Evo-Apex/Evo" in log_text
+            and "cmd start" in log_text,
         "ShellExecuteW：先 AllowSetForegroundWindow，再传 URL": code == 42 and allow.called
             and native.call_args[0][2] == "https://example.com/native",
+        "cmd start：URL 带查询参数时整段加引号": 'start "" "https://example.com/a?b=1&c=2"' in cmd,
     }
 
 
