@@ -154,6 +154,7 @@ def _explorer_open(url):
         try:
             _set_dll_directory(None)
             cleared = True
+            _external_log(f"DLL 搜索目录已清空（原值 {previous!r}）")
             _user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
             subprocess.Popen(
                 [str(explorer), url],
