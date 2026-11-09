@@ -23,6 +23,7 @@ class MapMatcher:
         side = int(cfg["reference_size"])
         self.image = cv2.resize(raw, (side, side), interpolation=cv2.INTER_AREA)
         self.cfg = cfg
+        self.last_scope = None  # 上一次 locate 用的是局部特征还是全图；只给离线回放统计用
         self.detector, self.norm = self._detector()
         self.keypoints, self.descriptors = self.detector.detectAndCompute(self.image, None)
         if self.descriptors is None or len(self.keypoints) < cfg["min_matches"]:
@@ -75,6 +76,7 @@ class MapMatcher:
         return {"x": float(x), "y": float(y), "confidence": round(confidence, 4), "matches": count}
 
     def locate(self, crop, previous=None):
+        self.last_scope = "none"
         query_points, query_desc = self._query(crop)
         if query_desc is None or len(query_points) < self.cfg["min_matches"]:
             return None
@@ -86,5 +88,7 @@ class MapMatcher:
             if len(local) >= self.cfg["min_matches"] * 2:
                 result = self._locate_with_indexes(query_points, query_desc, local)
                 if result is not None:
+                    self.last_scope = "local"
                     return result
+        self.last_scope = "full"
         return self._locate_with_indexes(query_points, query_desc, None)

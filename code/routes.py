@@ -23,6 +23,7 @@ from time import perf_counter
 import storage
 from layout import cut
 from paths import APP_DIR, CONFIG_DIR
+from route_tracking import RouteTracker, route_step_ok, sample_interval
 
 CONFIG_NAME = "routes.json"
 ASSET_DIR = APP_DIR / "assets" / "maps"
@@ -205,13 +206,6 @@ def point_at_time(points, elapsed_ms):
             "stale": age > 0, "position_age_ms": age}
 
 
-def route_step_ok(previous, current, cfg):
-    """相邻定位是否可能由正常移动产生；过滤数秒内横跨地图的误匹配。"""
-    elapsed = max(0.0, (current["elapsed_ms"] - previous["elapsed_ms"]) / 1000)
-    limit = max(float(cfg["min_step_radius"]), elapsed * float(cfg["max_speed_per_second"]))
-    return math.hypot(current["x"] - previous["x"], current["y"] - previous["y"]) <= limit
-
-
 class RouteWorker:
     """单线程持续配准。满队列不阻塞截屏线程；RouteRecorder 会自动降低采样频率。"""
 
@@ -219,12 +213,51 @@ class RouteWorker:
         self.cfg, self.log = cfg, log
         self.input = queue.Queue(maxsize=int(cfg["worker"]["queue"]))
         self.output = queue.Queue()
-        self.matchers, self.previous, self.tentative, self.rejects = {}, {}, {}, {}
-        self.segments = {}
+        self.tracker = RouteTracker(cfg)
+        self.matchers = {}
         self.average_ms = 0.0
         self.running = True
         self.thread = threading.Thread(target=self._run, name="route-matcher", daemon=True)
         self.thread.start()
+
+    # 兼容测试/旧调用：状态仍可按原名字读写，实际由共享 RouteTracker 持有。
+    def _tracker(self):
+        tracker = self.__dict__.get("tracker")
+        if tracker is None:
+            tracker = self.tracker = RouteTracker(self.cfg)
+        return tracker
+
+    @property
+    def previous(self):
+        return self._tracker().previous
+
+    @previous.setter
+    def previous(self, value):
+        self._tracker().previous = value
+
+    @property
+    def tentative(self):
+        return self._tracker().tentative
+
+    @tentative.setter
+    def tentative(self, value):
+        self._tracker().tentative = value
+
+    @property
+    def rejects(self):
+        return self._tracker().rejects
+
+    @rejects.setter
+    def rejects(self, value):
+        self._tracker().rejects = value
+
+    @property
+    def segments(self):
+        return self._tracker().segments
+
+    @segments.setter
+    def segments(self, value):
+        self._tracker().segments = value
 
     def available(self, map_name):
         item = self.cfg["maps"].get(map_name)
@@ -238,10 +271,8 @@ class RouteWorker:
             return False
 
     def interval(self):
-        base, maximum = self.cfg["sample_seconds"], self.cfg["max_sample_seconds"]
         pressure = self.input.qsize() / max(1, self.input.maxsize)
-        slow = max(1.0, self.average_ms / self.cfg["worker"]["target_ms"])
-        return min(maximum, base * max(1.0, 1 + pressure * 3, slow))
+        return sample_interval(self.cfg, self.average_ms, pressure)
 
     def _matcher(self, map_name):
         if map_name not in self.matchers:
@@ -265,10 +296,7 @@ class RouteWorker:
             started = perf_counter()
             try:
                 key = (session, map_name)
-                previous = self.previous.get(key)
-                near = (previous["x"], previous["y"]) if previous is not None else None
-                result = self._matcher(map_name).locate(image, near)
-                result = self._accept(key, elapsed_ms, result)
+                _result, result = self.tracker.process(self._matcher(map_name), image, key, elapsed_ms)
                 self.output.put((session, elapsed_ms, result))
             except Exception as exc:
                 self.output.put((session, elapsed_ms, None))
@@ -279,38 +307,8 @@ class RouteWorker:
                 self.input.task_done()
 
     def _accept(self, key, elapsed_ms, result):
-        """首次位置要连续两次相近；已开始后拒绝不可能的瞬移，连续异常后重新找起点。
-
-        重新找到的起点不是上一段的延续：它开一个新 segment。断点本身没有点，两段之间不连线。"""
-        if result is None:
-            return None
-        current = {"elapsed_ms": elapsed_ms, **result}
-        previous = self.previous.get(key)
-        if previous is None:
-            candidate = self.tentative.get(key)
-            if candidate is not None:
-                distance = math.hypot(current["x"] - candidate["x"], current["y"] - candidate["y"])
-                if distance <= float(self.cfg["matcher"]["start_confirm_radius"]):
-                    # 每确认一个新起点就换一段：第一次是 0，重定位后是 1、2……
-                    self.segments[key] = self.segments.get(key, -1) + 1
-                    current["segment_id"] = self.segments[key]
-                    self.previous[key] = current
-                    self.tentative.pop(key, None)
-                    self.rejects[key] = 0
-                    return current
-            self.tentative[key] = current
-            return None
-        if route_step_ok(previous, current, self.cfg["matcher"]):
-            current["segment_id"] = self.segments.get(key, 0)
-            self.previous[key] = current
-            self.rejects[key] = 0
-            return current
-        self.rejects[key] = self.rejects.get(key, 0) + 1
-        if self.rejects[key] >= int(self.cfg["matcher"]["reset_after_rejects"]):
-            self.previous.pop(key, None)
-            self.tentative[key] = current
-            self.rejects[key] = 0
-        return None
+        """兼容旧测试/调用：实际逻辑在共享 RouteTracker，生产与回放同一份。"""
+        return self.tracker.accept(key, elapsed_ms, result)
 
     def close(self):
         self.running = False

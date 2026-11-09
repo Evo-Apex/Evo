@@ -121,6 +121,7 @@ class Hud:
         self.missing = [n for n, t in (("spectate", self.spectate_template), ("damage_icon", self.icon_template),
                                        *((icons[k]["template"], self.kp_templates[k]) for k in KP_ROW))
                         if t is None]  # 没有参照图的（认不出观战、读不出伤害等）
+        self.last_raw = {}
 
     # ---------- 只看外观、不用识别引擎 ----------
 
@@ -185,10 +186,17 @@ class Hud:
         result = self.engine(piece)
         return list(zip(result.txts or (), result.scores or ()))
 
-    def _number(self, piece, pattern, bounds, top):
-        """读一小块里的一个整数（格式和范围都对、置信度够高才算），读不到返回 (None, 置信度或 None)。"""
+    def _number(self, piece, pattern, bounds, top, field=None):
+        """读一小块里的一个整数（格式和范围都对、置信度够高才算），读不到返回 (None, 置信度或 None)。
+        field 只给离线诊断用：把这一块 OCR 的原文和置信度留在 last_raw，方便调参。"""
         best = (None, None)
-        for text, score in self._texts(piece):
+        texts = self._texts(piece)
+        if field is not None:
+            if not hasattr(self, "last_raw"):
+                self.last_raw = {}
+            self.last_raw.setdefault(field, []).extend({"text": text, "score": round(float(score), 4)}
+                                                       for text, score in texts)
+        for text, score in texts:
             m = re.search(pattern, clean_number(text, top["replace"]))
             if not m:
                 continue
@@ -205,9 +213,10 @@ class Hud:
         老板分的图标不在、但这一行显示着：老板分留空（用户说过老板分不是每次都有，不知道没显示是不是 0）"""
         top = self.cfg["top_right"]
         values, scores = {}, {}
+        self.last_raw = {}
         for name, spec in top["fields"].items():  # 剩余小队数、RP（击杀那一行见下面）
             piece = snip.crop(spec["roi"], top["upscale"], pad=top["pad"])
-            values[name], scores[name] = self._number(piece, spec["pattern"], spec["range"], top)
+            values[name], scores[name] = self._number(piece, spec["pattern"], spec["range"], top, name)
         values["damage"], scores["damage"], icon = self._damage(snip, top)
         icons = self._kp_icons(snip, top["kp_row"])
         row_shown = "kills" in icons or "assists" in icons
@@ -234,6 +243,9 @@ class Hud:
         if pad:
             piece = cv2.copyMakeBorder(piece, pad, pad, pad, pad, cv2.BORDER_REPLICATE)
         texts = self._texts(piece)
+        if not hasattr(self, "last_raw"):
+            self.last_raw = {}
+        self.last_raw["evo"] = [{"text": text, "score": round(float(score), 4)} for text, score in texts]
         candidates = list(texts)
         if len(texts) > 1:
             candidates.append(("".join(text for text, _score in texts), min(score for _text, score in texts)))
@@ -280,7 +292,7 @@ class Hud:
         if right - left < 6:
             return None, None
         piece = snip.crop([left, y, right - left, h], top["upscale"], pad=top["pad"])
-        return self._number(piece, r"^(\d{1,3})$", row["range"], top)
+        return self._number(piece, r"^(\d{1,3})$", row["range"], top, name)
 
     def _damage(self, snip, top):
         """伤害：先找到前面的图标，只读图标右边的数字。返回 (值, 置信度, 图标在不在)。
@@ -295,7 +307,7 @@ class Hud:
         if right - left < 6:
             return None, None, True
         piece = snip.crop([left, cell[1], right - left, cell[3]], top["upscale"], pad=top["pad"])
-        return (*self._number(piece, r"^(\d{1,5})$", d["range"], top), True)
+        return (*self._number(piece, r"^(\d{1,5})$", d["range"], top, "damage"), True)
 
     def read_name(self, snip, left_range=None):
         return read_name(self.engine, snip, left_range)
