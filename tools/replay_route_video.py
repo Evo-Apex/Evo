@@ -121,6 +121,7 @@ def replay(video, map_name, cfg, mode="production", start=0.0, end=None, fixed=3
             else:
                 if old_segment >= 0 and accepted["segment_id"] != old_segment:
                     resets += 1
+                accepted["trace"] = dict(matcher.last_metrics, scope=matcher.last_scope)
                 points.append(accepted)
             average_ms = took if not average_ms else average_ms * 0.9 + took * 0.1
             last_elapsed = current
@@ -164,7 +165,14 @@ def replay(video, map_name, cfg, mode="production", start=0.0, end=None, fixed=3
             "mean": round(sum(timings) / max(1, len(timings)), 2),
             "p95": round(_percentile(timings, 0.95), 2),
         },
-        "scope": {name: scopes.count(name) for name in ("local", "full", "none")},
+        "scope": {name: scopes.count(name) for name in ("local", "full", "none", "local_low", "local_low_kept")},
+        "matcher": {
+            "matches_mean": round(sum(p["trace"].get("matches", 0) for p in points if p.get("trace")) / max(1, len(points)), 1),
+            "inliers_mean": round(sum(p["trace"].get("inliers", 0) for p in points if p.get("trace")) / max(1, len(points)), 1),
+            "inlier_ratio_mean": round(sum(p["trace"].get("inlier_ratio", 0) for p in points if p.get("trace")) / max(1, len(points)), 3),
+            "reprojection_error_mean": round(sum(p["trace"].get("reprojection_error", 0) for p in points if p.get("trace")) / max(1, len(points)), 3),
+            "scale_mean": round(sum(p["trace"].get("scale", 0) for p in points if p.get("trace")) / max(1, len(points)), 3),
+        },
         "actual_interval_seconds": {
             "mean": round(sum(intervals) / max(1, len(intervals)), 2),
             "max": round(max(intervals, default=0.0), 2),
@@ -181,7 +189,8 @@ def replay(video, map_name, cfg, mode="production", start=0.0, end=None, fixed=3
             "max": round(max((p["confidence"] for p in points), default=0), 3),
         },
         "raw_points": [{"elapsed_ms": p["elapsed_ms"], "x": round(p["x"], 5), "y": round(p["y"], 5),
-                        "confidence": round(p["confidence"], 4), "segment_id": p.get("segment_id", 0)}
+                        "confidence": round(p["confidence"], 4), "segment_id": p.get("segment_id", 0),
+                        "trace": p.get("trace")}
                        for p in points],
         "route_points": [{"elapsed_ms": p["elapsed_ms"], "x": round(p["x"], 5), "y": round(p["y"], 5),
                           "confidence": round(p["confidence"], 4), "segment_id": p.get("segment_id", 0)}

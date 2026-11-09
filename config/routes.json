@@ -38,6 +38,8 @@
     "mask_radius": 0.46,
     "center_mask": 0.07,
     "local_radius": 0.13,
+    "local_min_confidence": 0.35,
+    "_说明": "局部匹配置信度低于 local_min_confidence 时强制再做一次全图匹配，取置信度高的结果，避免在室内沿错误位置一路漂移。",
     "ratio": 0.74,
     "min_matches": 8,
     "min_inliers": 6,

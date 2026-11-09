@@ -24,6 +24,7 @@ class MapMatcher:
         self.image = cv2.resize(raw, (side, side), interpolation=cv2.INTER_AREA)
         self.cfg = cfg
         self.last_scope = None  # 上一次 locate 用的是局部特征还是全图；只给离线回放统计用
+        self.last_metrics = {}  # 离线诊断：匹配数、内点、重投影误差、尺度；不参与生产判断
         self.detector, self.norm = self._detector()
         self.keypoints, self.descriptors = self.detector.detectAndCompute(self.image, None)
         if self.descriptors is None or len(self.keypoints) < cfg["min_matches"]:
@@ -73,10 +74,21 @@ class MapMatcher:
         predicted = cv2.transform(src[inliers][None, :, :], matrix)[0]
         error = float(np.mean(np.linalg.norm(predicted - dst[inliers], axis=1)))
         confidence = min(1.0, count / (self.cfg["min_inliers"] * 2)) * ratio / (1 + error / 5)
-        return {"x": float(x), "y": float(y), "confidence": round(confidence, 4), "matches": count}
+        scale = float(np.hypot(matrix[0, 0], matrix[1, 0]))
+        self.last_metrics = {
+            "matches": int(len(good)),
+            "inliers": count,
+            "inlier_ratio": round(ratio, 4),
+            "reprojection_error": round(error, 3),
+            "scale": round(scale, 4),
+            "confidence": round(confidence, 4),
+        }
+        return {"x": float(x), "y": float(y), "confidence": round(confidence, 4),
+                "matches": count, **self.last_metrics}
 
     def locate(self, crop, previous=None):
         self.last_scope = "none"
+        self.last_metrics = {}
         query_points, query_desc = self._query(crop)
         if query_desc is None or len(query_points) < self.cfg["min_matches"]:
             return None
@@ -87,8 +99,19 @@ class MapMatcher:
                      if (kp.pt[0] - cx) ** 2 + (kp.pt[1] - cy) ** 2 <= radius ** 2]
             if len(local) >= self.cfg["min_matches"] * 2:
                 result = self._locate_with_indexes(query_points, query_desc, local)
-                if result is not None:
+                low = result is not None and result["confidence"] < self.cfg.get("local_min_confidence", 0.35)
+                if result is not None and not low:
                     self.last_scope = "local"
                     return result
+                # 局部结果不可信时不直接采用，交给全图复核；取两者里置信度高的那个。
+                self.last_scope = "local_low"
+                full = self._locate_with_indexes(query_points, query_desc, None)
+                if full is not None and (result is None or full["confidence"] >= result["confidence"]):
+                    self.last_scope = "full"
+                    return full
+                if result is not None:
+                    self.last_scope = "local_low_kept"
+                    return result
+                return None
         self.last_scope = "full"
         return self._locate_with_indexes(query_points, query_desc, None)
