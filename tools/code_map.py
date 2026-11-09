@@ -82,6 +82,7 @@ SECTIONS = [
     ("开发用的脚本（tools/）", "查问题、看数据", [
         "tools/ocr_probe.py", "tools/frame_capture.py", "tools/legend_capture.py", "tools/log_speed.py",
         "tools/diag_report.py", "tools/stats_report.py", "tools/demo_data.py", "tools/demo_seasons.py",
+        "tools/export_route_diag.py", "tools/replay_route_video.py",
         "tools/code_map.py", "tools/map_assets.py"]),
     ("测试（tests/）", None, [
         "tests/run_all.py", "tests/fake_game.py", "tests/test_*.py",
