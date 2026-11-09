@@ -188,6 +188,12 @@ def snap_checks():
     out["锚点在障碍里：原始锚点保留、只标这一条边不确定"] = (
         len(points) == 2 and points[0]["x"] == inside["x"] and points[0]["y"] == inside["y"]
         and points[1].get("uncertain_before") and legs[0]["uncertain_edges"] == [1])
+    near_edge = {"x": 25 / 59, "y": 0.5, "elapsed_ms": 0, "confidence": 0.9, "segment_id": 0}
+    snapped = route_planner.snap_anchors(mask, [near_edge], 4)[0]
+    sx, sy = _px((snapped["x"], snapped["y"]), 60)
+    out["粗掩码边缘：赛后显示锚点最多吸附 4 像素，原始坐标另存不被覆盖"] = (
+        mask[sy, sx] and "snapped_from" in snapped
+        and abs(sx - 25) <= 4 and near_edge["x"] == 25 / 59)
     return out
 
 
@@ -205,6 +211,14 @@ def uncertain_edge_checks():
     out["不确定按相邻锚点对记：前面成功的边不跟着标 uncertain"] = (
         not leg["points"][1].get("uncertain_before") and leg["uncertain_edges"] == [2, 3])
     out["不确定边数等于失败的相邻对，不是整段一个布尔值"] = len(leg["uncertain_edges"]) == 2
+    flattened, uncertain = route_planner.flatten_legs([leg])
+    out["保存前展开：不确定边会换 segment，面板不可能重新画成实线"] = (
+        uncertain == 2 and len({p["segment_id"] for p in flattened}) == 3
+        and all("uncertain_before" not in p for p in flattened))
+    isolated = route_planner.isolate_anchors(anchors[:2])
+    out["规划异常回退：只保留离散点且不修改原锚点"] = (
+        [p["segment_id"] for p in isolated] == [0, 1]
+        and [p["segment_id"] for p in anchors[:2]] == [0, 0])
     return out
 
 

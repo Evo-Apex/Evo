@@ -136,7 +136,30 @@ def replay(video, map_name, cfg, mode="production", start=0.0, end=None, fixed=3
 
     sampled = len(timings)
     simplified = routes.simplify(points, cfg["simplify_tolerance"]) if points else []
-    segments = sorted({int(p["segment_id"]) for p in points})
+    raw_crossings = _crossings(simplified, map_name, cfg)
+    planned = simplified
+    uncertain_edges = 0
+    planning_reasons = {}
+    mask_name = info.get("mask")
+    if simplified and mask_name:
+        mask_path = Path(routes.ASSET_DIR) / mask_name
+        if mask_path.exists():
+            planner = cfg.get("planner", {})
+            legs = route_planner.route_with_mask(
+                simplified, route_planner.load_mask(str(mask_path)),
+                max_nodes=int(planner.get("max_nodes", 30000)),
+                max_seconds=float(planner.get("max_seconds_per_edge", 0.35)),
+                max_detour=float(planner.get("max_detour", 2.2)),
+                snap_px=int(planner.get("snap_px", 8)),
+                anchor_snap_px=int(planner.get("anchor_snap_px", 0)),
+            )
+            for leg in legs:
+                for point in leg.get("points", []):
+                    reason = point.get("uncertain_reason")
+                    if reason:
+                        planning_reasons[reason] = planning_reasons.get(reason, 0) + 1
+            planned, uncertain_edges = route_planner.flatten_legs(legs)
+    segments = sorted({int(p.get("segment_id", 0)) for p in planned})
     intervals = [b - a for a, b in zip(sample_times, sample_times[1:])]
     displacement = [((b["x"] - a["x"]) ** 2 + (b["y"] - a["y"]) ** 2) ** 0.5
                     for a, b in zip(points, points[1:]) if a.get("segment_id") == b.get("segment_id")]
@@ -182,6 +205,9 @@ def replay(video, map_name, cfg, mode="production", start=0.0, end=None, fixed=3
             "seconds": round(max(intervals, default=0.0), 2),
         },
         "simplified_points": len(simplified),
+        "planned_points": len(planned),
+        "uncertain_edges": uncertain_edges,
+        "planning_reasons": planning_reasons,
         "peak_tracemalloc_kb": round(peak / 1024, 1),
         "confidence": {
             "min": round(min((p["confidence"] for p in points), default=0), 3),
@@ -193,17 +219,20 @@ def replay(video, map_name, cfg, mode="production", start=0.0, end=None, fixed=3
                         "trace": p.get("trace")}
                        for p in points],
         "route_points": [{"elapsed_ms": p["elapsed_ms"], "x": round(p["x"], 5), "y": round(p["y"], 5),
-                          "confidence": round(p["confidence"], 4), "segment_id": p.get("segment_id", 0)}
-                         for p in simplified],
-        "suspected_crossings": _crossings(points, map_name, cfg),
-        "crossings_status": "checked" if map_name == "风暴点" else "not_checked",
+                          "confidence": round(p.get("confidence", 0), 4), "segment_id": p.get("segment_id", 0)}
+                         for p in planned],
+        "raw_suspected_crossings": raw_crossings,
+        "suspected_crossings": _crossings(planned, map_name, cfg),
+        "crossings_status": "checked" if mask_name else "not_checked",
     }
     return report
 
 
 def _crossings(points, map_name, cfg):
-    mask_path = Path(routes.ASSET_DIR) / "storm-point-s31-mask.png"
-    if map_name != "风暴点" or not mask_path.exists() or not points:
+    info = cfg.get("maps", {}).get(map_name, {})
+    mask_name = info.get("mask")
+    mask_path = Path(routes.ASSET_DIR) / mask_name if mask_name else None
+    if mask_path is None or not mask_path.exists() or not points:
         return []
     mask = route_planner.load_mask(str(mask_path))
     out = []
@@ -356,7 +385,7 @@ def draw(report, out_path):
         x, y = int(point["x"] * 1599), int(point["y"] * 1599)
         d.rectangle((x - 12, y - 12, x + 12, y + 12), outline=(255, 70, 70, 255), width=5)
     legend = [("原始匹配锚点", "dot", (232, 234, 238, 255)),
-              ("P0 候选连接线（按 segment 分色）", "line", SEGMENT_COLORS[0] + (255,)),
+              ("赛后可通行路线（按 segment 分色）", "line", SEGMENT_COLORS[0] + (255,)),
               ("segment 断点（橙圈，不连线）", "ring", (240, 156, 62, 255))]
     if report.get("crossings_status") == "checked":
         legend.append(("疑似障碍穿越（橙虚线 + 红叉）", "cross", (240, 156, 62, 255)))
@@ -379,7 +408,8 @@ def draw(report, out_path):
         elif kind == "error":
             d.rectangle((40, y + 8, 64, y + 26), outline=color, width=4)
         d.text((94, y), text, font=_font(20), fill=(235, 238, 244))
-    d.text((36, 1508), "P0 候选连接线不是确认轨迹；同段内仍可能抄近路，掩码未达到生产标准。",
+    d.text((36, 1508), f"原始直线穿障碍 {len(report.get('raw_suspected_crossings', []))} 处；"
+           f"规划后残留 {len(report.get('suspected_crossings', []))} 处；不确定连接已断开 {report.get('uncertain_edges', 0)} 处。",
            font=_font(19), fill=(190, 196, 206))
     base.save(out_path)
     return out_path

@@ -36,11 +36,38 @@ class RouteTracker:
         return (float(matcher.get("max_gap_seconds", 20.0)),
                 int(matcher.get("max_consecutive_misses", 3)))
 
+    def _start_confirmations(self):
+        return max(2, int(self.cfg["matcher"].get("start_confirmations", 3)))
+
     def _drop_previous(self, key):
         """结束当前段：下一个确认点会开新 segment，两段之间没有连接点。"""
         self.previous.pop(key, None)
         self.tentative.pop(key, None)
         self.rejects[key] = 0
+
+    def _remember_tentative(self, key, current):
+        """累计一组相近的起点候选；远离或变换异常时从当前帧重新开始。
+
+        起点比普通移动更容易误锁到重复地形，所以默认要求三帧连续一致。候选只留
+        ``start_confirmations`` 个，不增加长期内存。
+        """
+        candidates = self.tentative.get(key)
+        if not isinstance(candidates, list):
+            candidates = [candidates] if candidates else []
+        radius = float(self.cfg["matcher"]["start_confirm_radius"])
+        if candidates:
+            previous = candidates[-1]
+            distance = math.hypot(current["x"] - previous["x"], current["y"] - previous["y"])
+            scale_a, scale_b = previous.get("scale"), current.get("scale")
+            angle_a, angle_b = previous.get("angle"), current.get("angle")
+            scale_ok = scale_a is None or scale_b is None or abs(float(scale_a) - float(scale_b)) <= 0.18
+            angle_ok = angle_a is None or angle_b is None or _angle_distance(angle_a, angle_b) <= 35
+            if distance > radius or not scale_ok or not angle_ok:
+                candidates = []
+        candidates.append(current)
+        candidates = candidates[-self._start_confirmations():]
+        self.tentative[key] = candidates
+        return candidates
 
     def _miss(self, key, elapsed_ms):
         """记一次没定位到；超过时间或连续次数就断段，绝不让旧点等很久再接新点。"""
@@ -75,27 +102,24 @@ class RouteTracker:
         current = {"elapsed_ms": elapsed_ms, **result}
         previous = self.previous.get(key)
         if previous is None:
-            candidate = self.tentative.get(key)
-            if candidate is not None:
-                distance = math.hypot(current["x"] - candidate["x"], current["y"] - candidate["y"])
-                if distance <= float(self.cfg["matcher"]["start_confirm_radius"]):
-                    # 每确认一个新起点就换一段：第一次是 0，重定位后是 1、2……
-                    self.segments[key] = self.segments.get(key, -1) + 1
-                    current["segment_id"] = self.segments[key]
-                    self.previous[key] = current
-                    self.tentative.pop(key, None)
-                    self.rejects[key] = 0
-                    self.misses[key] = 0
-                    self.last_success_ms[key] = elapsed_ms
-                    return current
-            self.tentative[key] = current
+            candidates = self._remember_tentative(key, current)
+            if len(candidates) >= self._start_confirmations():
+                # 每确认一个新起点就换一段：第一次是 0，重定位后是 1、2……
+                self.segments[key] = self.segments.get(key, -1) + 1
+                current["segment_id"] = self.segments[key]
+                self.previous[key] = current
+                self.tentative.pop(key, None)
+                self.rejects[key] = 0
+                self.misses[key] = 0
+                self.last_success_ms[key] = elapsed_ms
+                return current
             return None
         max_gap, _ = self._limits()
         last = self.last_success_ms.get(key, previous["elapsed_ms"])
         if (elapsed_ms - last) / 1000 > max_gap:
             # 失联太久：先断段，把这个点当新起点候选；下一个相近点才正式开新段。
             self._drop_previous(key)
-            self.tentative[key] = current
+            self._remember_tentative(key, current)
             return None
         if route_step_ok(previous, current, self.cfg["matcher"]):
             current["segment_id"] = self.segments.get(key, 0)
@@ -107,7 +131,7 @@ class RouteTracker:
         self.rejects[key] = self.rejects.get(key, 0) + 1
         if self.rejects[key] >= int(self.cfg["matcher"]["reset_after_rejects"]):
             self._drop_previous(key)
-            self.tentative[key] = current
+            self._remember_tentative(key, current)
             self.rejects[key] = 0
         else:
             self.misses[key] = self.misses.get(key, 0) + 1
@@ -122,3 +146,8 @@ def route_step_ok(previous, current, cfg):
         return False
     limit = max(float(cfg["min_step_radius"]), elapsed * float(cfg["max_speed_per_second"]))
     return math.hypot(current["x"] - previous["x"], current["y"] - previous["y"]) <= limit
+
+
+def _angle_distance(a, b):
+    """两个角度的最小差值（度）。"""
+    return abs((float(a) - float(b) + 180) % 360 - 180)

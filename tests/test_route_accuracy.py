@@ -21,10 +21,14 @@ def checks():
         {"manual_x": 0.5, "manual_y": 0.5, "alg_x": None, "alg_y": None},
         {"manual_x": 0.6, "manual_y": 0.6, "alg_x": 0.6, "alg_y": 0.6, "visible": False},
         {"manual_x": 0.7, "manual_y": 0.7, "alg_x": 0.7, "alg_y": 0.7, "indoor": True},
+        {"manual_x": 0.8, "manual_y": 0.8, "alg_x": 0.8, "alg_y": 0.8,
+         "visible": "true", "occluded": "true"},
     ]
     s = route_accuracy.summarize(rows)
     check("只统计可见、非室内、有算法坐标的点", s["matched"] == 4)
-    check("覆盖率按可见点算", s["coverage"] == 0.6667)
+    check("eligible 覆盖率不把室内和遮挡算进分母", s["coverage"] == 0.8 and s["eligible"] == 5)
+    check("整体可见覆盖率另报", s["overall_visible_coverage"] == 0.8571)
+    check("CSV 字符串布尔值按真实值处理", s["occluded"] == 1 and s["indoor"] == 1)
     check("中位数", s["median"] == 0.03)
     check("P90", round(s["p90"], 4) == 0.085)
     check("0.02 内比例", s["within_002"] == 0.5)

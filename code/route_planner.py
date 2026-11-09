@@ -84,6 +84,26 @@ def _snap(mask, x, y, radius):
     return None
 
 
+def snap_anchors(mask, anchors, radius):
+    """把仅因粗掩码边缘误差落入障碍的显示锚点，有限地吸附到最近可走像素。
+
+    原始观测仍由调用方单独保存；这里只有赛后显示坐标会移动，且最多 ``radius`` 个掩码像素。
+    找不到邻近自由像素的锚点保持原样，后续会被标成不确定并断线。
+    """
+    h, w = mask.shape
+    out = []
+    for anchor in anchors:
+        item = dict(anchor)
+        x, y = _n(item["x"], w), _n(item["y"], h)
+        snapped = _snap(mask, x, y, radius)
+        if snapped is not None and snapped != (x, y):
+            item["snapped_from"] = [item["x"], item["y"]]
+            item["x"] = snapped[0] / (w - 1)
+            item["y"] = snapped[1] / (h - 1)
+        out.append(item)
+    return out
+
+
 def _simplify_visible(mask, path):
     """从起点开始每次跳到最远的可见点；这样抽稀后每一段都仍然看得见，不会重新穿山。"""
     if len(path) <= 2:
@@ -221,12 +241,13 @@ def _route_points(points, started, ended, confidence):
 
 
 def route_with_mask(anchors, mask, *, max_nodes=30000, max_seconds=0.35, max_detour=2.2,
-                    snap_px=8):
+                    snap_px=8, anchor_snap_px=0):
     """把原始锚点变成若干段（legs）。每段 dict：segment_id、points、uncertain、reason。
 
     只有同一 segment 的相邻锚点才连；重定位后的断点不连。找不到路时 uncertain=True、points 只有两端，
     调用方画虚线；绝不能把它当确定路线。
     """
+    anchors = snap_anchors(mask, anchors, anchor_snap_px) if anchor_snap_px else anchors
     legs = []
     if not anchors:
         return legs
@@ -263,3 +284,35 @@ def route_with_mask(anchors, mask, *, max_nodes=30000, max_seconds=0.35, max_det
     for leg in legs:
         leg["points"].sort(key=lambda p: p["elapsed_ms"])
     return legs
+
+
+def flatten_legs(legs):
+    """把规划结果变成数据库/面板能直接消费的点，并把不确定边变成真正断段。
+
+    ``uncertain_before`` 不能只停留在诊断字段里：现有数据库没有这个列，若直接保存会丢失，
+    面板随后又会把两个端点画成实线。这里给不确定边后的点换一个新的 ``segment_id``，无需迁移
+    数据库也能保证前后永不相连。返回 ``(points, uncertain_edges)``。
+    """
+    out = []
+    display_segment = -1
+    uncertain_edges = 0
+    for leg in legs:
+        display_segment += 1
+        for point in leg.get("points", []):
+            if point.get("uncertain_before") and out:
+                display_segment += 1
+                uncertain_edges += 1
+            clean = {key: value for key, value in point.items()
+                     if key not in ("uncertain_before", "uncertain_reason")}
+            clean["segment_id"] = display_segment
+            out.append(clean)
+    return out, uncertain_edges
+
+
+def isolate_anchors(anchors):
+    """规划器异常时只保留定位点，不用直线把相邻点硬连起来。
+
+    每个点分配独立线段，前端仍能展示时间点和状态，但不会在缺少可靠路径时
+    重新制造一条穿墙线。输入点不做原地修改。
+    """
+    return [{**point, "segment_id": index} for index, point in enumerate(anchors)]

@@ -1,0 +1,15 @@
+{
+  "_说明": "赛后路线用的共享粗障碍掩码；255=可走、0=硬障碍。找不到可信通路时断线。",
+  "source": "assets/maps/broken-moon-s31.jpg",
+  "side": 512,
+  "blocked": [
+    "地图外水面",
+    "大块金棕色山体"
+  ],
+  "free_ratio": 0.5179,
+  "generator": "tools/build_route_masks.py",
+  "limits": [
+    "粗掩码不能表达门、楼层、滑索、跳塔和载具",
+    "底图版本变化后必须重建并用完整录像复核"
+  ]
+}

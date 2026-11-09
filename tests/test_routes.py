@@ -62,22 +62,27 @@ def main():
     out["数秒内横跨地图的误匹配会被拒绝"] = not routes.route_step_ok(
         {"elapsed_ms": 1000, "x": .5, "y": .5}, {"elapsed_ms": 5000, "x": .2, "y": .8}, motion)
     worker = object.__new__(routes.RouteWorker)
-    worker.cfg = {"matcher": {**motion, "start_confirm_radius": .045, "reset_after_rejects": 3}}
+    worker.cfg = {"matcher": {**motion, "start_confirm_radius": .045, "start_confirmations": 3,
+                              "reset_after_rejects": 3, "max_gap_seconds": 20,
+                              "max_consecutive_misses": 3}}
     worker.previous, worker.tentative, worker.rejects, worker.segments = {}, {}, {}, {}
     locate = lambda x, y: {"x": x, "y": y, "confidence": .8, "matches": 10}
     first = worker._accept((1, "残月"), 1000, locate(.5, .5))
+    second = worker._accept((1, "残月"), 3000, locate(.505, .505))
     confirmed = worker._accept((1, "残月"), 5000, locate(.51, .51))
     jumped = worker._accept((1, "残月"), 8000, locate(.2, .8))
-    out["首个位置连续确认后才采用"] = first is None and confirmed is not None
+    out["首个位置连续三次确认后才采用"] = first is None and second is None and confirmed is not None
     out["已确认路线中的瞬移点会被丢弃"] = jumped is None and worker.previous[(1, "残月")]["x"] == .51
 
     # 连续三次瞬移后重新找起点：新起点另开一段，旧的一段到此为止。
-    for elapsed, (x, y) in ((8000, (.2, .8)), (9000, (.21, .81)), (10000, (.2, .8))):
+    for elapsed, (x, y) in ((9000, (.21, .81)), (10000, (.2, .8))):
         worker._accept((1, "残月"), elapsed, locate(x, y))
     resumed = worker._accept((1, "残月"), 12000, locate(.205, .805))
+    confirmed_again = worker._accept((1, "残月"), 14000, locate(.21, .805))
     followed = worker._accept((1, "残月"), 15000, locate(.23, .81))
-    out["重定位后新起点连续确认会开第二个 segment"] = (
-        resumed is not None and resumed["segment_id"] == 1 and followed["segment_id"] == 1
+    out["重定位后新起点连续三次确认会开第二个 segment"] = (
+        resumed is None and confirmed_again is not None and confirmed_again["segment_id"] == 1
+        and followed["segment_id"] == 1
         and worker.previous[(1, "残月")]["segment_id"] == 1)
     out["重定位前的一段保留自己的编号"] = confirmed["segment_id"] == 0
 

@@ -568,10 +568,37 @@ class RouteRecorder:
         raw_points = sorted(session["points"], key=lambda p: p["elapsed_ms"])
         raw_count = len(raw_points)
         points = simplify(raw_points, self.cfg["simplify_tolerance"]) if raw_points else []
+        uncertain_edges = 0
+        map_info = self.cfg.get("maps", {}).get(session["map_name"], {})
+        mask_name = map_info.get("mask")
+        if points and mask_name:
+            mask_path = ASSET_DIR / mask_name
+            if mask_path.is_file():
+                # OpenCV/NumPy 只在对局结束、确实有掩码时才加载。对局中的截图线程不承担 A*。
+                import route_planner
+                planner = self.cfg.get("planner", {})
+                try:
+                    mask = route_planner.load_mask(mask_path)
+                    legs = route_planner.route_with_mask(
+                        points, mask,
+                        max_nodes=int(planner.get("max_nodes", 30000)),
+                        max_seconds=float(planner.get("max_seconds_per_edge", 0.35)),
+                        max_detour=float(planner.get("max_detour", 2.2)),
+                        snap_px=int(planner.get("snap_px", 8)),
+                        anchor_snap_px=int(planner.get("anchor_snap_px", 0)),
+                    )
+                    points, uncertain_edges = route_planner.flatten_legs(legs)
+                except Exception as exc:
+                    # 路线图宁可显示离散定位点，也不能因规划器或素材异常把整局丢掉，
+                    # 更不能回退成会穿墙的直线。
+                    points = route_planner.isolate_anchors(points)
+                    uncertain_edges = max(1, len(points) - 1)
+                    self.log(f"⚠ 行进路线规划失败，已保留离散定位点：{exc}")
         points, marks = self._with_states(points, session["states"], session["state_jobs"])
         coverage = raw_count / max(1, round((session["ended"] - session["started"]).total_seconds()
                                             / self.cfg["sample_seconds"]))
-        status = "ready" if len(points) >= self.cfg["min_route_points"] else ("partial" if points else "failed")
+        status = ("ready" if len(points) >= self.cfg["min_route_points"] and not uncertain_edges
+                  else ("partial" if points else "failed"))
         route = {
             "map_name": session["map_name"], "map_asset": session["map_asset"], "status": status,
             "started_at": f"{session['started']:%Y-%m-%d %H:%M:%S}",
@@ -580,8 +607,9 @@ class RouteRecorder:
         }
         storage.save_route(self.conn, session["match_id"], route, points, marks, raw_points)
         session["saved"] = True
-        self.log(f"           行进路线：{session['map_name']}，定位 {raw_count} 个点，简化后 {len(points)} 个"
-                 f"（编号 {session['match_id']}，{status}）")
+        gaps = f"，不确定连接断开 {uncertain_edges} 处" if uncertain_edges else ""
+        self.log(f"           行进路线：{session['map_name']}，定位 {raw_count} 个点，赛后路线 {len(points)} 个"
+                 f"{gaps}（编号 {session['match_id']}，{status}）")
 
     def stop(self, now, hud=None):
         self._finish(now)
