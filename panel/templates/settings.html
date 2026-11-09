@@ -455,7 +455,7 @@
                 </span>
               </label>
             </fieldset>
-            <div class="setting-desc"><a class="text-link" href="{{ mirror_page }}" target="_blank" rel="noopener noreferrer">了解 Mirror酱、获取 CDK ↗</a></div>
+            <div class="setting-desc"><a class="text-link" href="{{ mirror_page }}" target="_blank" rel="noopener noreferrer" data-external-link>了解 Mirror酱、获取 CDK ↗</a></div>
             <div class="cdk-box">
               <label class="setting-name" for="cdk-input">Mirror酱 CDK</label>
               <div class="cdk-row">
@@ -518,10 +518,10 @@
       <li class="pr-3"><div class="setting-name">轻量</div><div class="setting-desc">后台运行占用低，不影响游戏帧数</div></li>
       <li class="pr-4"><div class="setting-name">开源</div><div class="setting-desc">所有代码公开，任何人都可以检查</div></li>
     </ul>
-    <a class="source-link" href="{{ source_url }}" target="_blank" rel="noopener noreferrer">查看源代码 ↗</a>
+    <a class="source-link" href="{{ source_url }}" target="_blank" rel="noopener noreferrer" data-external-link>查看源代码 ↗</a>
     {# 意见反馈：和"查看源代码"一样交给系统浏览器打开（pywebview 默认这样处理 _blank），Evo 自己不联网 #}
     <div class="feedback">
-      <a class="btn feedback-btn" href="{{ feedback_url }}" target="_blank" rel="noopener noreferrer">意见反馈 ↗</a>
+      <a class="btn feedback-btn" href="{{ feedback_url }}" target="_blank" rel="noopener noreferrer" data-external-link>意见反馈 ↗</a>
       <div class="setting-desc">遇到问题、想提建议，加 QQ 群 <span class="num">{{ feedback_group }}</span></div>
     </div>
     {# 支持我（2026-10-28 用户要求）：连着三个弹窗，前两个劝一劝（文字是用户写的原文），第三个才是开发者的微信收款码。
@@ -541,7 +541,7 @@
       <h3 class="setting-name">开发者</h3>
       <ul class="dev-list">
         {% for dev in developers %}
-        <li><a class="source-link" href="{{ dev.url }}" target="_blank" rel="noopener noreferrer">{{ dev.name }} ↗</a></li>
+        <li><a class="source-link" href="{{ dev.url }}" target="_blank" rel="noopener noreferrer" data-external-link>{{ dev.name }} ↗</a></li>
         {% endfor %}
       </ul>
     </div>

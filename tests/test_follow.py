@@ -12,7 +12,9 @@
 运行：python tests/test_follow.py
 """
 
+import json
 import re
+import subprocess
 import tempfile
 from unittest import mock
 import xml.etree.ElementTree as ET
@@ -20,6 +22,7 @@ from pathlib import Path
 
 from fake_game import report  # 要在项目代码之前导入（设置临时数据文件夹）
 
+import app_window
 import panel_app
 import storage
 from paths import PANEL_DIR
@@ -85,6 +88,9 @@ def main():
     checks.update(partner_checks(client))
     checks.update(support_checks(client))
     checks.update(credits_checks(client))
+    checks.update(external_link_checks(client))
+    checks.update(window_api_checks())
+    checks.update(script_behaviour_checks(client))
     return report(checks)
 
 
@@ -99,7 +105,7 @@ def credits_checks(client):
     page, credits = card(partner_qr=lambda: panel_app.PARTNER_QR)
     _, no_partner = card(partner_qr=lambda: None)
     _, no_thanks = card(partner_qr=lambda: panel_app.PARTNER_QR, THANKS=())
-    devs = re.findall(r'<a class="source-link" href="([^"]+)" target="_blank" rel="noopener noreferrer">([^<]+) ↗</a>', credits)
+    devs = re.findall(r'<a class="source-link" href="([^"]+)" target="_blank" rel="noopener noreferrer"[^>]*>([^<]+) ↗</a>', credits)
     thanks = re.search(r'<ul class="thanks-list">(.*?)</ul>', credits, re.S)
     thanks = re.findall(r"<li>([^<]+)</li>", thanks.group(1)) if thanks else []
     return {
@@ -131,7 +137,7 @@ def partner_checks(client):
             'id="partner-open"' in header and "Evo 官方合作小程序：</span><span class=\"partner-name\">派圈助手" in header,
         "点了弹出小程序码：弹窗里有码（读屏写着是什么）、扫码说明、关闭按钮":
             f'src="/static/{panel_app.PARTNER_QR}"' in dialog and 'alt="派圈助手的小程序码"' in dialog and "扫一扫" in dialog
-            and "data-partner-close" in dialog and 'querySelectorAll("#partner-open, [data-partner-open]")' in overview,
+            and "data-partner-close" in dialog and 'id="partner-open"' in overview,
         "每一页都有（战绩、数据、全体玩家、设置页也有按钮和弹窗）": all(
             'id="partner-open"' in page.split("</header>")[0] and 'id="partner-dialog"' in page for page in others),
         "没有小程序码图片时不显示按钮和弹窗": "partner-open" not in without and "partner-dialog" not in without,
@@ -149,6 +155,73 @@ def partner_checks(client):
     else:
         print(f"  （还没有小程序码图片 {image}：真的图片那一项跳过）")
     return out
+
+
+def external_link_checks(client):
+    """设置页/总览页所有 http(s) 外链都标了 data-external-link，普通浏览器不拦截。"""
+    settings = client.get("/settings").get_data(as_text=True)
+    overview = client.get("/").get_data(as_text=True)
+    tags = re.findall(r"<a [^>]*target=\"_blank\"[^>]*>", settings + overview)
+    external = [tag for tag in tags if re.search(r'href="https?://', tag)]
+    return {
+        "设置页外部链接都标了 data-external-link": bool(external) and all("data-external-link" in tag for tag in external),
+        "设置页覆盖查看源代码/意见反馈/开发者/Mirror酱": all(
+            marker in settings for marker in ("查看源代码 ↗", "意见反馈 ↗", "黄指导", "wzx", "了解 Mirror酱")),
+        "总览页关注我也标了 data-external-link":
+            all("data-external-link" in tag for tag in re.findall(r"<a [^>]*target=\"_blank\"[^>]*>", overview)
+                if "https://" in tag),
+        "base.html 有外部链接事件委托，且不是拦截所有链接":
+            'closest("a[data-external-link]")' in settings and "open_external" in settings,
+        "派圈助手改成事件委托（不再逐个 addEventListener）":
+            "closest(\"#partner-open, [data-partner-open]\")" in settings
+            and 'querySelectorAll("#partner-open, [data-partner-open]")' not in settings,
+    }
+
+
+def window_api_checks():
+    """WindowApi.open_external：只放行 http/https，异常返回失败而不是抛给页面。"""
+    api = app_window.WindowApi()
+    with mock.patch.object(app_window.webbrowser, "open", return_value=True) as opened:
+        good = api.open_external("https://github.com/Evo-Apex/Evo")
+    with mock.patch.object(app_window.webbrowser, "open", return_value=True) as opened_http:
+        good_http = api.open_external("http://example.com/a?b=1")
+    bad = [api.open_external(url) for url in
+           ("javascript:alert(1)", "file:///C:/Windows/win.ini", "data:text/html,x", "C:\\Windows\\win.ini", "ftp://x/")]
+    with mock.patch.object(app_window.webbrowser, "open", side_effect=RuntimeError("没有浏览器")):
+        broken = api.open_external("https://example.com/")
+    with mock.patch.object(app_window.webbrowser, "open", return_value=False) as not_opened:
+        reported = api.open_external("https://example.com/")
+    return {
+        "open_external：https 调 webbrowser.open 一次": good["ok"] and opened.call_count == 1,
+        "open_external：http 也放行": good_http["ok"] and opened_http.call_count == 1,
+        "open_external：javascript/file/data/本地路径/ftp 全拒绝": all(not r["ok"] for r in bad)
+            and all(r["error"] for r in bad),
+        "open_external：浏览器异常返回失败、不抛出": broken["ok"] is False and "没有浏览器" in broken["error"],
+        "open_external：系统没打开也如实返回失败": reported["ok"] is False and not_opened.call_count == 1,
+    }
+
+
+def script_behaviour_checks(client):
+    """执行 base.html 里的外部链接/派圈助手脚本逻辑（Node + 假 DOM），不是只查字符串。"""
+    page = client.get("/settings").get_data(as_text=True)
+    html = FOLDER / "settings-rendered.html"
+    html.write_text(page, encoding="utf-8")
+    script = Path(__file__).with_name("js_settings_actions.mjs")
+    try:
+        done = subprocess.run(["node", str(script), str(html)], capture_output=True, text=True,
+                              encoding="utf-8", timeout=30)
+        result = json.loads(done.stdout) if done.returncode == 0 else {}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        result = {}
+    return {
+        "可执行 JS：pywebview 里点外链会调 open_external 且页面不跳": result.get("external_calls_api")
+            and result.get("external_keeps_page"),
+        "可执行 JS：普通浏览器不阻止原生链接": result.get("external_browser_keeps_default"),
+        "可执行 JS：顶栏派圈助手能打开弹窗": result.get("partner_top_opens"),
+        "可执行 JS：鸣谢卡片派圈助手能打开同一个弹窗": result.get("partner_card_opens"),
+        "可执行 JS：关闭按钮/Esc/点背景都能关": result.get("partner_close_button")
+            and result.get("partner_esc_closes") and result.get("partner_backdrop_closes"),
+    }
 
 
 SUPPORT_TEXTS = (  # 用户写的原文（"Evo" 后面照面板的习惯加了空格）

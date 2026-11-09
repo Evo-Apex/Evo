@@ -14,7 +14,7 @@
   <h2 id="h-follow">关注我</h2>
   <div class="follow-links">
     {% for f in follow %}
-    <a class="btn" href="{{ f.url }}" target="_blank" rel="noopener noreferrer">
+    <a class="btn" href="{{ f.url }}" target="_blank" rel="noopener noreferrer" data-external-link>
       <span class="follow-icon" style="--icon: url('{{ url_for('static', filename=f.icon) }}')" aria-hidden="true"></span>{{ f.name }} ↗
     </a>
     {% endfor %}

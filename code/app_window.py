@@ -14,8 +14,10 @@ import base64
 import ctypes
 import sys
 import threading
+import webbrowser
 from ctypes import wintypes
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import webview
 
@@ -105,6 +107,24 @@ class WindowApi:
         """设置页"更改位置"的"浏览…"（data_move.py）：弹出 Windows 选文件夹的对话框，返回选的文件夹，没选返回 None。"""
         chosen = self._window.create_file_dialog(webview.FileDialog.FOLDER, directory=start or "")
         return chosen[0] if chosen else None
+
+    def open_external(self, url):
+        """把明确标记的外部链接交给系统默认浏览器（base.html 的 data-external-link）。
+        只收 http/https；其他协议（javascript:、file:、data:、本地路径）一律拒绝。
+        返回 {"ok": bool, "url": str, "error": str|None}，页面脚本不会因为异常崩掉。"""
+        try:
+            if not isinstance(url, str):
+                return {"ok": False, "url": "", "error": "地址不是字符串"}
+            url = url.strip()
+            if any(ch in url for ch in ("\r", "\n", "\t", "\0")):
+                return {"ok": False, "url": url, "error": "地址里有控制字符"}
+            parts = urlsplit(url)
+            if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+                return {"ok": False, "url": url, "error": "只允许 http:// 或 https:// 地址"}
+            opened = webbrowser.open(url, new=2)
+            return {"ok": bool(opened), "url": url, "error": None if opened else "系统没有打开浏览器"}
+        except Exception as exc:  # noqa: BLE001 浏览器/系统异常不能让页面脚本崩掉
+            return {"ok": False, "url": url if isinstance(url, str) else "", "error": str(exc)}
 
     def save_image(self, filename, data_url):
         """分享战绩的"保存图片…"（panel/templates/_share.html）：弹出 Windows 的"另存为"，默认放在"图片"文件夹，

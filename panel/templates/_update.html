@@ -62,7 +62,7 @@
   {% if job.phase == 'manual' %}
   {# 不能在 Evo 里更新（用源码运行、旧格式的版本信息）：和以前一样，去官网下载 #}
   <span class="grow">Evo 有新版本 <span class="num">{{ offer.version }}</span>，你现在用的是 <span class="num">{{ version }}</span></span>
-  <a class="banner-link" href="{{ offer.page }}" target="_blank" rel="noopener noreferrer">查看更新内容并下载 ↗</a>
+  <a class="banner-link" href="{{ offer.page }}" target="_blank" rel="noopener noreferrer" data-external-link>查看更新内容并下载 ↗</a>
   {% elif job.phase == 'available' %}
   <span class="grow">Evo 有新版本 <span class="num">{{ offer.version }}</span>，你现在用的是 <span class="num">{{ version }}</span></span>
   <a class="banner-link" href="{{ url_for('settings') }}#h-update">更新内容</a>
@@ -82,7 +82,7 @@
   <span class="grow">Evo <span class="num">{{ offer.version }}</span> 没下载成功：<span class="update-error">{{ job.error }}</span></span>
   {{ download_button(job, next, '重试', primary=false) }}
   {% if job.channel == 'cn' and job.global_ok %}{{ download_button(job, next, '这次改用国际渠道下载', primary=false, channel='global') }}{% endif %}
-  <a class="banner-link" href="{{ offer.page }}" target="_blank" rel="noopener noreferrer">去官网下载 ↗</a>
+  <a class="banner-link" href="{{ offer.page }}" target="_blank" rel="noopener noreferrer" data-external-link>去官网下载 ↗</a>
   {% elif job.phase == 'ready' %}
   <span class="grow">Evo <span class="num">{{ offer.version }}</span> 已下载好{% if job.blocked %}<span class="update-hint" id="update-blocked-top">{{ job.blocked }}</span>{% endif %}</span>
   {{ install_button(job, next, 'update-blocked-top') }}
@@ -125,7 +125,7 @@
 {% macro actions(job, newest) -%}
 {% set next = url_for('settings') %}
 {% if job and job.phase == 'manual' %}
-<a class="btn btn-primary" href="{{ newest.page }}" target="_blank" rel="noopener noreferrer">去官网下载 ↗</a>
+<a class="btn btn-primary" href="{{ newest.page }}" target="_blank" rel="noopener noreferrer" data-external-link>去官网下载 ↗</a>
 {% elif job and job.phase == 'available' %}
 {{ download_button(job, next, '立即更新 · ' ~ (job.size_mb ~ ' MB' if job.size_mb else '国内渠道')) }}
 {% elif job and job.phase == 'need_cdk' %}
@@ -135,7 +135,7 @@
 {% elif job and job.phase == 'failed' %}
 {{ download_button(job, next, '重试') }}
 {% if job.channel == 'cn' and job.global_ok %}{{ download_button(job, next, '这次改用国际渠道下载', primary=false, channel='global') }}{% endif %}
-<a class="btn" href="{{ newest.page }}" target="_blank" rel="noopener noreferrer">去官网下载 ↗</a>
+<a class="btn" href="{{ newest.page }}" target="_blank" rel="noopener noreferrer" data-external-link>去官网下载 ↗</a>
 {% elif job and job.phase == 'ready' %}
 {{ install_button(job, next, 'update-blocked-settings') }}
 {% endif %}
