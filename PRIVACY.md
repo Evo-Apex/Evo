@@ -6,7 +6,7 @@ Evo 是一个开源的 Apex Legends 战绩记录工具，由个人开发者制�
 
 **一句话说明：Evo 记录的数据保存在你自己的电脑上。只有你在 Evo 里绑定了微信小程序「派圈助手」，你的战绩（包括队友的游戏名和 ID）才会同步到云端，在手机上也能看，随时可以解绑、删除；只有你同意了"匿名统计"，Evo 才会把你以后每一局的部分数据（传奇、名次、击杀、伤害等，不含游戏名、ID 和截图）发给开发者。两样默认都不开。** 没有账号，没有广告，不收集崩溃报告。会联网的只有"检查新版本"（0.5.1 起同时看有没有开发者公告，0.5.4 起同时问一下 Mirror酱 上的最新版本）、你点了才开始的"一键更新"（0.5.4 起可以选从 Mirror酱 下载，要你自己在 Mirror酱 买 CDK）、你绑定了才开始的"同步到派圈助手"（0.5.0 起）、你同意后才发送的"匿名统计"（开着时，数据页"全体玩家"还会下载所有玩家的汇总）、你在总览页点了"显示"才开始的"当前地图"（0.4.3 起，只下载各模式的地图轮换，不发送任何战绩），以及电脑上没有 WebView2 时、你同意后才运行的微软 WebView2 安装程序：自动检查和匿名统计在第一次打开 Evo 时都会先问你要不要开启，开了也可以随时关掉；一键更新只在你点了"立即更新"之后才下载（0.1.0 还没有这些功能，完全不联网；0.1.0 之后的版本才有检查新版本，0.3.3 起才有一键更新，0.3.4 起才有安装 WebView2，0.3.7 起才有匿名统计）。
 
-Evo 的源代码是公开的（[GitHub](https://github.com/AugustHuangMX/Evo)），除了同步到派圈助手的那部分，这份说明里的每一条都能在代码里核对：Evo 联网的代码只在 `update_check.py`（检查新版本）、`mirrorchyan.py`（问 Mirror酱 上的最新版本、国内渠道下载）、`notice_check.py`（开发者公告）、`updater.py`（一键更新）、`telemetry.py`（匿名统计）、`global_stats.py`（数据页"全体玩家"下载汇总）和 `map_rotation.py`（总览页下载地图轮换）；`webview2.py` 在你同意后运行微软的 WebView2 安装程序（由它联网）。接收匿名统计的服务器程序也在源代码里（`server/stats/`）。绑定微信小程序、同步战绩的代码（`cloud_sync.py` 等）和小程序本身暂时不公开。
+Evo 的源代码是公开的（[GitHub](https://github.com/Evo-Apex/Evo)），除了同步到派圈助手的那部分，这份说明里的每一条都能在代码里核对：Evo 联网的代码只在 `update_check.py`（检查新版本）、`mirrorchyan.py`（问 Mirror酱 上的最新版本、国内渠道下载）、`notice_check.py`（开发者公告）、`updater.py`（一键更新）、`telemetry.py`（匿名统计）、`global_stats.py`（数据页"全体玩家"下载汇总）和 `map_rotation.py`（总览页下载地图轮换）；`webview2.py` 在你同意后运行微软的 WebView2 安装程序（由它联网）。接收匿名统计的服务器程序也在源代码里（`server/stats/`）。绑定微信小程序、同步战绩的代码（`cloud_sync.py` 等）和小程序本身暂时不公开。
 
 ---
 
@@ -154,7 +154,7 @@ Evo 不收集能认出你是谁的个人信息（匿名统计也不包含），�
 
 对这份说明有疑问，或想要删除你发给我的文件：
 
-- GitHub Issues：<https://github.com/AugustHuangMX/Evo/issues>（公开可见，请不要在这里贴日志或截图）
+- GitHub Issues：<https://github.com/Evo-Apex/Evo/issues>（公开可见，请不要在这里贴日志或截图）
 - QQ 群：1128519951（<https://qm.qq.com/q/6L2kTbmCWc>），私下的请求请在群里私聊开发者
 
 ---
@@ -184,4 +184,4 @@ Evo is an open-source match tracker for Apex Legends, made and maintained by an 
 - **Feedback files.** If you choose to send your log file or screenshots to the developer, they are used only to investigate your issue, are not shared, and are deleted once the issue is resolved (at most 90 days). Screenshots are added to Evo's test set only with your explicit consent, with unrelated content (including other players' names and IDs) blacked out; you can withdraw consent at any time.
 - **Your data, your control.** You can view, correct, export (CSV) and delete all data from Evo's Settings page, or delete the data folder.
 - **Children.** If you are under 14, ask a parent or guardian before turning on anonymous statistics or sending feedback files.
-- **Contact:** [GitHub Issues](https://github.com/AugustHuangMX/Evo/issues) (public) or the QQ group 1128519951.
+- **Contact:** [GitHub Issues](https://github.com/Evo-Apex/Evo/issues) (public) or the QQ group 1128519951.

@@ -93,7 +93,7 @@ MIRROR_LINKS = 2
 MIRROR_LINK = re.compile(r'(<a\s[^>]*\bdata-mirror\b[^>]*\bhref=")([^"]*)(")')
 PAUSED_HREF = "#cn-mirror"  # COS 停用期间国内下载链接打开的 Mirror酱 说明窗口（site/index.html 最下面，2026-11-04 起；之前是
 #   "国内下载暂时不可用"的 #cn-paused）；窗口里还有一个海外下载链接
-GITHUB_REPO = "AugustHuangMX/Evo"
+GITHUB_REPO = "Evo-Apex/Evo"
 TAG = f"v{APP_VERSION}"
 
 

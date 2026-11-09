@@ -84,7 +84,7 @@ Evo 和录屏软件一样，只截取屏幕上显示的画面，再识别其中�
 
 ## 反馈
 
-- 发 [GitHub Issue](https://github.com/AugustHuangMX/Evo/issues)，或者加 [QQ 群](https://qm.qq.com/q/6L2kTbmCWc)（群号 1128519951）
+- 发 [GitHub Issue](https://github.com/Evo-Apex/Evo/issues)，或者加 [QQ 群](https://qm.qq.com/q/6L2kTbmCWc)（群号 1128519951）
 
 
 ## 许可证和声明

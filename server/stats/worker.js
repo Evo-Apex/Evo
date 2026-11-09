@@ -6,7 +6,7 @@
 // - POST /v1/delete：{"id": 匿名编号}：删掉这个编号发过的所有数据（Evo 0.3.7、0.3.8 设置页的"关闭并删除已发送的数据"；
 //   之后的版本去掉了这个按钮，2026-10-24 用户决定。老版本还在用，这里留着）
 // - GET /v1/summary：全体玩家的汇总（Evo 数据页"全体玩家"，2026-10-24 用户决定；格式见 makeSummary）。
-//   定时任务每 6 小时算一次存进 summary 表（有新数据或换了一天才重算），这里只读出来；还没算过就现算一次。
+//   定时任务每天算一次存进 summary 表（有新数据或换了一天才重算），这里只读出来；还没算过就现算一次。
 //   只有汇总的数字，没有任何一个编号的数据。Evo 里只有开了匿名统计的人才下载（限制在 Evo 那边，这个地址本身是公开的）
 // - GET /v1/maps：地图轮换（Evo 总览页，2026-10-28 用户决定）：匹配、排位、轮换模式现在 / 下一张是什么图、什么时候换。
 //   数据来自 Apex Legends Status 的接口（用户自己申请的 API Key，是 Worker 的机密变量 ALS_API_KEY：
@@ -205,9 +205,10 @@ async function remove(body, env) {
 // "本赛季"（2026-11-03 加的）也按用户电脑上的日期（Evo 只发日期，不发几点、不发赛季），从开赛后第一个整天算起（SEASON.from）：
 // 开赛那天一半是上赛季的局（开赛在太平洋时间上午 10 点，国内是第二天凌晨 2 点），所以那天不算
 // 读数据库：每算一次大约把 matches 表读 9 遍（D1 免费额度每天读 500 万行）。2026-10-29 一万多局、每小时都算时一天读了 380 万行，
-// 改成每 6 小时算一次（用户同意）；局数再多十倍要换算法（每局进来时累加）或者开付费版
+// 改成每 6 小时算一次（用户同意）。2026-11-08 约 5 万局时超了上限（实测算一次约 83 万行，是表的约 17 倍），改成每天一次（用户决定）；
+// 局数再多几倍要换算法（每局进来时累加）或者开付费版
 const SUMMARY_NAME = "v1";
-const SUMMARY_CRON = "7 */6 * * *";  // 重算汇总的定时任务（wrangler.toml 的 crons 里也写着；另一个 "* * * * *" 是地图轮换）
+const SUMMARY_CRON = "7 0 * * *";  // 重算汇总的定时任务（wrangler.toml 的 crons 里也写着；另一个 "* * * * *" 是地图轮换）
 const RECENT_DAYS = 7;
 // 本赛季：第几赛季、从哪天算起。新赛季开始时和 Evo 的 config/seasons.json 一起改，再 wrangler deploy
 const SEASON = { number: 31, from: "2026-11-04" };
@@ -536,7 +537,7 @@ export default {
     }
   },
 
-  // 定时任务（wrangler.toml 的 crons）：每 6 小时（UTC 0、6、12、18 点）第 7 分钟重算全体玩家的汇总；每分钟看一眼地图轮换要不要重新取
+  // 定时任务（wrangler.toml 的 crons）：每天 UTC 0 点第 7 分钟（D1 额度刚恢复的时候）重算全体玩家的汇总；每分钟看一眼地图轮换要不要重新取
   async scheduled(event, env, ctx) {
     ctx.waitUntil(event.cron === SUMMARY_CRON ? refreshSummary(env, false) : refreshMaps(env));
   },

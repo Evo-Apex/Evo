@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   mirrorchyan:
-    if: ${{ github.repository_owner == 'AugustHuangMX' }}
+    if: ${{ github.repository_owner == 'Evo-Apex' }}
     runs-on: ubuntu-latest
     steps:
       - uses: MirrorChyan/uploading-action@v1
@@ -26,7 +26,7 @@ jobs:
           tag: ${{ inputs.tag || github.event.release.tag_name }}
           os: windows
           arch: amd64
-          owner: AugustHuangMX
+          owner: Evo-Apex
           repo: Evo
           github_token: ${{ secrets.GITHUB_TOKEN }}
           upload_token: ${{ secrets.MirrorChyanUploadToken }}

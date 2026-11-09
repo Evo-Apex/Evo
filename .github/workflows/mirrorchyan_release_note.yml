@@ -23,14 +23,14 @@ permissions:
 
 jobs:
   mirrorchyan:
-    if: ${{ github.repository_owner == 'AugustHuangMX' }}
+    if: ${{ github.repository_owner == 'Evo-Apex' }}
     runs-on: ubuntu-latest
     steps:
       - uses: MirrorChyan/release-note-action@v1
         with:
           mirrorchyan_rid: Evo
           version_name: ${{ inputs.tag || github.event.release.tag_name }}
-          owner: AugustHuangMX
+          owner: Evo-Apex
           repo: Evo
           github_token: ${{ secrets.GITHUB_TOKEN }}
           upload_token: ${{ secrets.MirrorChyanUploadToken }}
