@@ -1,4 +1,4 @@
-﻿"""真实 WebView2 DOM 点击验证：外部链接走 open_external、派圈助手弹窗、支持我三步。
+"""真实 WebView2 DOM 点击验证：外部链接走 open_external、派圈助手弹窗、支持我三步。
 会短暂打开一个 Evo 的 WebView2 窗口，不需要人工点击。
 运行：python tests/test_settings_webview2.py
 
@@ -35,18 +35,12 @@ def main():
     server = None
     window = None
     timer = None
-    real_shell = app_window._shell_execute
-    real_explorer = app_window._explorer_open
+    real_shell = app_window.WindowApi._shell_execute_on_ui
     opened = []
     fail_next = [False]
     result = {}
 
-    def fake_explorer(target):
-        if fail_next[0]:
-            raise OSError("cmd 起不来（测试）")
-        opened.append(target)
-
-    def fake_shell(target):
+    def fake_shell(self, target):
         opened.append(target)
         return 5 if fail_next[0] else 33
 
@@ -123,8 +117,7 @@ def main():
                 pass
 
     try:
-        app_window._explorer_open = fake_explorer
-        app_window._shell_execute = fake_shell
+        app_window.WindowApi._shell_execute_on_ui = fake_shell
         server = make_server("127.0.0.1", 0, panel_app.app)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         url = f"http://127.0.0.1:{server.server_port}/settings"
@@ -150,8 +143,7 @@ def main():
         if server is not None:
             server.shutdown()
             server.server_close()
-        app_window._explorer_open = real_explorer
-        app_window._shell_execute = real_shell
+        app_window.WindowApi._shell_execute_on_ui = real_shell
         if window is not None:
             try:
                 window.destroy()
@@ -166,11 +158,10 @@ def main():
     expected = ["external_called", "page_stayed", "external_failure_prompt", "partner_top_open", "partner_close",
                 "partner_card_open", "partner_esc", "partner_backdrop", "support_1", "support_2", "support_3",
                 "support_closed"]
-    result["browser_restored"] = app_window._shell_execute is real_shell
-    result["explorer_restored"] = app_window._explorer_open is real_explorer
+    result["browser_restored"] = app_window.WindowApi._shell_execute_on_ui is real_shell
     result["temp_cleaned"] = not tmp.exists()
     result["timer_cancelled"] = timer is None or timer.finished.is_set()
-    ok = all(result.get(k) for k in expected) and result["browser_restored"] and result["explorer_restored"] \
+    ok = all(result.get(k) for k in expected) and result["browser_restored"] \
         and result["temp_cleaned"] and result["timer_cancelled"] and "error" not in result
     print(json.dumps(result, ensure_ascii=False, indent=2))
     print(f"临时目录已清理：{not tmp.exists()}")

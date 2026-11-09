@@ -20,7 +20,9 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+import types
 from unittest import mock
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -96,7 +98,6 @@ def main():
     checks.update(external_link_checks(client))
     checks.update(window_api_checks())
     checks.update(webview_cache_checks())
-    checks.update(explorer_dll_checks())
     js_checks, js_skip = script_behaviour_checks(client)
     checks.update(js_checks)
     if js_skip:
@@ -192,75 +193,112 @@ def external_link_checks(client):
     }
 
 
-def window_api_checks():
-    """WindowApi.open_external：只放行 http/https；先走 explorer 独立进程，失败才退回 ShellExecuteW；
-    异常返回失败而不是抛给页面。"""
+def _fake_api():
+    """给 WindowApi 一个假 WinForms 窗口：真实 Handle + InvokeRequired。"""
+    class Handle:
+        def ToInt64(self):
+            return 12345
+
+    class Form:
+        InvokeRequired = False
+
+        def __init__(self):
+            self.Handle = Handle()
+            self.invoked = 0
+
+        def Invoke(self, action):
+            self.invoked += 1
+            action()
+
+    form = Form()
     api = app_window.WindowApi()
-    with mock.patch.object(app_window, "_explorer_open") as start, \
+    api._window = type("W", (), {"native": form})()
+    return api, form
+
+
+def window_api_checks():
+    """WindowApi.open_external：只放行 http/https；在 WinForms UI 线程用真实 hwnd 调 ShellExecuteW；
+    异常返回失败而不是抛给页面。"""
+    api, form = _fake_api()
+    events = []
+
+    def fake_shell(hwnd, verb, url, *args):
+        events.append(("shell", hwnd, url))
+        return 42
+
+    with mock.patch.object(app_window._shell32, "ShellExecuteW", side_effect=fake_shell), \
+            mock.patch.object(app_window._user32, "AllowSetForegroundWindow",
+                              side_effect=lambda _: events.append(("allow",))) as allow, \
             mock.patch.object(app_window, "_external_log") as logged:
         good = api.open_external("https://github.com/Evo-Apex/Evo")
-    with mock.patch.object(app_window, "_explorer_open") as start_http:
-        good_http = api.open_external("http://example.com/a?b=1")
-    with mock.patch.object(app_window, "_explorer_open") as start_bad:
-        bad = [api.open_external(url) for url in
-               ("javascript:alert(1)", "file:///C:/Windows/win.ini", "data:text/html,x",
-                "C:\\Windows\\win.ini", "ftp://x/")]
-    with mock.patch.object(app_window, "_explorer_open", side_effect=OSError("explorer 起不来")), \
-            mock.patch.object(app_window, "_shell_execute", return_value=33) as shell_ok:
-        fallback = api.open_external("https://example.com/fallback")
-    with mock.patch.object(app_window, "_explorer_open", side_effect=OSError("explorer 起不来")), \
-            mock.patch.object(app_window, "_shell_execute", return_value=5):
-        denied = api.open_external("https://example.com/")
-    with mock.patch.object(app_window, "_explorer_open", side_effect=OSError("explorer 起不来")), \
-            mock.patch.object(app_window, "_shell_execute", side_effect=RuntimeError("没有浏览器")):
-        broken = api.open_external("https://example.com/")
-    with mock.patch.object(app_window._shell32, "ShellExecuteW", return_value=42) as native, \
-            mock.patch.object(app_window._user32, "AllowSetForegroundWindow", return_value=True) as allow:
-        code = app_window._shell_execute("https://example.com/native")
 
-    tricky = [
-        "https://example.com/a?b=1&c=2",
-        "https://example.com/a?b=1|2",
-        "https://example.com/a?b=1^2",
-        "https://example.com/a?b=1%202",
-        'https://example.com/a?b="quoted"',
-        "https://example.com/a path with spaces",
-    ]
-    popen_calls = []
-    with mock.patch.object(app_window.Path, "is_file", return_value=True), \
-            mock.patch("subprocess.Popen") as popen:
-        for url in tricky:
-            app_window._explorer_open(url)
-            popen_calls.append((popen.call_args, url))
+    ok_hwnd = events[0] == ("allow",) and events[1][0] == "shell" and events[1][1] == 12345
+    ok_url = events[1][2] == "https://github.com/Evo-Apex/Evo"
+
+    # 用真实 _on_ui 的“已在 UI 线程直接执行”分支，确认回调在 UI 调度里发生。
+    api2, form2 = _fake_api()
+    with mock.patch.object(app_window._shell32, "ShellExecuteW", return_value=33):
+        result = api2._shell_execute_on_ui("https://example.com/ui")
+
+    with mock.patch.object(app_window._shell32, "ShellExecuteW", return_value=5):
+        denied = api2.open_external("https://example.com/")
+
+    with mock.patch.object(app_window._shell32, "ShellExecuteW", side_effect=RuntimeError("shell 坏了")):
+        broken = api2.open_external("https://example.com/")
+
+    with mock.patch.object(app_window.WindowApi, "_shell_execute_on_ui", side_effect=RuntimeError("UI 线程没了")):
+        broken_ui = api2.open_external("https://example.com/")
+
+    bad = [api2.open_external(url) for url in
+           ("javascript:alert(1)", "file:///C:/Windows/win.ini", "data:text/html,x",
+            "C:\\Windows\\win.ini", "ftp://x/")]
+    with mock.patch.object(app_window.WindowApi, "_shell_execute_on_ui") as never:
+        control = [api2.open_external(url) for url in ("https://x/a\r\nb", "https://x/a\tb")]
+
+    # _on_ui：当前不在 UI 线程时必须 Invoke；在 UI 线程时直接执行。
+    class CrossForm:
+        InvokeRequired = True
+
+        def __init__(self):
+            self.calls = []
+
+        def Invoke(self, action):
+            self.calls.append(action)
+            action()
+
+    cross = CrossForm()
+    api3 = app_window.WindowApi()
+    api3._window = type("W", (), {"native": cross})()
+    ran = []
+    fake_system = types.ModuleType("System")
+    fake_system.Action = lambda func: func
+    with mock.patch.dict(sys.modules, {"System": fake_system}):
+        api3._on_ui(lambda: ran.append(True))
+
+    api4, form4 = _fake_api()
+    ran_direct = []
+    api4._on_ui(lambda: ran_direct.append(True))
+
+    source = Path(app_window.__file__).read_text(encoding="utf-8")
     log_text = " ".join(str(c) for c in logged.call_args_list)
 
-    def one_arg(call_url):
-        call, url = call_url
-        args, kwargs = call
-        argv = args[0]
-        return (isinstance(argv, list) and len(argv) == 2 and argv[1] == url
-                and kwargs.get("shell") is False
-                and kwargs.get("creationflags") == 0x08000000)
-
     return {
-        "open_external：https 走 explorer 一次": good["ok"] and good["code"] is None
-            and start.call_count == 1,
-        "open_external：http 也放行": good_http["ok"] and start_http.call_count == 1,
-        "open_external：javascript/file/data/本地路径/ftp 全拒绝且不调系统": all(not r["ok"] for r in bad)
-            and all(r["error"] for r in bad) and start_bad.call_count == 0,
-        "open_external：explorer 失败时退回 ShellExecuteW 并成功": fallback["ok"]
-            and fallback["code"] == 33 and shell_ok.call_count == 1,
-        "open_external：ShellExecuteW <=32 返回失败和错误码": denied["ok"] is False and denied["code"] == 5
+        "open_external：调用 _on_ui 调度，成功后返回 42": good["ok"] and good["code"] == 42,
+        "ShellExecuteW：在 UI 线程回调内发生，hwnd 是真实非零句柄": ok_hwnd and ok_url,
+        "AllowSetForegroundWindow 在 ShellExecuteW 之前": events[0] == ("allow",),
+        "_on_ui：已在 UI 线程时直接执行，不 Invoke 自己": form4.invoked == 0 and ran_direct == [True],
+        "_on_ui：不在 UI 线程时走 Invoke": cross.calls and ran == [True],
+        "ShellExecuteW >32 判成功": good["ok"] and good["code"] == 42,
+        "ShellExecuteW <=32 返回失败和错误码 5": denied["ok"] is False and denied["code"] == 5
             and "错误码 5" in denied["error"],
-        "open_external：异常返回失败、不抛出": broken["ok"] is False and "没有浏览器" in broken["error"],
-        "open_external：日志写 URL 和 explorer": "https://github.com/Evo-Apex/Evo" in log_text
-            and "explorer" in log_text,
-        "ShellExecuteW：先 AllowSetForegroundWindow，再传 URL": code == 42 and allow.called
-            and native.call_args[0][2] == "https://example.com/native",
-        "explorer：Popen 参数是列表，shell=False，URL 只占一个参数": all(one_arg(c) for c in popen_calls),
-        "explorer：& | ^ % 引号 空格 都不会多出参数": len(popen_calls) == len(tricky)
-            and all(one_arg(c) for c in popen_calls),
-        "explorer：旧的 _cmd_start 已移除": not hasattr(app_window, "_cmd_start"),
+        "ShellExecuteW 异常返回失败、不抛出": broken["ok"] is False and "shell 坏了" in broken["error"],
+        "_on_ui 异常返回失败、不抛出": broken_ui["ok"] is False and "UI 线程没了" in broken_ui["error"],
+        "javascript/file/data/本地路径/ftp 全拒绝且不调 ShellExecuteW": all(not r["ok"] for r in bad),
+        "控制字符拒绝且不调 ShellExecuteW": all(not r["ok"] for r in control) and never.call_count == 0,
+        "日志写明 WinForms UI 线程、hwnd 和 URL": "WinForms UI 线程" in log_text
+            and "12345" in log_text and "github.com/Evo-Apex/Evo" in log_text,
+        "外链代码已移除 explorer/Popen/explorer.exe": "_explorer_open" not in source
+            and "subprocess.Popen" not in source and "explorer.exe" not in source,
     }
 
 
@@ -294,136 +332,6 @@ def webview_cache_checks():
         "WebView2 临时缓存：名字是 evo-webview-12位十六进制": all(
             re.fullmatch(r"evo-webview-[0-9a-f]{12}", n) for n in names),
     }
-
-
-def explorer_dll_checks():
-    """explorer.exe 之前清空 SetDllDirectoryW，之后恢复；并给子进程干净的 PATH。"""
-    import threading
-    import time
-
-    checks = {}
-    explorer = Path(os.environ.get("WINDIR") or r"C:\Windows") / "explorer.exe"
-    url = "https://example.com/a?b=1&c=2"
-
-    events = []
-
-    class FakePopen:
-        def __init__(self, args, **kwargs):
-            events.append(("popen", args, kwargs))
-
-    def fake_get():
-        events.append("get")
-        return r"C:\bundle\_internal"
-
-    def fake_set(path):
-        events.append(("set", path))
-
-    with mock.patch.object(app_window, "_get_dll_directory", side_effect=fake_get), \
-            mock.patch.object(app_window, "_set_dll_directory", side_effect=fake_set), \
-            mock.patch.object(app_window, "_explorer_env", return_value={"PATH": "clean"}), \
-            mock.patch("subprocess.Popen", FakePopen):
-        app_window._explorer_open(url)
-    checks["explorer：先清空 DLL 目录，再 Popen，最后恢复"] = (
-        [e[0] if isinstance(e, tuple) else e for e in events] == ["get", "set", "popen", "set"]
-        and events[1][1] is None and events[3][1] == r"C:\bundle\_internal"
-        and events[2][1][0] == str(explorer) and events[2][1][1] == url
-        and events[2][2]["shell"] is False)
-
-    events.clear()
-
-    class BoomPopen:
-        def __init__(self, *a, **k):
-            events.append("popen")
-            raise OSError(2, "boom")
-
-    with mock.patch.object(app_window, "_get_dll_directory", side_effect=fake_get), \
-            mock.patch.object(app_window, "_set_dll_directory", side_effect=fake_set), \
-            mock.patch.object(app_window, "_explorer_env", return_value={}), \
-            mock.patch("subprocess.Popen", BoomPopen):
-        try:
-            app_window._explorer_open(url)
-            raised = False
-        except OSError:
-            raised = True
-    checks["explorer：Popen 抛异常也恢复 DLL 目录"] = (
-        raised and events[-1] == ("set", r"C:\bundle\_internal"))
-
-    events.clear()
-    with mock.patch.object(app_window, "_get_dll_directory", side_effect=OSError(5, "get failed")), \
-            mock.patch.object(app_window, "_set_dll_directory", side_effect=fake_set), \
-            mock.patch("subprocess.Popen", FakePopen):
-        try:
-            app_window._explorer_open(url)
-            raised = False
-        except OSError as exc:
-            raised = exc.errno == 5
-    checks["explorer：读不到 DLL 目录就报错，不启动"] = (
-        raised and not any(isinstance(e, tuple) and e[0] == "popen" for e in events))
-
-    events.clear()
-
-    def fail_clear(path):
-        events.append(("set", path))
-        if path is None:
-            raise OSError(5, "clear failed")
-
-    with mock.patch.object(app_window, "_get_dll_directory", side_effect=fake_get), \
-            mock.patch.object(app_window, "_set_dll_directory", side_effect=fail_clear), \
-            mock.patch("subprocess.Popen", FakePopen):
-        try:
-            app_window._explorer_open(url)
-            raised = False
-        except OSError:
-            raised = True
-    checks["explorer：清空 DLL 目录失败就报错，不启动"] = (
-        raised and not any(isinstance(e, tuple) and e[0] == "popen" for e in events))
-
-    order = []
-
-    def slow_set(path):
-        order.append(("set", path))
-        time.sleep(0.03)
-
-    def slow_popen(*a, **k):
-        order.append("popen")
-
-    def worker():
-        app_window._explorer_open(url)
-
-    real_get = app_window._get_dll_directory
-    real_set = app_window._set_dll_directory
-    app_window._get_dll_directory = lambda: "old"
-    app_window._set_dll_directory = slow_set
-    try:
-        with mock.patch("subprocess.Popen", slow_popen):
-            threads = [threading.Thread(target=worker) for _ in range(2)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
-    finally:
-        app_window._get_dll_directory = real_get
-        app_window._set_dll_directory = real_set
-    checks["explorer：两个线程不会交错改 DLL 目录"] = (
-        [x[1] if isinstance(x, tuple) else x for x in order] ==
-        [None, "popen", "old", None, "popen", "old"])
-
-    clean_env = {
-        "PATH": r"C:\bundle\_internal;C:\bundle\_internal\lib;C:\Windows\System32;C:\Tools",
-        "TEMP": r"C:\Temp", "TMP": r"C:\Temp", "WINDIR": r"C:\Windows",
-        "SystemRoot": r"C:\Windows", "USERPROFILE": r"C:\Users\tester",
-    }
-    original_path = os.environ.get("PATH")
-    with mock.patch.dict(os.environ, clean_env, clear=True), \
-            mock.patch.object(app_window.sys, "_MEIPASS", r"C:\bundle\_internal", create=True):
-        env = app_window._explorer_env()
-    env_upper = {k.upper(): v for k, v in env.items()}
-    checks["explorer 环境：去掉 _MEIPASS/_internal 的 PATH 项"] = (
-        env["PATH"].split(os.pathsep) == [r"C:\Windows\System32", r"C:\Tools"])
-    checks["explorer 环境：TEMP/TMP/WINDIR/SystemRoot 都保留"] = all(
-        env_upper.get(k.upper()) == clean_env[k] for k in ("TEMP", "TMP", "WINDIR", "SystemRoot", "USERPROFILE"))
-    checks["explorer 环境：不修改 Evo 自己的环境"] = os.environ.get("PATH") == original_path
-    return checks
 
 
 def script_behaviour_checks(client):

@@ -43,13 +43,6 @@ _shell32 = ctypes.WinDLL("shell32", use_last_error=True)
 _shell32.ShellExecuteW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR,
                                    wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_int]
 _shell32.ShellExecuteW.restype = wintypes.HINSTANCE
-_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-_kernel32.GetDllDirectoryW.argtypes = [wintypes.DWORD, wintypes.LPWSTR]
-_kernel32.GetDllDirectoryW.restype = wintypes.DWORD
-_kernel32.SetDllDirectoryW.argtypes = [wintypes.LPCWSTR]
-_kernel32.SetDllDirectoryW.restype = wintypes.BOOL
-# SetDllDirectoryW 是进程级状态；读取、清空、Popen、恢复必须整体串行，否则两个同时点击会互相踩。
-_DLL_LOCK = threading.Lock()
 SHELL_EXECUTE_ERRORS = {
     0: "内存不足",
     2: "找不到文件",
@@ -76,101 +69,6 @@ def _external_log(message):
         pass
 
 
-def _shell_execute(url):
-    """让 Windows 用默认浏览器打开 URL，返回 ShellExecuteW 的返回值。
-    调用前允许浏览器到前台（用户刚点了 Evo，Evo 有前台权限）。不开 shell、不拼命令。"""
-    _user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
-    result = _shell32.ShellExecuteW(None, "open", url, None, None, 1)  # SW_SHOWNORMAL
-    return int(result or 0)
-
-
-def _get_dll_directory():
-    """读取当前进程的 SetDllDirectoryW 值；空字符串表示没有设置。"""
-    ctypes.set_last_error(0)
-    need = _kernel32.GetDllDirectoryW(0, None)
-    if need == 0:
-        error = ctypes.get_last_error()
-        if error:
-            raise OSError(error, "GetDllDirectoryW 读取失败")
-        return ""
-    buffer = ctypes.create_unicode_buffer(need + 1)
-    ctypes.set_last_error(0)
-    got = _kernel32.GetDllDirectoryW(need + 1, buffer)
-    if got == 0 and ctypes.get_last_error():
-        raise OSError(ctypes.get_last_error(), "GetDllDirectoryW 读取失败")
-    return buffer.value
-
-
-def _set_dll_directory(path):
-    """设置 DLL 搜索目录；None 恢复 Windows 标准搜索规则。失败必须报 WinError。"""
-    if not _kernel32.SetDllDirectoryW(path):
-        error = ctypes.get_last_error()
-        raise OSError(error, f"SetDllDirectoryW({path!r}) 失败")
-
-
-def _explorer_env():
-    """给 explorer.exe 的干净环境：去掉 PATH 里 PyInstaller 的 _MEIPASS/_internal 项。
-    TEMP/TMP/WINDIR/SystemRoot 等系统变量原样保留；不修改 Evo 自己的 os.environ。"""
-    env = os.environ.copy()
-    roots = []
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        roots.append(os.path.normcase(os.path.normpath(meipass)))
-    if getattr(sys, "frozen", False):
-        internal = Path(sys.executable).resolve().parent / "_internal"
-        roots.append(os.path.normcase(os.path.normpath(str(internal))))
-    path = env.get("PATH")
-    if path and roots:
-        keep = []
-        for item in path.split(os.pathsep):
-            if not item:
-                continue
-            item_norm = os.path.normcase(os.path.normpath(item))
-            if any(item_norm == root or item_norm.startswith(root + os.sep) for root in roots):
-                continue
-            keep.append(item)
-        env["PATH"] = os.pathsep.join(keep)
-    return env
-
-
-def _explorer_open(url):
-    """用独立的 explorer.exe 打开 URL，URL 只作为一个参数传入。
-    ShellExecuteW 从 WebView2 的 JS 调用线程发出时，在部分机器上会返回 42 却没有窗口；
-    explorer 是独立的系统进程，不经过 shell，也不会把 URL 拼成命令行。
-
-    PyInstaller 的 bootloader 用 SetDllDirectoryW 把 DLL 搜索目录指向 _MEIPASS；
-    子进程会继承这个设置，导致 explorer.exe 加载到打包的 DLL 而报 0xc0000142。
-    这里按 PyInstaller 官方文档在 Popen 前 SetDllDirectoryW(None)，Popen 后恢复。"""
-    import subprocess
-
-    windir = os.environ.get("WINDIR") or r"C:\Windows"
-    explorer = Path(windir) / "explorer.exe"
-    if not explorer.is_file():
-        raise OSError(f"找不到系统文件：{explorer}")
-
-    with _DLL_LOCK:
-        previous = _get_dll_directory()
-        cleared = False
-        try:
-            _set_dll_directory(None)
-            cleared = True
-            _external_log(f"DLL 搜索目录已清空（原值 {previous!r}）")
-            _user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
-            subprocess.Popen(
-                [str(explorer), url],
-                shell=False,
-                env=_explorer_env(),
-                creationflags=0x08000000,  # CREATE_NO_WINDOW：不闪黑框
-            )
-        finally:
-            if cleared:
-                try:
-                    _set_dll_directory(previous or None)
-                except OSError as exc:
-                    _external_log(f"恢复 DLL 搜索目录失败：{exc}")
-                    raise
-
-
 class WindowApi:
     """网页里的标题栏按钮、拖动、改大小，通过 window.pywebview.api.xxx() 调用这里。
     （下划线开头的属性和方法不会暴露给网页。）"""
@@ -182,10 +80,15 @@ class WindowApi:
         return self._window.native  # WinForms 的窗口对象
 
     def _on_ui(self, func):
-        """在窗口自己的线程里执行（WinForms 要求窗口操作都在这个线程里做）。"""
+        """在窗口自己的线程里执行（WinForms 要求窗口操作都在这个线程里做）。
+        如果当前已经在这个线程上，直接执行，避免 Invoke 自己造成死锁。"""
+        form = self._form()
+        if not getattr(form, "InvokeRequired", False):
+            func()
+            return
         from System import Action
 
-        self._form().Invoke(Action(func))
+        form.Invoke(Action(func))
 
     def _maximized(self):
         from System.Windows.Forms import FormWindowState
@@ -242,6 +145,21 @@ class WindowApi:
         chosen = self._window.create_file_dialog(webview.FileDialog.FOLDER, directory=start or "")
         return chosen[0] if chosen else None
 
+    def _shell_execute_on_ui(self, url):
+        """在 WinForms UI 线程调用 ShellExecuteW，hwnd 用 Evo 窗口真实句柄。
+        返回 ShellExecuteW 的原始返回值；UI 调度或调用异常向上抛，由 open_external 兜底。"""
+        result = {}
+
+        def go():
+            form = self._form()
+            hwnd = form.Handle.ToInt64()
+            _user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
+            _external_log(f"在 WinForms UI 线程调用 ShellExecuteW（hwnd={hwnd}，url={url}）")
+            result["code"] = _shell32.ShellExecuteW(hwnd, "open", url, None, None, 1)  # SW_SHOWNORMAL
+
+        self._on_ui(go)
+        return int(result.get("code") or 0)
+
     def open_external(self, url):
         """把明确标记的外部链接交给 Windows 默认浏览器（base.html 的 data-external-link）。
         只收 http/https；其他协议（javascript:、file:、data:、本地路径）一律拒绝。
@@ -263,22 +181,15 @@ class WindowApi:
                 _external_log(f"拒绝：{error}；收到 {url!r}")
                 return {"ok": False, "url": url, "code": None, "error": error}
 
-            _external_log(f"收到 {url}；调用 explorer 打开（默认浏览器）")
-            try:
-                _explorer_open(url)
-            except OSError:
-                # explorer 起不来时才退回 ShellExecuteW；同样不开 shell。
-                _external_log("explorer 打开失败，改用 ShellExecuteW")
-                code = _shell_execute(url)
-                if code > 32:
-                    _external_log(f"成功：ShellExecuteW 返回 {code}；{url}")
-                    return {"ok": True, "url": url, "code": code, "error": None}
-                reason = SHELL_EXECUTE_ERRORS.get(code, "未知错误")
-                error = f"打开系统浏览器失败（Windows 错误码 {code}：{reason}）"
-                _external_log(f"失败：ShellExecuteW 返回 {code}（{reason}）；{url}")
-                return {"ok": False, "url": url, "code": code, "error": error}
-            _external_log(f"已交给 explorer；{url}")
-            return {"ok": True, "url": url, "code": None, "error": None}
+            _external_log(f"收到 {url}；在 WinForms UI 线程调用 ShellExecuteW")
+            code = self._shell_execute_on_ui(url)
+            if code > 32:
+                _external_log(f"成功：ShellExecuteW 返回 {code}；{url}")
+                return {"ok": True, "url": url, "code": code, "error": None}
+            reason = SHELL_EXECUTE_ERRORS.get(code, "未知错误")
+            error = f"打开系统浏览器失败（Windows 错误码 {code}：{reason}）"
+            _external_log(f"失败：ShellExecuteW 返回 {code}（{reason}）；{url}")
+            return {"ok": False, "url": url, "code": code, "error": error}
         except Exception as exc:  # noqa: BLE001 浏览器/系统异常不能让页面脚本崩掉
             error = f"打开系统浏览器失败：{exc}"
             _external_log(f"异常：{exc!r}；{url!r}")
