@@ -1,8 +1,8 @@
 """测试工具打完以后对答案（2026-11-02 用户定的，见 todo.md"测试工具"）：只读 Evo 的数据库和日志，看这段时间 Evo 记下了什么。
 
-- 打一局：Evo 记下的每局（名次、击杀 / 助攻 / 击倒、伤害、RP 变化）给测试员确认；确认对了的局，从离开大厅到读完
+- 正常对局：Evo 记下的每局（名次、击杀 / 助攻 / 击倒、伤害、RP 变化）给测试员确认；确认对了的局，从离开大厅到读完
   经验值页的截图不带（prune 删掉）。测试员说没有漏记的局、大厅的段位和分数也对时，对局之间的大厅每 10 秒留一张；
-  记错的、没确认的局，截图全留。测试员勾了"全部带上"就一张不删
+  记错的、记不清的、没确认的局，截图全留。测试员勾了"全部带上"就一张不删
 - 每局的时间段：Evo 的数据库里没有开局时间（started_at 一直是空的），所以用 Evo 日志里的"进入大厅""进入开局画面"
   "对局中"和这一局最后一次读数（readings.read_at）分：从开局前最后一次在大厅，到最后一次读数再过 END_MARGIN 秒
 - 赛季数据页：这段时间 Evo 读到的赛季数据（season_stats，待核对的和测试员核对后保存的）
@@ -19,7 +19,9 @@ from pathlib import Path
 FIELDS = (("placement", "名次"), ("kills", "击杀"), ("assists", "助攻"), ("knockdowns", "击倒"), ("damage", "伤害"),
           ("rp_delta", "RP 变化"))  # 给测试员确认的几项（2026-11-02 用户定的）
 INFO = ("match_id", "ended_at", "mode", "map", "legend", "needs_review", "review_note", "rp_source", "edited",
-        "app_version", "survival_time", "rank_tier", "rank_division", "rank_progress")
+        "app_version", "survival_time", "rank_tier", "rank_division", "rank_progress", "evidence_path")
+MODE_LABELS = {"ranked": "排位", "pubs": "匹配", "other": "其他"}  # 同 post_match.MODE_LABELS（这里不 import 它）
+LATE_SOURCES = {"大厅校准"}  # 打完很久才补上的读数（回大厅时校准 RP）：不算这一局什么时候打完（见 evo_matches）
 SEASON_COLUMNS = ("stat_id", "season", "kind", "season_name", "games", "wins", "top5", "damage", "damage_max",
                   "damage_avg", "kills", "deaths", "kd", "kills_max", "knockdowns", "assists", "win_streak", "revives",
                   "respawns", "approx", "read_at", "status", "review_note", "edited")
@@ -60,7 +62,9 @@ def _tables(conn):
 
 def evo_matches(path, start, end):
     """[start, end] 里 Evo 记下的局（这一局最后一次读数或 ended_at 在里面），按时间从早到晚。
-    每局：INFO 里的几项、FIELDS 的值、last_read（最后一次读数的时间，datetime）、readings（{来源: {项: 值}}）。"""
+    每局：INFO 里的几项、FIELDS 的值、last_read（最后一次读数的时间，datetime）、readings（{来源: {项: 值}}）。
+    大厅校准（LATE_SOURCES）不算"最后一次读数"：它是回大厅时补的，可能比这一局晚好几个小时（2026-11-04 一个包把录之前
+    4 小时打的一局也列了出来，那局在录的时候被大厅校准改了 RP，测试员要确认一局根本没录到的）。"""
     if path is None:
         return []
     out = []
@@ -73,7 +77,8 @@ def evo_matches(path, start, end):
                 for r in conn.execute("SELECT source, field, value, read_at FROM readings WHERE match_id = ?",
                                       (match["match_id"],)):
                     readings.setdefault(r["source"], {})[r["field"]] = r["value"]
-                    times.append(parse_time(r["read_at"]))
+                    if r["source"] not in LATE_SOURCES:
+                        times.append(parse_time(r["read_at"]))
             times = [t for t in times if t is not None]
             if not times:
                 continue
@@ -85,6 +90,17 @@ def evo_matches(path, start, end):
             item.update(last_read=last, readings=readings)
             out.append(item)
     return sorted(out, key=lambda m: m["last_read"])
+
+
+def evidence_file(db, evidence_path):
+    """这一局的总结页截图（Evo 存的，matches.evidence_path）在哪：相对路径按数据文件夹（数据库在它下面的 data 文件夹里）找。
+    没有、或者文件已经不在了返回 None。"""
+    if not db or not evidence_path:
+        return None
+    path = Path(evidence_path)
+    if not path.is_absolute():
+        path = Path(db).parent.parent / path
+    return path if path.is_file() else None
 
 
 def lobby_readings(path, start, end):
@@ -195,7 +211,7 @@ def prune(folder, session_start, windows, thin_lobby):
 
 def apply_match_answers(folder, session_start, matches, events, answers):
     """测试员确认完：算每局的时间段、删截图，返回要写进 answers.json 的内容。
-    answers：{"局": {match_id: {"判断": "对" / "不对" / None, "正确的": {项: 值}}}, "漏记": "没有" / "有" / None,
+    answers：{"局": {match_id: {"判断": "对" / "不对" / "记不清" / None, "正确的": {项: 值}}}, "漏记": "没有" / "有" / None,
     "大厅": {"Evo 读的", "判断", "正确的"} 或 None, "全部带上": bool}。大厅的"判断"是"对" / "不对" / None，
     或者"还没读到最后一局之后的大厅"（Evo 最后一次读大厅在最后一局之前，不让测试员判断；当作没确认，大厅的截图照样留）。"""
     windows = match_windows(matches, events, session_start)

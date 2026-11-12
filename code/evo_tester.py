@@ -2,7 +2,7 @@
 截一段游戏画面，连同电脑的显示设置、Evo 的日志打成一个压缩包，发给开发者。
 
 和 Evo 分开打包成一个 exe（python tools/build_tester.py），玩家下载后双击运行。
-- 测试项目（打一局、靶场：武器、赛季数据页、排查问题）和测试员档案见 tester_projects.py、config/tester.json
+- 测试项目（正常对局、靶场：武器、赛季数据页、通用Bug测试）和测试员档案见 tester_projects.py、config/tester.json
 - 截屏、打包见 tester_capture.py；显示器、Apex 设置、Evo 的日志见 tester_info.py
 - 结束：玩家点"结束"（命令行里按回车）、游戏关掉、截满时间或大小、硬盘快满。压缩包放在桌面，打开文件夹选中它
 - 只看不动（原则 1）：只截屏、只读进程名和 Windows 的显示设置；结束用的是本窗口自己的按钮 / 输入，不注册全局键盘钩子；
@@ -30,12 +30,11 @@ from process_info import memory_mb, set_low_priority
 from tester_answers import apply_match_answers, db_path, evo_matches, lobby_readings, log_events, season_rows
 from tester_capture import MonitorThumbs, default_out_dir, make_recorder, make_zip, open_camera
 from tester_info import _safe, collect_info, copy_evo_logs, find_evo_data_dirs, game_aspect_guess, write_info
-from tester_projects import (languages, load_config, load_profile, load_projects, package_name, save_profile,
-                             weapon_list)
+from tester_projects import languages, load_config, load_profile, load_projects, package_name, save_profile
 
 VERSION = "2.1"  # 1.x 是原来的诊断工具；2.1：dxcam 用不了时换 mss（capture.py）
 BEEP_HZ, BEEP_MS = 1200, 150  # "嘀"一声（同 tools/legend_capture.py）
-WATCH_SECONDS = 30  # 打一局：录的时候每隔这么久看一眼 Evo 记下了什么
+WATCH_SECONDS = 30  # 正常对局：录的时候每隔这么久看一眼 Evo 记下了什么
 
 
 # ---------- 一次测试 ----------
@@ -53,7 +52,7 @@ def evo_running():
 
 
 class Reminder:
-    """打一局：录的时候提醒测试员"截图够了，可以结束了"，每种只提醒一次，只提醒、不停（2026-11-02 用户定的）。
+    """正常对局：录的时候提醒测试员"截图够了，可以结束了"，每种只提醒一次，只提醒、不停（2026-11-02 用户定的）。
     录的时候不知道哪局记错（测试员打完才确认），所以按看得出的提醒：Evo 标了待确认的局攒到 review 局；
     游戏开着 minutes 分钟 Evo 一局没记下（多半没认出画面）；Evo 没开着（截图全要带上）录满 minutes 分钟。"""
 
@@ -189,7 +188,7 @@ class Session:
         return self.reason
 
     def _watch(self, stop):
-        """打一局：录的时候每 WATCH_SECONDS 秒看一眼 Evo 记下了什么，该提醒就提醒（Reminder）。"""
+        """正常对局：录的时候每 WATCH_SECONDS 秒看一眼 Evo 记下了什么，该提醒就提醒（Reminder）。"""
         reminder = Reminder(self.project.get("remind_review", 2), self.project.get("remind_minutes", 60))
         began = last = time.monotonic()
         game_seconds = 0.0
@@ -215,7 +214,7 @@ class Session:
         return out
 
     def _write_answers(self, answers):
-        """answers.json：测试员确认的答案（打一局：先删掉确认对的局的截图）、Evo 这段时间记下的。"""
+        """answers.json：测试员确认的答案（正常对局：先删掉确认对的局的截图）、Evo 这段时间记下的。"""
         kind = self.project.get("answers")
         record = self.evo_record()
         data = {"项目": self.project["key"], "Evo 数据库": record["数据库"]}
@@ -243,8 +242,8 @@ class Session:
         Path(self.folder, "tester.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def finish(self, note="", answers=None):
-        """删掉确认对了的截图、写 answers.json（打一局、赛季数据页）、带上 Evo 的日志、写诊断信息和 tester.json、打包。
-        answers：打一局时测试员确认的（见 tester_answers.apply_match_answers）。
+        """删掉确认对了的截图、写 answers.json（正常对局、赛季数据页）、带上 Evo 的日志、写诊断信息和 tester.json、打包。
+        answers：正常对局时测试员确认的（见 tester_answers.apply_match_answers）。
         返回压缩包的位置；打包没成功返回 None（文件夹还在）。"""
         try:
             self._write_answers(answers)
@@ -289,7 +288,7 @@ def main(argv=None):
     projects = load_projects()
     parser = argparse.ArgumentParser(description="Evo 测试工具：截一段游戏画面，连同显示设置、Evo 的日志打成压缩包")
     parser.add_argument("--project", choices=list(projects), default="diag",
-                        help="测试项目（config/tester.json；默认 diag = 排查问题）")
+                        help="测试项目（config/tester.json；默认 diag = 通用Bug测试）")
     parser.add_argument("--minutes", type=float, default=None, help="最多截几分钟（默认看测试项目）")
     parser.add_argument("--out", type=Path, default=None, help="压缩包放在哪个文件夹（默认桌面）")
     parser.add_argument("--no-wait", action="store_true", help="结束后不等回车、不打开文件夹、不出声（打包自检、测试用）")
@@ -333,7 +332,7 @@ def window_main():
 
     out_root = default_out_dir()
     set_low_priority()
-    run(load_projects(), load_profile(), languages(), weapon_list(), save_profile,
+    run(load_projects(), load_profile(), languages(), save_profile,
         lambda project, profile, log, notice: Session(project, profile, out_root, log, notice=notice),
         evo_running, VERSION, icon_path())
 

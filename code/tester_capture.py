@@ -2,7 +2,7 @@
 dxcam 用不了时一样换 mss），截到的就是 Evo 看到的样子。
 
 三种截法（config/tester.json 的 capture）：
-- every（打一局、排查问题，Recorder）：游戏开着时每 interval 秒截一张（和上一张存的几乎一样就不存），比 1920 宽的缩到
+- every（正常对局、通用Bug测试，Recorder）：游戏开着时每 interval 秒截一张（和上一张存的几乎一样就不存），比 1920 宽的缩到
   1920 宽（Evo 识别本来就按 1920×1080 换算）；每分钟另存一张原尺寸
 - still（赛季数据页，StillRecorder）：画面停稳了、和上一张存的不一样才存一张原尺寸，"嘀"一声
 - weapons（靶场：武器，WeaponRecorder）：右下角手上的武器换了就存几张（整张缩小的 + 右下角无损的一块），"嘀"一声
@@ -88,7 +88,7 @@ def encode_jpeg(frame, width=None, quality=JPEG_QUALITY, subsampling=2):
 
 
 class Recorder:
-    """截屏、存图、把每次截屏的结果记进 captures.csv。游戏开着时每 interval 秒一张，画面没变不存（"打一局""排查问题"）。
+    """截屏、存图、把每次截屏的结果记进 captures.csv。游戏开着时每 interval 秒一张，画面没变不存（"正常对局""通用Bug测试"）。
     camera：截屏对象（capture.open_camera；None = 建不起来，只看进程、存缩略图）；names()：现在开着的进程名；
     thumbs(时间)：给每个显示器存缩略图，返回存了多少字节（可以不给）；log(文字)：写进窗口和 tool_log.txt。
     full_seconds：游戏开着时每隔这么久另存一张原尺寸（None = 不存）；beep()：存好一样东西时"嘀"一声（可以不给）。

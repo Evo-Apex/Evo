@@ -8,7 +8,7 @@ ROOT = os.path.dirname(SPECPATH)  # 项目文件夹（本文件在 tools/ 里）
 CODE = os.path.join(ROOT, "code")  # 程序代码
 ICON = os.path.join(ROOT, "build", "icon", "evo.ico")  # 和 Evo 同一个图标（build_tester.py 先生成）
 
-# 测试项目、武器名单和图标那块的位置（tester_projects.config_dir：运行时在 exe 解开的临时文件夹里的 config/）
+# 测试项目、右下角武器图标那块的位置（tester_projects.config_dir：运行时在 exe 解开的临时文件夹里的 config/）
 datas = [(os.path.join(ROOT, "config", name), "config") for name in ("tester.json", "weapons.json")]
 datas.append((os.path.join(ROOT, "assets", "icon", "evo.png"), os.path.join("assets", "icon")))  # 窗口左上角的图标
 for package in ("dxcam", "mss", "pillow", "numpy", "comtypes"):

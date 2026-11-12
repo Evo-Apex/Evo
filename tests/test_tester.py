@@ -2,17 +2,19 @@
 
 - 轻：另开一个 Python 只导入 evo_tester，检查没加载 paths.py（它一 import 就会在程序旁边建数据文件夹）、识别引擎、OpenCV
 - 截屏（假摄像头、假时钟，不真的等）：
-  打一局、排查问题：游戏没开时每 10 秒看一眼、每分钟最多存一张；看到游戏后每 2 秒一张；画面没变不存；
+  正常对局、通用Bug测试：游戏没开时每 10 秒看一眼、每分钟最多存一张；看到游戏后每 2 秒一张；画面没变不存；
   比 1920 宽的缩到 1920 宽，每分钟另存一张原尺寸；没有新画面、出错都记下，连续 30 次没有新画面提示一次；
   游戏关掉（连续 3 次看不到进程）就停；到时间、截满、硬盘快满、点了结束也停；每次截屏 captures.csv 一行；每分钟一次缩略图
   赛季数据页：每 0.5 秒一张，停稳 1 秒、和上一张存的不一样才存原尺寸，嘀一声；几乎没变（0.01% 的像素）不存
   靶场：武器：右下角图标换了，停稳后隔 1 秒存 3 张（整张缩小的 + 右下角原尺寸的 PNG），嘀一声；换回存过的不存；
   没拿武器时每 10 秒一张
-- 测试项目（config/tester.json）、武器名单；测试员档案（exe 旁边写不进去就存到别处）；压缩包的名字
-- 窗口（藏起来不显示，截屏用假的）：没填昵称不让往下走；填档案 → 选项目 → 录 → 结束 → 备注 → 打包 → 完成
-- 打一局对答案（假的 Evo 数据库和日志）：读这段时间 Evo 记下的局；每局的时间段（开局前最后一次在大厅 → 最后一次读数 + 20 秒）；
+- 测试项目（config/tester.json）；测试员档案（exe 旁边写不进去就存到别处）；压缩包的名字
+- 窗口（藏起来不显示，截屏用假的）：欢迎页；没填昵称、启动项不让往下走，再次打开先问用不用上次的档案；
+  填档案 → 选项目 → 录 → 结束 → 备注 → 打包 → 完成
+- 正常对局的收尾页：总结页小图、模式写中文；对 / 不对 / 记不清，没选完不让打包；选了不对才出现改数字的格子
+- 正常对局对答案（假的 Evo 数据库和日志）：读这段时间 Evo 记下的局；每局的时间段（开局前最后一次在大厅 → 最后一次读数 + 20 秒）；
   确认对的局截图全删、记错的全留、对局之间的大厅每 10 秒留一张；勾了全部带上不删；过了半夜的截图算第二天
-- 打包前写 answers.json（Session）：打一局删掉确认对的截图；赛季数据页带上 Evo 核对后保存的
+- 打包前写 answers.json（Session）：正常对局删掉确认对的截图；赛季数据页带上 Evo 核对后保存的
 - 录的时候的提醒：Evo 标了待确认的攒到 2 局、游戏开着 1 小时 Evo 一局没记下、Evo 没开着录满 1 小时，每种一次
 - 找 Evo 的数据文件夹：Evo.exe 旁边的 data_location.txt / 程序旁边的 Evo Tracker Data、指路文件；
   旧的默认位置别处都没有才用；没有 logs\\evo.log 的不算；同一个只算一次
@@ -264,9 +266,8 @@ def weapon_checks(tmp):
 
 
 def project_checks(tmp):
-    """测试项目（config/tester.json）、武器名单、测试员档案、压缩包的名字。"""
+    """测试项目（config/tester.json）、测试员档案、压缩包的名字。"""
     projects = tester_projects.load_projects()
-    weapons = tester_projects.weapon_list()
     first, second = tmp / "profile" / "exe", tmp / "profile" / "local"
     (first.parent).mkdir()
     first.write_text("这是一个文件，档案写不进这里", encoding="utf-8")  # 当作 exe 旁边写不进去
@@ -275,11 +276,10 @@ def project_checks(tmp):
     name = tester_projects.package_name(projects["weapons"], "a/b c", datetime(2026, 11, 2, 21, 30, 5))
     captures = {key: spec["capture"] for key, spec in projects.items()}
     return {
-        f"测试项目按顺序：打一局、靶场：武器、赛季数据页、排查问题（{[p['name'] for p in projects.values()]}）":
+        f"测试项目按顺序：正常对局、靶场：武器、赛季数据页、通用Bug测试（{[p['name'] for p in projects.values()]}）":
             list(projects) == ["match", "weapons", "seasons", "diag"]
             and all(p["steps"] and p["summary"] for p in projects.values()),
         f"每项的截法都认得（{captures}）": set(captures.values()) <= set(tester_capture.RECORDERS),
-        f"武器名单来自 config/weapons.json（{len(weapons)} 把，如 {weapons[0]}）": len(weapons) >= 30,
         f"档案：exe 旁边写不进去就存到下一个地方（{saved}），读回来只有三项（{loaded}）":
             saved == second / "tester_profile.json"
             and loaded == {"nickname": "小明", "game_language": "English", "launch_options": ""},
@@ -290,7 +290,7 @@ def project_checks(tmp):
 def fake_evo(tmp):
     """一个假的 Evo 数据文件夹（数据库 + 日志），2026-11-02 21:00–22:00 打了两局：
     第 1 局 21:10 开局、21:25:30 总结页、21:26:10 经验值页；第 2 局 21:36 开局、21:50 总结页（Evo 标了待确认）；
-    另有一局 20:00 打的（测试开始以前，不算）；21:28 大厅读到钻石 I 600。"""
+    另有一局 20:00 打的（测试开始以前，不算；21:20 回大厅时被大厅校准补了 RP，也不算）；21:28 大厅读到钻石 I 600。"""
     import storage
 
     evo = tmp / "evo_data"
@@ -300,6 +300,7 @@ def fake_evo(tmp):
     day = "2026-11-02"
     old = storage.insert_match(conn, {"ended_at": f"{day} 20:00:00", "placement": 9})
     storage.save_readings(conn, old, "总结页", {"placement": 9}, f"{day} 20:00:00")
+    storage.save_readings(conn, old, "大厅校准", {"rp_delta": 20}, f"{day} 21:20:00")
     first = storage.insert_match(conn, {"ended_at": f"{day} 21:25:30", "mode": "排位", "map": "世界尽头", "legend": "罗芭",
                                         "placement": 5, "kills": 3, "assists": 1, "knockdowns": 4, "damage": 1200,
                                         "rp_delta": 45})
@@ -331,7 +332,7 @@ def fake_frames(folder, start, minutes, step=5):
 
 
 def answers_checks(tmp):
-    """打一局对答案（tester_answers.py）：读 Evo 这段时间记下的局、分每局的时间段、确认对的局删截图、大厅每 10 秒留一张。"""
+    """正常对局对答案（tester_answers.py）：读 Evo 这段时间记下的局、分每局的时间段、确认对的局删截图、大厅每 10 秒留一张。"""
     import tester_answers as ta
 
     evo, first, second = fake_evo(tmp)
@@ -367,7 +368,8 @@ def answers_checks(tmp):
     fake_frames(night, datetime(2026, 11, 2, 23, 59, 0), 2, step=30)
     crossed = [t for t, _ in ta.frame_files(night, datetime(2026, 11, 2, 23, 59, 0))]
     return {
-        f"读到这段时间 Evo 记下的两局（测试开始以前那局不算；{[m['match_id'] for m in matches]}）":
+        f"读到这段时间 Evo 记下的两局（测试开始以前那局不算，录的时候被大厅校准补了 RP 也不算；"
+        f"{[m['match_id'] for m in matches]}）":
             [m["match_id"] for m in matches] == [first, second] and matches[0]["last_read"].strftime("%H:%M:%S") == "21:26:10",
         f"每局的时间段：开局前最后一次在大厅 → 最后一次读数 + 20 秒（{shown}）":
             shown == [["21:08:01", "21:26:30"], ["21:35:00", "21:50:20"]],
@@ -388,7 +390,7 @@ def answers_checks(tmp):
 
 
 def session_answers_checks(tmp):
-    """Session 打包前写 answers.json：打一局（删掉确认对的局的截图）、赛季数据页（Evo 读到的、核对后保存的）。"""
+    """Session 打包前写 answers.json：正常对局（删掉确认对的局的截图）、赛季数据页（Evo 读到的、核对后保存的）。"""
     import storage
 
     from evo_tester import Session
@@ -416,7 +418,7 @@ def session_answers_checks(tmp):
     (match, match_left), (seasons, _) = out["match"], out["seasons"]
     row = seasons["赛季"][0] if seasons["赛季"] else {}
     return {
-        f"打一局：answers.json 有两局、确认对的那局截图删了（剩 {match_left} 张）、带上 Evo 的大厅读数":
+        f"正常对局：answers.json 有两局、确认对的那局截图删了（剩 {match_left} 张）、带上 Evo 的大厅读数":
             [m["match_id"] for m in match["局"]] == [first, second] and match["局"][0]["测试员"] == "对"
             and match_left == 720 - 222 and match["Evo 大厅读数"][0]["rank_progress"] == 600,
         f"赛季数据页：answers.json 带上核对后保存的（{row.get('status')}，击杀 {row.get('kills')}，改过 {row.get('edited')}）":
@@ -425,7 +427,7 @@ def session_answers_checks(tmp):
 
 
 def reminder_checks():
-    """打一局录的时候的提醒（evo_tester.Reminder）：每种只提醒一次。"""
+    """正常对局录的时候的提醒（evo_tester.Reminder）：每种只提醒一次。"""
     from evo_tester import Reminder
 
     flagged = [{"needs_review": 1}, {"needs_review": 0}, {"needs_review": 1}]
@@ -447,7 +449,7 @@ def reminder_checks():
 
 
 def window_checks(tmp):
-    """窗口（tester_window.py，藏起来不显示）：填档案 → 选赛季数据页 → 录 → 结束 → 写备注 → 打包 → 完成。截屏用假的。"""
+    """窗口（tester_window.py，藏起来不显示）：欢迎页 → 填档案（再次打开先问用不用上次的）→ 选赛季数据页 → 录 → 结束 → 写备注 → 打包 → 完成。截屏用假的。"""
     import tkinter as tk
 
     import tester_window
@@ -500,13 +502,47 @@ def window_checks(tmp):
     root = tk.Tk()
     root.withdraw()
     try:
+        old_profile = {"nickname": "小明", "game_language": "English", "launch_options": ""}  # 启动项还不是必填时存的
+        tester_window.TesterApp(root, tester_projects.load_projects(), old_profile, tester_projects.languages(),
+                                saved.append, FakeSession, lambda: True, "测试")
+        # 每次打开先是欢迎页（不算在 5 步里，右上角不显示第几步），点"继续"到档案页
+        welcome_texts = [w.cget("text") for w in widgets(root, tk.Label)]
+        welcomed = ("爱你们的黄指导" in welcome_texts and not any("第 1 步" in x for x in welcome_texts)
+                    and not list(widgets(root, tk.Entry)))
+        find(tk.Button, "继续").invoke()
+        old_to_profile = any(w.cget("text") == "下一步" for w in widgets(root, tk.Button))
+        for child in root.winfo_children():
+            child.destroy()
+        # 再次打开（档案填全了）：先问还用不用上次的；"修改档案"是填写的样子、填过的在框里；"用上次的档案"到选项目、不重新存
+        last = {"nickname": "小红", "game_language": "简体中文", "launch_options": "无"}
+        reopen = {}
+        for choice in ("修改档案", "用上次的档案"):
+            tester_window.TesterApp(root, tester_projects.load_projects(), last, tester_projects.languages(),
+                                    saved.append, FakeSession, lambda: True, "测试")
+            find(tk.Button, "继续").invoke()
+            texts = [w.cget("text") for w in widgets(root, tk.Label)]
+            asked_reuse = "要直接用上次的档案吗？" in texts and "小红" in texts and not list(widgets(root, tk.Entry))
+            find(tk.Button, choice).invoke()
+            if choice == "修改档案":
+                entries = list(widgets(root, tk.Entry))
+                reopen[choice] = asked_reuse and bool(entries) and entries[0].get() == "小红"
+            else:
+                reopen[choice] = asked_reuse and any(w.cget("text") == "开始" for w in widgets(root, tk.Button))
+            for child in root.winfo_children():
+                child.destroy()
+        reuse_not_saved = saved == []
         app = tester_window.TesterApp(root, tester_projects.load_projects(), {}, tester_projects.languages(),
-                                      tester_projects.weapon_list(), saved.append, FakeSession, lambda: True, "测试",
+                                      saved.append, FakeSession, lambda: True, "测试",
                                       open_folder=opened.append)
+        find(tk.Button, "继续").invoke()
         find(tk.Button, "下一步").invoke()
         asked = any(w.cget("text") == "请填一下昵称" for w in widgets(root, tk.Label))
         next(widgets(root, tk.Entry)).insert(0, "小明")
         find(tk.Radiobutton, "English").invoke()
+        find(tk.Button, "下一步").invoke()
+        asked_launch = any(w.cget("text").startswith("请填一下启动项") for w in widgets(root, tk.Label))
+        find(tk.Checkbutton, "无（没设过启动项）").invoke()
+        launch_off = list(widgets(root, tk.Entry))[1].cget("state") == "disabled"
         find(tk.Button, "下一步").invoke()
         on_projects = any(w.cget("text") == "开始" for w in widgets(root, tk.Button))
         find(tk.Radiobutton, "赛季数据页").invoke()
@@ -523,9 +559,16 @@ def window_checks(tmp):
         root.destroy()
     session = sessions[0] if sessions else None
     return {
+        f"窗口：打开先是欢迎页（有黄指导的落款、不显示第几步）（{welcomed}），点继续到档案页（{old_to_profile}）":
+            welcomed and old_to_profile,
         f"窗口：没填昵称不让往下走（提示了：{asked}）": asked,
+        f"窗口：以前存的档案没填启动项，打开时先到档案页补（{old_to_profile}）": old_to_profile,
+        f"窗口：再次打开先问还用不用上次的档案（{reopen}）：修改档案时填过的在框里，用上次的直接到选项目、不重新存"
+        f"（{reuse_not_saved}）": reopen == {"修改档案": True, "用上次的档案": True} and reuse_not_saved,
+        f"窗口：启动项没填不让往下走（提示了：{asked_launch}），勾了“无”输入框变灰（{launch_off}）":
+            asked_launch and launch_off,
         f"窗口：档案存下来（{saved}）、到选项目": saved == [{"nickname": "小明", "game_language": "English",
-                                                   "launch_options": ""}] and on_projects,
+                                                   "launch_options": "无"}] and on_projects,
         f"窗口：选的项目和档案交给截屏（{session and session.project['key']}）":
             session is not None and session.project["key"] == "seasons" and session.profile["nickname"] == "小明",
         f"窗口：录的时候显示存了几页（{recording}）、提醒放在黄色框里（{noticed}）、点结束到收尾（{finishing}）":
@@ -533,6 +576,107 @@ def window_checks(tmp):
         f"窗口：赛季数据页收尾时说 Evo 读到几项、几项没核对（{season_line}）": season_line,
         f"窗口：备注跟着打包（{session and session.note}），打完到完成、打开文件夹（{opened}）":
             done and session.note == "21:35 第二页没嘀" and opened == [zip_file],
+    }
+
+
+def finish_checks(tmp):
+    """正常对局的收尾页（tester_window.match_answers，藏起来不显示；2026-11-12 用户定的改法）：
+    每局旁边放 Evo 存的总结页截图（找不到就不放）、模式写中文；每局对 / 不对 / 记不清，没选完不让打包（标出还差哪几项）；
+    选了"不对"才出现改数字的格子；选完打包，答案里是测试员选的。"""
+    import tkinter as tk
+
+    from PIL import Image
+
+    import tester_window
+    from tester_answers import FIELDS
+
+    shot = tmp / "finish_summary.jpg"
+    Image.new("RGB", (320, 180), (40, 40, 40)).save(shot)
+    finished = []
+
+    class Rec:
+        saved, mb, game_on = 3, 1.0, True
+
+    class Session:
+        folder = tmp
+
+        def __init__(self):
+            self.recorder, self.info = Rec(), {}
+
+        def evo_record(self):
+            base = {"needs_review": 0, "mode": "ranked", **{key: 1 for key, _ in FIELDS}}
+            matches = [
+                {**base, "match_id": 1, "last_read": datetime(2026, 11, 12, 21, 0), "evidence_path": str(shot)},
+                {**base, "match_id": 2, "last_read": datetime(2026, 11, 12, 21, 30), "evidence_path": None},
+                {**base, "match_id": 3, "last_read": datetime(2026, 11, 12, 22, 0),
+                 "evidence_path": str(tmp / "已经删了.jpg")}]
+            lobby = {"read_at": "2026-11-12 22:05:00", "rank_tier": "白银", "rank_division": "I", "rank_progress": 252}
+            return {"数据库": "evo.db", "局": matches, "大厅": [lobby]}
+
+        def finish(self, note, answers=None):
+            finished.append(answers)
+            return None
+
+    def widgets(parent, cls):
+        for child in parent.winfo_children():
+            if isinstance(child, cls):
+                yield child
+            yield from widgets(child, cls)
+
+    def buttons(text):
+        return [b for b in widgets(root, tk.Button) if b.cget("text") == text]
+
+    def pump(until, seconds=5):
+        end = time.time() + seconds
+        while not until() and time.time() < end:
+            root.update()
+            time.sleep(0.02)
+        return until()
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        projects = tester_projects.load_projects()
+        app = tester_window.TesterApp(root, projects, {}, tester_projects.languages(), lambda *_: None, None,
+                                      lambda: True, "测试", open_folder=lambda _p: None)
+        app.project, app.session = projects["match"], Session()
+        app.show_finish("点了结束")
+        texts = [w.cget("text") for w in widgets(root, tk.Label)]
+        thumbs = sum(1 for w in widgets(root, tk.Label) if w.cget("image"))
+        chinese_mode = any("排位" in t for t in texts) and not any("ranked" in t for t in texts)
+        fix_hidden = not any(e.winfo_ismapped() for e in widgets(root, tk.Entry))
+        buttons("打包")[0].invoke()
+        root.update()
+        blocked = not finished
+        told = next((w.cget("text") for w in widgets(root, tk.Label) if str(w.cget("text")).startswith("还没选")), "")
+        buttons("对")[0].invoke()  # 第 1 局
+        buttons("不对")[1].invoke()  # 第 2 局
+        buttons("记不清")[2].invoke()  # 第 3 局
+        root.update()
+        entries = list(widgets(root, tk.Entry))  # 每局 6 个改数字的格子（选了不对才看得见），最后一个是大厅的
+        damage = [k for k, _ in FIELDS].index("damage")
+        entries[len(FIELDS) + damage].delete(0, "end")
+        entries[len(FIELDS) + damage].insert(0, "99")
+        shown_fix = sum(1 for e in entries if e.winfo_ismapped())
+        buttons("没有")[0].invoke()
+        buttons("对")[-1].invoke()  # 大厅
+        buttons("打包")[0].invoke()
+        packed = pump(lambda: bool(finished))
+    finally:
+        root.destroy()
+    answers = finished[0] if finished else {}
+    return {
+        f"收尾页：有总结页截图的局放一张小图，没有、文件不在了的不放（{thumbs} 张）；模式写中文（{chinese_mode}）":
+            thumbs == 1 and chinese_mode,
+        f"收尾页：一项没选就点打包：不打包，写出还差哪几项（{told}）":
+            blocked and told == "还没选：第 1 局、第 2 局、第 3 局、有没有漏记的局、大厅的段位和分数",
+        f"收尾页：改数字的格子平时藏着（{fix_hidden}），选了不对才出现（看得见 {shown_fix} 个）":
+            fix_hidden and shown_fix == len(FIELDS),
+        f"收尾页：都选了才打包，答案是测试员选的（{answers.get('局')}、漏记 {answers.get('漏记')}、"
+        f"大厅 {answers.get('大厅', {}).get('判断')}）":
+            packed and answers["局"] == {1: {"判断": "对", "正确的": {}}, 2: {"判断": "不对", "正确的": {"damage": 99}},
+                                         3: {"判断": "记不清", "正确的": {}}}
+            and answers["漏记"] == "没有" and answers["大厅"]["判断"] == "对",
     }
 
 
@@ -566,11 +710,11 @@ def stale_lobby_checks():
     got = {}
     try:
         app = tester_window.TesterApp(root, tester_projects.load_projects(), {}, tester_projects.languages(),
-                                      tester_projects.weapon_list(), lambda *_: None, None, lambda: True, "测试")
+                                      lambda *_: None, None, lambda: True, "测试")
         for lobby_at in ("2026-11-04 16:22:50", "2026-11-04 16:39:42"):  # 最后一局之前读的 / 之后读的
             app.session = Session(lobby_at)
             area = tk.Frame(root)
-            collect = app.match_answers(area)
+            collect, _missing = app.match_answers(area, tk.Label(root))
             shown = list(texts(area))
             got[lobby_at] = (any("大厅现在显示的段位" in t for t in shown), any("这一项不用判断" in t for t in shown),
                              collect()["大厅"]["判断"])
@@ -773,7 +917,7 @@ def main():
         tmp = Path(name)
         checks = {**light_checks(), **recorder_checks(tmp), **stop_checks(tmp), **still_checks(tmp),
                   **answers_checks(tmp), **session_answers_checks(tmp), **reminder_checks(),
-                  **weapon_checks(tmp), **project_checks(tmp), **window_checks(tmp), **stale_lobby_checks(),
+                  **weapon_checks(tmp), **project_checks(tmp), **window_checks(tmp), **finish_checks(tmp), **stale_lobby_checks(),
                   **finder_checks(tmp),
                   **info_checks(tmp), **zip_checks(tmp), **real_checks(tmp)}
         ok = report(checks)

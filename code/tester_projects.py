@@ -1,8 +1,8 @@
 """测试工具（evo_tester.py）的测试项目和测试员档案。
 
 - 测试项目写在 config/tester.json（原则 5：给测试员看的文字、截法、要确认什么都在里面），窗口里按顺序列出来
-- 测试员档案（昵称、游戏语言、启动项）：第一次打开时填，存在 exe 旁边的 tester_profile.json，以后不再问
-  （2026-11-02 用户定的）。exe 旁边写不进去（如放在 C:\\Program Files）就存在 %LOCALAPPDATA%\\Evo；用源码运行时存在项目的 data/
+- 测试员档案（昵称、游戏语言、启动项）：第一次打开时填，存在 exe 旁边的 tester_profile.json（2026-11-02 用户定的）；
+  以后每次打开先问还用不用上次的（2026-11-12，见 tester_window.show_last_profile）。exe 旁边写不进去（如放在 C:\\Program Files）就存在 %LOCALAPPDATA%\\Evo；用源码运行时存在项目的 data/
 - 压缩包的名字：Evo测试_<项目>_<昵称>_<时间>
 
 不 import paths.py（它一 import 就会在程序旁边建"Evo Tracker Data"文件夹）。
@@ -16,6 +16,7 @@ from pathlib import Path
 
 PROFILE_NAME = "tester_profile.json"
 PROFILE_FIELDS = ("nickname", "game_language", "launch_options")  # 昵称、游戏语言、启动项
+NO_LAUNCH_OPTIONS = "无"  # 启动项必填（2026-11-12 用户定的）：没设过启动项的勾"无"，存成这个
 LOCAL_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "Evo"  # 同 paths.LOCAL_DIR
 
 
@@ -40,9 +41,10 @@ def languages(folder=None):
     return load_config("tester.json", folder)["languages"]
 
 
-def weapon_list(folder=None):
-    """靶场的武器名单：[(编号, 中文名, 英文名)]，按 config/weapons.json 里的顺序。"""
-    return [(key, w.get("zh", key), w.get("en", key)) for key, w in load_config("weapons.json", folder)["weapons"].items()]
+def welcome(folder=None):
+    """欢迎页的文字（每次打开先看到的，2026-11-12 用户写的）：{title, intro, purposes, notes, thanks, signature}。"""
+    return load_config("tester.json", folder)["welcome"]
+
 
 
 def profile_dirs():
@@ -86,6 +88,6 @@ def _clean(text, limit=20):
 
 
 def package_name(project, nickname, stamp):
-    """压缩包（和打包前的文件夹）的名字：Evo测试_打一局_昵称_20261102_213000。没填昵称就不写。"""
+    """压缩包（和打包前的文件夹）的名字：Evo测试_正常对局_昵称_20261102_213000。没填昵称就不写。"""
     parts = ["Evo测试", _clean(project["name"].replace("：", "-")), _clean(nickname), f"{stamp:%Y%m%d_%H%M%S}"]
     return "_".join(p for p in parts if p)

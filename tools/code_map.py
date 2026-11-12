@@ -80,7 +80,7 @@ SECTIONS = [
         "tools/feature_cards.py", "tools/window_shots.py"]),
     ("开发用的脚本（tools/）", "查问题、看数据", [
         "tools/ocr_probe.py", "tools/frame_capture.py", "tools/legend_capture.py", "tools/log_speed.py",
-        "tools/diag_report.py", "tools/stats_report.py", "tools/demo_data.py", "tools/demo_seasons.py",
+        "tools/diag_report.py", "tools/tester_preview.py", "tools/stats_report.py", "tools/demo_data.py", "tools/demo_seasons.py",
         "tools/code_map.py"]),
     ("测试（tests/）", None, [
         "tests/run_all.py", "tests/fake_game.py", "tests/test_*.py",
