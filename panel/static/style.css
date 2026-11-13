@@ -943,6 +943,7 @@ table.stats-table { width: 100%; border-collapse: collapse; }
 .maps-left { margin-top: 8px; color: var(--muted); font-size: 13px; }
 .maps-left .num { color: var(--text); font-size: 15px; font-variant-numeric: tabular-nums; }  /* 每秒变，宽度不乱跳 */
 .maps-next { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.maps-at time { color: var(--text); font-variant-numeric: tabular-nums; }  /* 换图的时刻：比"下一张"几个字醒目一点 */
 .maps-error { margin: 12px 0 0; color: var(--muted); font-size: 12px; }
 /* 还没问过：卡片上只问一句，点了"显示"才联网 */
 .maps-ask-text { margin: 0; color: var(--muted); line-height: 1.7; }

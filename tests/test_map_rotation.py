@@ -166,6 +166,19 @@ def checks():
     out["还剩多久的写法：不到 1 小时不写小时"] = (
         map_rotation.left_text(3725) == "1:02:05" and map_rotation.left_text(59) == "00:59"
         and map_rotation.left_text(-3) == "00:00")
+    # 换图的时刻（2026-11-13 用户要求，电脑上的时间）：今天写"20:00"，明天写"明天 01:00"，再往后写日期
+    from datetime import datetime
+    evening = datetime(2026, 11, 13, 19, 0).timestamp()
+
+    def at(day, hour, minute=0):
+        return map_rotation.at_text(datetime(2026, 11, day, hour, minute).timestamp(), now=evening)
+
+    out[f"换图的时刻：今天 20:00、明天 01:00、后天带日期（{at(13, 20)}、{at(14, 1)}、{at(15, 20, 30)}）"] = (
+        at(13, 20) == "20:00" and at(14, 1) == "明天 01:00" and at(15, 20, 30) == "11-15 20:30")
+    mid = re.search(r'data-end="(\d+)".*?世界尽头</span><span class="maps-at">（<time data-at>([^<]+)</time>）', result["html"],
+                    re.S)
+    out[f"卡片上：\"下一张：世界尽头（{mid and mid.group(2)}）\"，是倒计时到点的那一刻、电脑上的时间"] = (
+        mid is not None and mid.group(2) == map_rotation.at_text(int(mid.group(1)), real))
 
     # ---- 下载不成 ----
     before = map_rotation.CACHE_PATH.read_text(encoding="utf-8")

@@ -199,6 +199,13 @@
       var h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
       return h ? h + ":" + pad(m) + ":" + pad(s % 60) : pad(m) + ":" + pad(s % 60);
     }
+    function atText(sec) {  // 换图的时刻，和 map_rotation.at_text 一样："20:00"、"明天 03:00"、"11-15 20:00"
+      var when = new Date(sec * 1000), today = new Date();
+      var days = Math.round((new Date(when.getFullYear(), when.getMonth(), when.getDate())
+                             - new Date(today.getFullYear(), today.getMonth(), today.getDate())) / 86400000);
+      var hm = pad(when.getHours()) + ":" + pad(when.getMinutes());
+      return days <= 0 ? hm : days === 1 ? "明天 " + hm : pad(when.getMonth() + 1) + "-" + pad(when.getDate()) + " " + hm;
+    }
     function refresh() {
       busy = true;
       var body = new FormData();
@@ -231,6 +238,8 @@
         }
         if (end <= now) due = true;
         slot.querySelector("[data-left]").textContent = leftText(end - now);
+        var at = slot.querySelector("[data-at]");  // 到点换了图、过了半夜（"明天"变成今天）都跟着变
+        if (at) at.textContent = atText(end);
       });
       if (due && !busy && Date.now() >= waitUntil) refresh();
     }

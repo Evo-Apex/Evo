@@ -1,5 +1,6 @@
 {# 总览页的地图轮换（map_rotation.py，2026-10-28 用户决定）：匹配、排位、轮换模式各一格：现在的地图（轮换模式是玩法 + 地图）、
-   还剩多久（每秒走，overview.html 的脚本）、下一张。在"最近对局"上面，不占六维图那一列。
+   还剩多久（每秒走，overview.html 的脚本）、下一张和换图的时刻（电脑上的时间，"下一张：残月（20:00）"，2026-11-13 用户要求）。
+   在"最近对局"上面，不占六维图那一列。
    还没问过（maps.ask）：卡片上只问一句，点了"显示"才联网（隐私说明承诺过新的联网功能先问，代码签名也要求这样）。
    整张卡片由 POST /maps/refresh 重画（下载以后换掉）。maps：map_rotation.card()；error：这次没下载到的原因（只在重画时有）。
    不放数据来源的链接（2026-10-29 用户要求去掉，0.4.4；对方只要求排行榜、服务器状态注明来源，隐私说明里写着数据来自哪里） #}
@@ -31,7 +32,7 @@
       <div class="maps-title" data-title>{{ m.title }}</div>
       {% if m.sub %}<div class="maps-sub" data-sub>{{ m.sub }}</div>{% endif %}
       <div class="maps-left">还剩 <span class="num" data-left>{{ m.left }}</span></div>
-      <div class="maps-next">{{ next_label }}：<span data-next-name>{{ m.next or '—' }}</span></div>
+      <div class="maps-next">{{ next_label }}：<span data-next-name>{{ m.next or '—' }}</span>{% if m.at %}<span class="maps-at">（<time data-at>{{ m.at }}</time>）</span>{% endif %}</div>
       {% else %}
       <div class="maps-title muted">—</div>
       <div class="maps-next">{{ '正在获取…' if maps.fetch and not error else '暂时没有这个模式的数据' }}</div>

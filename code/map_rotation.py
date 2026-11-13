@@ -143,6 +143,14 @@ def left_text(seconds):
     return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60:02d}:{s % 60:02d}"
 
 
+def at_text(stamp, now=None):
+    """换图的时刻（电脑上的时间，2026-11-13 用户要求）："20:00"；不是今天的写"明天 03:00"，再往后写"11-15 20:00"。
+    页面上每秒按同样的规则重算一遍（overview.html 的 atText：到点换图、过了半夜都会变）。"""
+    when = datetime.fromtimestamp(stamp)
+    days = (when.date() - datetime.fromtimestamp(time.time() if now is None else now).date()).days
+    return f"{when:%H:%M}" if days <= 0 else f"明天 {when:%H:%M}" if days == 1 else f"{when:%m-%d %H:%M}"
+
+
 def _title(slot):
     """一场写成什么：大逃杀写地图；轮换模式写玩法（地图另写一行）。"""
     return zh_event(slot["event"]) if slot["event"] else zh_map(slot["map"])
@@ -151,8 +159,9 @@ def _title(slot):
 def view(cache=None, now=None):
     """总览页的地图卡片：{"modes": [每个模式一格], "fetch": 要不要马上下载}。
     每格：key、name（匹配 / 排位 / 轮换模式）、title（地图，轮换模式是玩法）、sub（轮换模式的地图）、
-    end（换图的时间，电脑时间的秒，页面上的倒计时用）、left（还剩多久）、next（下一张 / 下一场，不知道是 None）、
-    next_end（下一张结束的时间）。还没下载过、这个模式没有数据、两张都过了点：title 是 None。"""
+    end（换图的时间，电脑时间的秒，页面上的倒计时用）、left（还剩多久）、at（换图的时刻，如 "20:00"，见 at_text）、
+    next（下一张 / 下一场，不知道是 None）、next_end（下一张结束的时间）。
+    还没下载过、这个模式没有数据、两张都过了点：title 是 None。"""
     now = time.time() if now is None else now
     server_now = now + (cache["offset"] if cache else 0)
     slots = []
@@ -162,11 +171,12 @@ def view(cache=None, now=None):
         if current and current["end"] <= server_now:  # 到点了：当作下一张在打（再下一张不知道）
             current, nxt = (nxt, None) if nxt and nxt["end"] > server_now else (None, None)
         slot = {"key": mode["key"], "name": mode["name"], "title": None, "sub": None, "end": None, "left": None,
-                "next": None, "next_end": None}
+                "at": None, "next": None, "next_end": None}
         if current:
             offset = cache["offset"]
             slot.update(title=_title(current), sub=zh_map(current["map"]) if current["event"] else None,
-                        end=current["end"] - offset, left=left_text(current["end"] - server_now))
+                        end=current["end"] - offset, left=left_text(current["end"] - server_now),
+                        at=at_text(current["end"] - offset, now))
             if nxt:
                 slot.update(next=_title(nxt) + (f" · {zh_map(nxt['map'])}" if nxt["event"] else ""),
                             next_end=nxt["end"] - offset)
