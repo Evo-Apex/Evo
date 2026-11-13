@@ -207,7 +207,7 @@ app.register_blueprint(panel_seasons.bp)  # "赛季"页面：录入历史赛季�
 
 # ---------- 数据库连接：每次网页请求打开一次，请求结束时关闭 ----------
 
-_CLEARED = set()  # 已经取消过旧的大厅校准待确认的数据库（每个进程每个数据库只做一次）
+_CLEARED = set()  # 已经取消过旧的大厅校准待确认、补过段位的数据库（每个进程每个数据库只做一次）
 
 
 def db():
@@ -215,6 +215,7 @@ def db():
         g.db = storage.connect(app.config["DB"])
         if app.config["DB"] not in _CLEARED:  # 以前大厅校准对不上标的待确认：取消（现在战绩页显示校准行）
             calibration.clear_old_flags(g.db)
+            calibration.fill_ranks(g.db)  # 以前没有段位的局：用前后的大厅、经验值页和各局 RP 补上（见 calibration.py）
             _CLEARED.add(app.config["DB"])
     return g.db
 

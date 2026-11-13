@@ -51,6 +51,19 @@ def score(tier, division, progress):
     return t["starts"][DIVISIONS.index(division)] + progress
 
 
+def rank_at(total):
+    """score 反过来：连续分数 → (段位, 段, 段内进度)，如 6989 → ("黄金", "III", 739)。
+    只算分段的段位：到了大师（不分段，分数写法还没核实）、比最低一段还低都返回 None（大厅校准补段位时用，见 calibration.py）。"""
+    found = None
+    for t in _CFG["tiers"]:
+        if not has_divisions(t["name"]):
+            return None if total >= t["start"] else found
+        for start, division in zip(t["starts"], DIVISIONS):
+            if total >= start:
+                found = (t["name"], division, total - start)
+    return found
+
+
 def division_size(tier, division):
     """这一段满分多少（白银 II：750）= 分数线上下一段的起点 - 这一段的起点。不分段的、读不全的、最高一段返回 None。"""
     start = score(tier, division, 0)

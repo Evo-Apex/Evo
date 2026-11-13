@@ -55,6 +55,14 @@ def score_checks():
         "读不全（没有段、没有进度、不认识的段位）返回空": ranks.score("钻石", None, 5) is None
         and ranks.score("钻石", "II", None) is None and ranks.score("翡翠", "II", 5) is None,
         "显示名：钻石 II；大师不写段": ranks.rank_name("钻石", "II") == "钻石 II" and ranks.rank_name("大师", None) == "大师",
+        "反过来换算（大厅校准补段位用）：6989 → 黄金 III 739，7040 → 黄金 II 40，8783 → 白金 IV 283":
+            ranks.rank_at(6989) == ("黄金", "III", 739) and ranks.rank_at(7040) == ("黄金", "II", 40)
+            and ranks.rank_at(8783) == ("白金", "IV", 283),
+        "反过来换算：每一段的起点都换得回来（菜鸟 IV 0 … 钻石 I 15000）": all(
+            ranks.score(*ranks.rank_at(s)) == s and ranks.rank_name(*ranks.rank_at(s)[:2]) == name
+            for s, name in ranks.boundaries() if s < 16000),
+        "反过来换算：大师以上（不分段）、负数返回空": ranks.rank_at(16000) is None and ranks.rank_at(17500) is None
+        and ranks.rank_at(-1) is None and ranks.rank_at(15999) == ("钻石", "I", 999),
     }
 
 

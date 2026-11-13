@@ -270,6 +270,9 @@ def rule_checks():
     a, b, c = game(10, -20), game(30), game(50, 35)
     lobby(60, 870)
     out["fill"] = pick(storage.get_match(conn, b), "rp_delta", "rp_source")
+    # 回大厅时顺便补中间各局的段位：c 是大厅前最后一局（补大厅读到的），a 往后加、b 往前减（b 的 RP 是刚补的，不当作读到的）
+    out["fill_chain"] = [pick(storage.get_match(conn, m), "rank_division", "rank_progress") for m in (a, b, c)]
+    out["fill_chain_log"] = [line.strip() for line in log if "没有段位" in line]
     # 都有 RP 但对不上：不标待确认（2026-11-11 起），战绩页显示校准行
     d = game(70, 10)
     lobby(80, 900)
@@ -361,6 +364,78 @@ def panel_checks():
     }
 
 
+def rank_fill_checks():
+    """补段位（calibration.fill_ranks，2026-11-11 用户定的规则）：用前后的大厅、经验值页的段位和各局 RP 补中间各局。
+    数字照 2026-11-04 到 11-10 用户本机的几段编的（黄金 II 从 7000 起、黄金 I 从 7750 起、白金 IV 从 8500 起）。"""
+    from ranks import score
+    conn = storage.connect(":memory:")
+    t = datetime(2026, 11, 5, 20, 0)
+
+    def stamp(minutes):
+        return f"{t + timedelta(minutes=minutes):%Y-%m-%d %H:%M:%S}"
+
+    def game(minutes, rp=None, rank=None, source="经验值页", mode="ranked", name="Me", when=None):
+        fields = {"ended_at": when or stamp(minutes), "rp_delta": rp, "rp_source": source if rp is not None else None,
+                  "mode": mode, "player_name": name}
+        fields.update(zip(("rank_tier", "rank_division", "rank_progress"), rank or ()))
+        return storage.insert_match(conn, fields)
+
+    def lobby(minutes, tier, division, progress, name="Me", when=None):
+        storage.save_lobby(conn, {"read_at": when or stamp(minutes), "player_name": name, "rank_tier": tier,
+                                  "rank_division": division, "rank_progress": progress,
+                                  "score": score(tier, division, progress)})
+
+    lobby(0, "黄金", "II", 40)  # 7040
+    alt = game(3, -20, name="Alt")  # 别的账号：不算进来，也不补（它没有参照点）
+    m1 = game(5, -18)  # 7022 = 黄金 II 22
+    pubs = game(7, mode="pubs")  # 匹配局：不算、不补
+    m2 = game(10, -33, ("黄金", "III", None))  # 经验值页只读到段：6989，补上分数 739
+    game(15, 2, ("黄金", "III", 741))  # 经验值页读到的（参照点）
+    m4 = game(20, -62, source="大厅校准")  # 补出来的 RP 不当作读到的：按前后之差是 -23
+    m5 = game(25, -38, source="对局中")
+    m6 = game(30, 20, ("黄金", "III", 700))  # 参照点 6950 → m5 6930、m4 6968
+    m7 = game(35, -33, source="对局中")  # 缺两局 RP：从前面推 6917
+    m8, m9 = game(40), game(45)  # m8 两头都推不到：只补大段；m9 从后面推 6810
+    m10 = game(50, 127, source="对局中")
+    lobby(55, "黄金", "III", 687)  # 6937
+    m11 = game(60, 24, source="对局中")  # 6937 + 24 + 212 ≠ 7100：RP 对不上，只补大段
+    m12 = game(65, 212, ("黄金", "II", 100))
+    unknown = game(80, mode=None)  # 模式没读出、没有 RP：不补，RP 当作不知道
+    m16 = game(85, -20)
+    lobby(90, "黄金", "II", 60)  # 7060：m16 = 7060，unknown 那局按前后之差是 -20
+    # 跨大段：对得上才补（黄金 I 575 → +18 → +440 = 白金 IV 283）；缺 RP 的不补
+    lobby(0, "黄金", "I", 498, name="Up")  # 8248
+    u1 = game(5, 93, source="对局中", name="Up")
+    game(10, -16, ("黄金", "I", 575), name="Up")  # 8325
+    u3 = game(15, 18, source="对局中", name="Up")
+    game(20, 440, ("白金", "IV", 283), name="Up")  # 8783
+    u5, u6 = game(25, name="Up"), game(30, -48, name="Up")
+    lobby(35, "黄金", "I", 740, name="Up")  # 掉回黄金（可能有降段保护）：缺一局 RP，没法核对
+    # 中间换了赛季不补：测试里只有一个赛季（见 fake_game.py），在 test_season_ranges.py 测
+
+    filled = calibration.fill_ranks(conn)
+    skipped = (u5, u6, alt, pubs, unknown)
+    got = {m: pick(storage.get_match(conn, m), "rank_tier", "rank_division", "rank_progress")
+           for m in (m1, m2, m4, m5, m7, m8, m9, m10, m11, m16, u1, u3, *skipped)}
+    want = {m1: ("黄金", "II", 22), m2: ("黄金", "III", 739), m4: ("黄金", "III", 718), m5: ("黄金", "III", 680),
+            m7: ("黄金", "III", 667), m8: ("黄金", None, None), m9: ("黄金", "III", 560), m10: ("黄金", "III", 687),
+            m11: ("黄金", None, None), m16: ("黄金", "II", 60), u1: ("黄金", "I", 591), u3: ("黄金", "I", 593)}
+    wrong = {m: (got[m], want[m]) for m in want if got[m] != want[m]}
+    sources = {r["source"] for m in (m1, m2) for r in storage.readings_of(conn, m) if r["field"].startswith("rank_")}
+    anchors = [pick(storage.get_match(conn, m), "rank_progress") for m in (m6, m12)]
+    return {
+        f"补段位：同一大段对得上、缺一局、缺两局（中间只补大段）、RP 对不上（只补大段）、跨大段对得上的都补对了（不对的：{wrong or '无'}）":
+            not wrong,
+        f"补段位：跨大段缺 RP、别的账号、匹配局、模式没读出的局：不补（{[got[m] for m in skipped]}）":
+            all(got[m] == (None, None, None) for m in skipped),
+        f"补段位：经验值页读到的段位不改，补上的在 readings 表记来源\"大厅校准\"（{anchors}、{sources}）":
+            anchors == [(700,), (100,)] and sources == {"大厅校准"},
+        f"补段位：日志写补了什么、为什么（{filled[0][2] if filled else '没补'}）":
+            bool(filled) and filled[0][2] == "编号 2 没有段位：补上 黄金 II 22（前后的段位和各局 RP 对得上）",
+        "补段位：再跑一次什么都不改": calibration.fill_ranks(conn) == [],
+    }
+
+
 def calibration_panel_checks():
     """战绩页的校准行（2026-11-11）：放在那次回大厅之前结束的那一局上面；只看匹配、只看待确认时不显示；
     打开面板时取消以前大厅校准标的待确认；翻页时每行只出现在一页上。"""
@@ -433,6 +508,10 @@ def main():
             r["cleared"] == 2 and r["cleared_rows"] == r["cleared_want"],
         **calibration_panel_checks(),
         f"大厅之前那一局没有段位：补上大厅读到的（{r['fill_rank']}）": r["fill_rank"] == ("大师", 40),
+        f"回大厅时补中间各局的段位：前一局往后加 RP、刚用差值补上 RP 的那局往前减（{r['fill_chain']}）":
+            r["fill_chain"] == [("II", 880), ("II", 835), ("II", 870)],
+        f"  日志：{r['fill_chain_log']}": len(r["fill_chain_log"]) == 3,
+        **rank_fill_checks(),
         f"那一局结束一周后才回大厅（中间换了赛季）：不补（{r['fill_rank_late']}）": r["fill_rank_late"] == (None, None),
         f"对局中比总结页少（最后一秒没截到）：用总结页的，不标；老板分、RP 用对局中的（{r['hud_less']}）":
             r["hud_less"] == (3, 900, 2, 30, "对局中", 0),

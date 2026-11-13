@@ -73,6 +73,14 @@ def calibration_checks():
     lobby("2026-11-03 19:20:00", "白银", "I", 688)  # 开赛后 20 分钟回到大厅（一小时以内）
     row = storage.get_match(conn, b)
     out["开赛前半小时打完、没有段位的那局：不补新赛季重置后的段位"] = row["rank_tier"] is None and any("上个赛季" in l for l in log)
+    # 补中间各局的段位（calibration.fill_ranks）：两次大厅中间换了赛季不补（故意让 RP 对得上、重置后还在同一个大段）
+    conn = storage.connect(":memory:")
+    for when, progress in (("2026-11-02 20:00:00", 600), ("2026-11-04 20:00:00", 580)):
+        storage.save_lobby(conn, {"read_at": when, "player_name": "Me", "rank_tier": "钻石", "rank_division": "I",
+                                  "rank_progress": progress, "score": 15000 + progress})
+    c = storage.insert_match(conn, {"ended_at": "2026-11-03 13:00:00", "player_name": "Me", "mode": "ranked", "rp_delta": -20})
+    out["补中间各局的段位：两次大厅中间换了赛季不补（RP 对得上、还在同一个大段也不补）"] = (
+        calibration.fill_ranks(conn) == [] and storage.get_match(conn, c)["rank_tier"] is None)
     return out
 
 

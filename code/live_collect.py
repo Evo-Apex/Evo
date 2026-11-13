@@ -663,6 +663,10 @@ def collect(db_path=storage.DB_PATH, interval=1.0, fast=0.3, summary_timeout=10.
     conn = storage.connect(db_path)
     if calibration.clear_old_flags(conn):  # 以前大厅校准对不上标的待确认（2026-11-11 起改成战绩页显示校准行）
         log("以前因为大厅校准对不上标成待确认的局，已经取消（现在战绩页单独显示一行校准分数）")
+    filled = calibration.fill_ranks(conn)  # 以前没有段位的局：用前后的大厅、经验值页和各局 RP 补上
+    if filled:
+        log(f"以前没有段位的 {len(filled)} 局补上了段位（其中 {sum(not full for _, full, _ in filled)} 局只补了大段），"
+            f"编号 {'、'.join(str(i) for i, _, _ in filled)}")
 
     def keep_now():
         return screenshots.keep_all() if keep_all is None else keep_all
