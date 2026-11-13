@@ -4,7 +4,7 @@ dxcam 用不了时一样换 mss），截到的就是 Evo 看到的样子。
 三种截法（config/tester.json 的 capture）：
 - every（正常对局、通用Bug测试，Recorder）：游戏开着时每 interval 秒截一张（和上一张存的几乎一样就不存），比 1920 宽的缩到
   1920 宽（Evo 识别本来就按 1920×1080 换算）；每分钟另存一张原尺寸
-- still（赛季数据页，StillRecorder）：画面停稳了、和上一张存的不一样才存一张原尺寸，"嘀"一声
+- still（赛季数据页，StillRecorder）：画面停稳了、和上一张存的不一样才存一张原尺寸，"嘀"一声（会动的赛季徽章那一块不看）
 - weapons（靶场：武器，WeaponRecorder）：右下角手上的武器换了就存几张（整张缩小的 + 右下角无损的一块），"嘀"一声
 都一样的：游戏没开时每 10 秒看一眼、每分钟最多存一张（看得出截屏本身通不通）；每次截屏记一行（captures.csv）：
 拿到新画面没有、和上一张差多少。游戏开着却一直"没有新画面" = 截屏卡住了（Evo 这时拿到的是 dxcam 缓存的上一张旧图）；
@@ -30,6 +30,7 @@ import numpy as np
 from PIL import Image
 
 import capture
+from game_aspect import ASPECTS
 from game_detect import GAME_PROCESSES
 from layout import Mapping
 from tester_info import KNOWN_APPS
@@ -60,6 +61,13 @@ CHANGE_LEVEL = 40  # 一个像素变了这么多（0–255）才算"变了"（�
 STILL_SHARE = 0.0005  # 和上一次截到的相比，变了的像素不到这么多（0.05%），算没动
 STILL_SECONDS = 1.0  # 没动这么久算停稳了
 NEW_SHARE = 0.001  # 和上一张存的相比，变了的像素有这么多（0.1%），算换了一页（同一页 0.02%，不同赛季至少 0.21%）
+# 会动的赛季徽章（2026-11-13 测试员："动态图标的赛季标会录不了"：S19、S20 的"全部"那一页一直有 0.06–0.30% 在变，
+# 永远停不稳，一张都没存）：比"停稳没有""换页没有"时不看这一块。数据页贴上边（config/season_stats.json 的 anchor），
+# 测试工具不一定知道游戏的比例，16:9、16:10、4:3 三种摆法的这一块都不看（占整张约 7%）
+BADGE_BOX = [1290, 346, 570, 160]  # 右边一栏上面一行数字和两个圆圈之间：赛季徽章、两个赛段的段位徽章（1920×1080 基准）
+LABEL_BOX = [1352, 191, 380, 49]  # 右边的下拉框（同 config/season_stats.json 的 label）
+LABEL_NEW = 0.005  # 下拉框那块变了的像素有这么多（0.5%），也算换了一页：S31 的"全部"和"排位"数字一样时，不看徽章就只差
+# 下拉框里那几个字（整张只差 0.05%）。11-03、11-13、11-14 测试员的数据页：同一页 0%，换了一项至少 0.7%
 
 # "换了武器才存"（靶场：武器，WeaponRecorder）
 WEAPON_SETTLE = 0.5  # 图标换了以后，等这么久再存（拾取动画只有一两张）
@@ -291,15 +299,30 @@ def _fine(frame):
     return frame[::FINE_STEP, ::FINE_STEP, :3].astype(np.int16).mean(axis=2)
 
 
-def changed_share(a, b):
-    """两张 _fine 之间，变化超过 CHANGE_LEVEL 的像素占多少（0–1）。"""
-    return float(np.mean(np.abs(a - b) > CHANGE_LEVEL))
+def changed_share(a, b, where=None):
+    """两张 _fine 之间，变化超过 CHANGE_LEVEL 的像素占多少（0–1）。where：只数这些像素（True 的），仍按整张算比例。"""
+    changed = np.abs(a - b) > CHANGE_LEVEL
+    return float(np.mean(changed if where is None else changed & where))
+
+
+def page_areas(shape):
+    """数据页上两块（_fine 的坐标）：(不看的 = 会动的徽章以外，下拉框)，都是 True / False 的数组。
+    shape：原截图的 (高, 宽)；三种比例的摆法都算上（见 BADGE_BOX）。"""
+    h, w = shape[:2]
+    fh, fw = -(-h // FINE_STEP), -(-w // FINE_STEP)
+    keep, label = np.ones((fh, fw), bool), np.zeros((fh, fw), bool)
+    for aspect in ASPECTS.values():
+        for box, area, value in ((BADGE_BOX, keep, False), (LABEL_BOX, label, True)):
+            x0, y0, x1, y1 = Mapping((h, w), [1920, 1080], "top", aspect).box(box)
+            area[max(0, y0) // FINE_STEP:-(-y1 // FINE_STEP), max(0, x0) // FINE_STEP:-(-x1 // FINE_STEP)] = value
+    return keep, label
 
 
 class StillRecorder(Recorder):
     """"赛季数据页"：画面停稳了（STILL_SECONDS 里几乎没变），并且和上一张存的不一样，才存一张原尺寸，"嘀"一声。
     数据页的背景不动，换一个赛季时只有右边一栏的数字变（2026-11-01 的截图：同一页之间变化的像素 0.02%，
     不同赛季的两页至少 0.21%），所以数"变化大的像素占多少"，不看整张平均差多少（不同赛季的两页平均只差 0.45）。
+    会动的赛季徽章那一块不看（2.3 起，见 BADGE_BOX）；下拉框里的字变了也算换了一页（LABEL_NEW）。除了这两块，
     不用知道数据页在画面的哪里：没适配的分辨率、语言也照样存。下拉菜单停着时也会存（看得出有哪些赛季）。"""
 
     def __init__(self, *args, **kwargs):
@@ -308,17 +331,20 @@ class StillRecorder(Recorder):
         self.prev_fine = self.last_fine = None  # 上一次截到的、上一张存的
         self.latest = None  # 上一次截到的画面（没有新画面时接着用它）
         self.still_since = None
+        self.areas = None  # 这个画面尺寸下的 page_areas：(不看徽章, 下拉框)
 
     def _size_changed(self):
         super()._size_changed()
-        self.prev_fine = self.last_fine = self.latest = self.still_since = None
+        self.prev_fine = self.last_fine = self.latest = self.still_since = self.areas = None
 
     def _keep(self, frame, tick, now, files):
         if not self.game_on:
             return super()._keep(frame, tick, now, files)
         self.latest = np.array(frame, copy=True)  # dxcam 下次可能用同一块内存
         fine = _fine(frame)
-        moved = None if self.prev_fine is None else changed_share(fine, self.prev_fine)
+        if self.areas is None:
+            self.areas = page_areas(frame.shape)
+        moved = None if self.prev_fine is None else changed_share(fine, self.prev_fine, self.areas[0])
         self.prev_fine = fine
         shown = "" if moved is None else f"{moved * 100:.2f}%"
         if moved is None or moved >= STILL_SHARE:
@@ -336,7 +362,8 @@ class StillRecorder(Recorder):
         """画面没动：停够了、和上一张存的不一样就存。返回结果。"""
         if tick - self.still_since < STILL_SECONDS:
             return "还没停稳"
-        if self.last_fine is not None and changed_share(fine, self.last_fine) < NEW_SHARE:
+        keep, label = self.areas
+        if self.last_fine is not None and changed_share(fine, self.last_fine, keep) < NEW_SHARE                 and changed_share(fine, self.last_fine, label) < LABEL_NEW * label.mean():
             self.same += 1
             return "和上一张存的一样"
         h, w = frame.shape[:2]

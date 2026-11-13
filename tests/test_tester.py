@@ -5,7 +5,8 @@
   正常对局、通用Bug测试：游戏没开时每 10 秒看一眼、每分钟最多存一张；看到游戏后每 2 秒一张；画面没变不存；
   比 1920 宽的缩到 1920 宽，每分钟另存一张原尺寸；没有新画面、出错都记下，连续 30 次没有新画面提示一次；
   游戏关掉（连续 3 次看不到进程）就停；到时间、截满、硬盘快满、点了结束也停；每次截屏 captures.csv 一行；每分钟一次缩略图
-  赛季数据页：每 0.5 秒一张，停稳 1 秒、和上一张存的不一样才存原尺寸，嘀一声；几乎没变（0.01% 的像素）不存
+  赛季数据页：每 0.5 秒一张，停稳 1 秒、和上一张存的不一样才存原尺寸，嘀一声；几乎没变（0.01% 的像素）不存；
+  会动的赛季徽章那一块一直在变也算停稳了（只存一张）；数字一样、只有下拉框里的字变了也算换了一页
   靶场：武器：右下角图标换了，停稳后隔 1 秒存 3 张（整张缩小的 + 右下角原尺寸的 PNG），嘀一声；换回存过的不存；
   没拿武器时每 10 秒一张
 - 测试项目（config/tester.json）；测试员档案（exe 旁边写不进去就存到别处）；压缩包的名字
@@ -209,22 +210,36 @@ def still_checks(tmp):
 
     page_a = base.copy()
     page_b = base.copy()
-    page_b[400:500, 1700:1800] += 100  # 换了一个赛季：右边几个数字变了（约 0.3% 的像素）
+    page_b[1020:1120, 1700:1800] += 100  # 换了一个赛季：右边下面几行的数字变了（约 0.3% 的像素）
     page_b2 = page_b.copy()
-    page_b2[600:620, 1700:1720] += 100  # 几乎没变（0.01%）：当作同一页
-    frames = [moving(), moving(), moving()] + [page_a] * 4 + [moving(), moving()] + [page_b] * 4 + [page_b2] * 4
+    page_b2[1200:1220, 1700:1720] += 100  # 几乎没变（0.01%）：当作同一页
+    # 2.3 起：会动的赛季徽章（右边一栏上面一行数字和两个圆圈之间，1920 基准 y 346–506）一直在变（0.65%），也算停稳了
+    page_c1 = page_b.copy()
+    page_c1[1020:1120, 1500:1600] += 100  # 又换了一个赛季
+    page_c2 = page_c1.copy()
+    page_c2[460:600, 1850:2000] += 60  # 徽章的另一帧
+    # 数字一样、只有下拉框里的字变了（S31 的"全部"和"排位"）：整张只变 0.07%，也算换了一页
+    page_d1, page_d2 = page_c1.copy(), page_c2.copy()
+    for page in (page_d1, page_d2):
+        page[250:290, 1700:1760] += 100
+    frames = ([moving(), moving(), moving()] + [page_a] * 4 + [moving(), moving()] + [page_b] * 4 + [page_b2] * 4
+              + [moving()] + [page_c1, page_c2] * 3 + [moving()] + [page_d1, page_d2] * 3)
     project = {"capture": "still", "interval": 0.5}
-    rec, logs, beeps = run_mode(tmp, "still", project, frames, 10)
+    rec, logs, beeps = run_mode(tmp, "still", project, frames, 16)
     pages = sorted((tmp / "still" / "pages").glob("*.jpg"))
     sizes = {Image.open(p).size for p in pages}
     with open(tmp / "still" / "captures.csv", encoding="utf-8-sig") as f:
         results = [r["结果"] for r in csv.DictReader(f)]
     return {
-        f"数据页：停稳 1 秒才存，换了一页再存，几乎没变不存（存了 {len(pages)} 页，{results[:12]}）":
-            len(pages) == 2 and rec.pages == 2 and results[3:7] == ["在动", "还没停稳", "存了", "和上一张存的一样"],
+        f"数据页：停稳 1 秒才存，换了一页再存，几乎没变不存（{results[:12]}）":
+            results[3:7] == ["在动", "还没停稳", "存了", "和上一张存的一样"] and results[13:17] == ["和上一张存的一样"] * 4,
+        f"数据页：徽章一直在动也算停稳了，存一张，之后不再存（{results[18:24]}）":
+            results[18:24] == ["在动", "还没停稳", "存了"] + ["和上一张存的一样"] * 3,
+        f"数据页：数字一样、只有下拉框里的字变了，也算换了一页（{results[25:32]}）":
+            results[25:32] == ["在动", "还没停稳", "存了"] + ["和上一张存的一样"] * 4 and len(pages) == rec.pages == 4,
         f"数据页：存原尺寸（{sizes}），不另存 full/": sizes == {(w, h)} and not (tmp / "still" / "full").exists(),
-        f"数据页：每存一页嘀一声（t = {beeps}）": beeps == [2.5, 5.5],
-        f"数据页：每 0.5 秒一张（截屏 {rec.grabs} 次）": rec.grabs == 20,
+        f"数据页：每存一页嘀一声（t = {beeps}）": beeps == [2.5, 5.5, 10.0, 13.5],
+        f"数据页：每 0.5 秒一张（截屏 {rec.grabs} 次）": rec.grabs == 32,
     }
 
 

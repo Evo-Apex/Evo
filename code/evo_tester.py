@@ -32,7 +32,8 @@ from tester_capture import MonitorThumbs, default_out_dir, make_recorder, make_z
 from tester_info import _safe, collect_info, copy_evo_logs, find_evo_data_dirs, game_aspect_guess, write_info
 from tester_projects import languages, load_config, load_profile, load_projects, package_name, save_profile
 
-VERSION = "2.2"  # 1.x 是原来的诊断工具；2.1：dxcam 用不了时换 mss（capture.py）；2.2：欢迎页、收尾页要选完才能打包（11-12）
+VERSION = "2.3"  # 1.x 是原来的诊断工具；2.1：dxcam 用不了时换 mss（capture.py）；2.2：欢迎页、收尾页要选完才能打包（11-12）；
+# 2.3：赛季数据页会动的徽章也算停稳了（11-13）
 BEEP_HZ, BEEP_MS = 1200, 150  # "嘀"一声（同 tools/legend_capture.py）
 WATCH_SECONDS = 30  # 正常对局：录的时候每隔这么久看一眼 Evo 记下了什么
 
