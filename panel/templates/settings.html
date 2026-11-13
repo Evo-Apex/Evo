@@ -65,6 +65,10 @@
       </div>
     </section>
 
+    {# 微信小程序（_cloud.html、panel_cloud.py）：放在"常规"下面（2026-11-13 用户要求，以前在"数据与隐私"下面）。
+       这两个文件不在 GitHub 上（只在开发者电脑上，0.5.0 起打进安装包），没有就不显示 #}
+    {% if cloud_view is defined %}{% include "_cloud.html" %}{% endif %}
+
     {# 提示音（sounds.py，什么时候响见 live_collect.SoundCues）：开关、声音包（三声一起换）、音量、每一声的"试听"（不管开关；
        脚本提交，不刷新页面）。选"自己的文件"时每一声还能"选择文件…"（窗口先转成 WAV，见下面的脚本）、"恢复默认" #}
     <section class="card settings-card" aria-labelledby="h-sounds">
@@ -376,9 +380,6 @@
         </form>
       </div>
     </section>
-
-    {# 微信小程序（_cloud.html、panel_cloud.py）：只在开发者电脑上、小程序上线前不打进安装包，没有就不显示 #}
-    {% if cloud_view is defined %}{% include "_cloud.html" %}{% endif %}
 
     {# 匿名统计（telemetry.py）：默认关；打开后每小时发送一次同意以后的对局。只有开关和一句说明
        （2026-10-24 用户决定：不显示发送状态、发送内容的原样，去掉"关闭并删除已发送的数据"） #}
