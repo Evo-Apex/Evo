@@ -16,6 +16,8 @@
   一局的 RP 读错（比如右上角的 -38 赛后被免扣）整页都标黄。校准行不存进数据库，打开页面时现算：
   玩家在战绩页把某局的 RP 改对，校准行就跟着变小或消失。总览页的 RP 合计、场均 RP 不算校准行（用户决定）
 - 两次大厅中间换了赛季（config/seasons.json，段位重置）：只写日志，也不显示校准行
+- 读错的大厅读数（drop_misreads，2026-11-13 用户决定）：前后两次读到的总分一样、中间没打过排位，夹在中间那一次不一样的，
+  删掉再核对（分数不会变了又变回去）。每次回大厅、开始记录、打开面板时看一遍。已经传到小程序的不跟着删
 只看同一个玩家名的局（多账号），还不知道玩家名的局也算进去。
 
 补段位（2026-11-11 用户定的规则）：一局的段位本来只有经验值页一个来源，玩家常常不看经验值页、在总结页直接排下一局，
@@ -63,7 +65,9 @@ def _same_player(row_name, name):
 
 def calibrate(conn, reading, log=print):
     """reading：刚记下的大厅读数（read_at、player_name、rank_tier、rank_division、rank_progress、score）。
-    先核对 RP，再补这个账号没有段位的局。"""
+    先删掉读错的大厅读数，再核对 RP，最后补这个账号没有段位的局。"""
+    for line in drop_misreads(conn, reading["player_name"]):
+        log(f"           {line}")
     _check_rp(conn, reading, log)
     for _, _, line in fill_ranks(conn, reading["player_name"]):
         log(f"           {line}")
@@ -180,6 +184,32 @@ def _fill_last_rank(conn, reading, games, previous, log):
     storage.save_readings(conn, last["match_id"], SOURCE_LOBBY, fields, reading["read_at"])
     log(f"           编号 {last['match_id']} 没有段位：补上这次大厅读到的 "
         f"{ranks.rank_name(reading['rank_tier'], reading['rank_division'])} {reading['rank_progress']}")
+
+
+def drop_misreads(conn, name=None):
+    """前后两次大厅读到的总分一样、中间没打过排位（也没有不知道模式的局），夹在中间那一次不一样的：读错了，
+    分数不会变了又变回去，从大厅读数里删掉（2026-11-13 用户决定；10-22 用户本机两次钻石 I 412 中间读成了大师 412，
+    战绩页多出 +1000、-1000 两行校准分数）。name：只看这个玩家名的（回大厅时）；None = 所有账号。返回日志。"""
+    lobby = [r for r in storage.lobby_readings(conn) if r["score"] is not None]
+    matches = [m for m in conn.execute("SELECT ended_at, mode, player_name FROM matches "
+                                       "WHERE ended_at IS NOT NULL ORDER BY ended_at") if m["mode"] not in ("pubs", "other")]
+    names = [name] if name is not None else \
+        sorted({storage.name_key(r["player_name"]) for r in lobby if r["player_name"]}) or [None]
+    out, dropped = [], set()
+    for who in names:
+        rows = [r for r in lobby if _same_player(r["player_name"], who) and r["reading_id"] not in dropped]
+        games = [m["ended_at"] for m in matches if _same_player(m["player_name"], who)]  # 可能算排位的局结束的时间
+        for before, mid, after in zip(rows, rows[1:], rows[2:]):
+            if before["score"] != after["score"] or mid["score"] == before["score"] or mid["reading_id"] in dropped \
+                    or seasons.of(before["read_at"]) != seasons.of(after["read_at"]) \
+                    or bisect_right(games, after["read_at"]) > bisect_right(games, before["read_at"]):
+                continue
+            storage.delete_lobby_reading(conn, mid["reading_id"])
+            dropped.add(mid["reading_id"])
+            out.append(f"大厅读数：{mid['read_at']} 那次读成了 {ranks.rank_name(mid['rank_tier'], mid['rank_division'])} "
+                       f"{mid['rank_progress']}（总分 {mid['score']}），前后两次都是 {before['score']}、中间没打排位："
+                       "读错了，删掉")
+    return out
 
 
 # ---------- 按最近的参照点补 RP、补段位（规则见文件开头） ----------

@@ -414,6 +414,12 @@ def lobby_readings(conn, names=None):
     return [r for r in rows if r["player_name"] and name_key(r["player_name"]) in keys]
 
 
+def delete_lobby_reading(conn, reading_id):
+    """删掉一次大厅读数（读错了的，见 calibration.drop_misreads）。编号不会再用。"""
+    conn.execute("DELETE FROM lobby_readings WHERE reading_id = ?", (reading_id,))
+    conn.commit()
+
+
 def save_readings(conn, match_id, source, values, read_at, scores=None):
     """记下一个来源（如"淘汰画面"）对这一局读到的各项，同一来源同一项原来有的就覆盖。
     values：{项: 读到的值}，没读到的值为 None（"没读到"本身也记下）；scores：{项: 置信度}，没有的项不写。"""

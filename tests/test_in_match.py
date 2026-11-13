@@ -495,6 +495,77 @@ def rp_fix_checks():
     }
 
 
+def lobby_misread_checks():
+    """大厅读错的段位（2026-10-22 用户本机连着两张把钻石 I 412 读成了大师 412，截图删了）：
+    A. 段位那一栏有两行段位不一样时用徽章下面的罗马数字分（lobby.pick_tier）；B. 前后一样、夹在中间不一样的删掉
+    （calibration.drop_misreads）。"""
+    import numpy as np
+    import lobby as lobby_module
+    from lobby import pick_tier
+    from ranks import score
+
+    class Fake(LobbyReader):
+        """段位那一栏、徽章读到什么由测试给（不用截图和识别引擎）。"""
+        def __init__(self, panel, emblem):
+            super().__init__(engine=None)
+            self.panel, self.emblem = panel, emblem
+
+        def _lines(self, frame, spec):
+            if spec is self.cfg["panel"]:
+                return [(text, 0.95) for text in self.panel]
+            return [(self.emblem, 0.95)] if self.emblem else []
+
+    def read(panel, emblem):
+        with mock.patch.object(lobby_module, "read_name", lambda *a, **k: "Me"):
+            r = Fake(panel, emblem).read(np.zeros((1080, 1920, 3), np.uint8))
+        return r["tier"], r["division"], r["progress"], r["score"]
+
+    out = {
+        "A. 只有一行段位：照旧（钻石 I）": pick_tier([("钻石", "I")], "I") == ("钻石", "I")
+        and pick_tier([("大师", None)], None) == ("大师", None) and pick_tier([], "I") is None,
+        "A. 两行不一样、徽章有罗马数字：取分段的那一行（大师 / 钻石 I → 钻石 I）":
+            pick_tier([("大师", None), ("钻石", "I")], "I") == ("钻石", "I"),
+        "A. 两行都分段：取文字里的段和徽章对得上的（黄金 / 白银 I，徽章 I → 白银 I）；对不上的分不出，不记":
+            pick_tier([("黄金", None), ("白银", "I")], "I") == ("白银", "I")
+            and pick_tier([("黄金", None), ("白银", None)], "I") is None,
+        "A. 两行不一样、徽章没读到：分不出，不记": pick_tier([("大师", None), ("钻石", "I")], None) is None,
+        f"A. 读大厅：多了一行'大师…'，徽章是 I → 钻石 I 412（{read(['大师挑战', '钻石I', '412/1000排位点数'], 'I')}）":
+            read(["大师挑战", "钻石I", "412/1000排位点数"], "I") == ("钻石", "I", 412, 15412),
+        "A. 读大厅：多了一行'大师…'，徽章没读到 → 不记（没有总分）":
+            read(["大师挑战", "钻石I", "412/1000排位点数"], None)[3] is None,
+        "A. 读大厅：平常只有一行，照旧": read(["钻石I", "412/1000排位点数"], "I") == ("钻石", "I", 412, 15412),
+    }
+
+    # B：前后两次一样、中间没打排位，夹在中间不一样的删掉（回大厅时）
+    conn, log = storage.connect(":memory:"), []
+
+    def lobby(when, tier, division, progress=412):
+        reading = {"read_at": when, "player_name": "Me", "rank_tier": tier, "rank_division": division,
+                   "rank_progress": progress, "score": score(tier, division, progress)}
+        storage.save_lobby(conn, reading)
+        calibration.calibrate(conn, reading, log.append)
+
+    lobby("2026-10-22 19:11:23", "钻石", "I")
+    storage.insert_match(conn, {"ended_at": "2026-10-22 19:11:50", "mode": "pubs", "player_name": "Me"})  # 匹配局不算
+    lobby("2026-10-22 19:12:12", "大师", None)
+    lobby("2026-10-22 19:12:21", "钻石", "I")
+    left = [r["score"] for r in storage.lobby_readings(conn)]
+    rows = calibration.adjustments(storage.lobby_readings(conn), storage.all_matches(conn))
+    out[f"B. 钻石 I 412 → 大师 412 → 钻石 I 412、中间只有匹配：删掉大师那次，没有校准行（{left}、{len(rows)} 行）"] = (
+        left == [15412, 15412] and not rows and any("读错了，删掉" in line for line in log))
+    # 中间打过排位：分数可能真的变过（比如 +50 又 -50），不删；三次都不一样的也不删
+    other = storage.connect(":memory:")
+    for when, progress in (("2026-11-05 20:00:00", 100), ("2026-11-05 20:30:00", 150), ("2026-11-05 21:00:00", 100),
+                           ("2026-11-05 22:00:00", 200), ("2026-11-05 22:10:00", 300)):
+        storage.save_lobby(other, {"read_at": when, "player_name": "Me", "rank_tier": "黄金", "rank_division": "II",
+                                   "rank_progress": progress, "score": 7000 + progress})
+    storage.insert_match(other, {"ended_at": "2026-11-05 20:20:00", "mode": "ranked", "rp_delta": 50, "player_name": "Me"})
+    storage.insert_match(other, {"ended_at": "2026-11-05 20:40:00", "mode": "ranked", "rp_delta": -50, "player_name": "Me"})
+    out["B. 中间打过排位的、三次都不一样的：不删"] = (calibration.drop_misreads(other) == []
+                                              and len(storage.lobby_readings(other)) == 5)
+    return out
+
+
 def calibration_panel_checks():
     """战绩页的校准行（2026-11-11）：放在那次回大厅之前结束的那一局上面；只看匹配、只看待确认时不显示；
     打开面板时取消以前大厅校准标的待确认；翻页时每行只出现在一页上。"""
@@ -572,6 +643,7 @@ def main():
         f"  日志：{r['fill_chain_log']}": len(r["fill_chain_log"]) == 3,
         **rank_fill_checks(),
         **rp_fix_checks(),
+        **lobby_misread_checks(),
         f"那一局结束一周后才回大厅（中间换了赛季）：不补（{r['fill_rank_late']}）": r["fill_rank_late"] == (None, None),
         f"对局中比总结页少（最后一秒没截到）：用总结页的，不标；老板分、RP 用对局中的（{r['hud_less']}）":
             r["hud_less"] == (3, 900, 2, 30, "对局中", 0),

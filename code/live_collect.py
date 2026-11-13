@@ -670,6 +670,8 @@ def collect(db_path=storage.DB_PATH, interval=1.0, fast=0.3, summary_timeout=10.
     conn = storage.connect(db_path)
     if calibration.clear_old_flags(conn):  # 以前大厅校准对不上标的待确认（2026-11-11 起改成战绩页显示校准行）
         log("以前因为大厅校准对不上标成待确认的局，已经取消（现在战绩页单独显示一行校准分数）")
+    for line in calibration.drop_misreads(conn):  # 以前读错的大厅读数（前后一样、夹在中间不一样的）：删掉
+        log(line)
     for line in calibration.fix_rps(conn):  # 以前的局：每一小段只缺一局 RP 的，按前后的段位补上、改过来
         log(line)
     filled = calibration.fill_ranks(conn)  # 以前没有段位的局：用前后的大厅、经验值页和各局 RP 补上

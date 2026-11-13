@@ -215,6 +215,7 @@ def db():
         g.db = storage.connect(app.config["DB"])
         if app.config["DB"] not in _CLEARED:  # 以前大厅校准对不上标的待确认：取消（现在战绩页显示校准行）
             calibration.clear_old_flags(g.db)
+            calibration.drop_misreads(g.db)  # 以前读错的大厅读数（前后一样、夹在中间不一样的）：删掉
             calibration.fix_rps(g.db)  # 以前的局：每一小段只缺一局 RP 的，按前后的段位补上、改过来（见 calibration.py）
             calibration.fill_ranks(g.db)  # 以前没有段位的局：用前后的大厅、经验值页和各局 RP 补上
             _CLEARED.add(app.config["DB"])
