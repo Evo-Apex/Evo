@@ -436,6 +436,65 @@ def rank_fill_checks():
     }
 
 
+def rp_fix_checks():
+    """按最近的参照点补 RP（calibration.fix_rps，2026-11-13 用户同意）：两次大厅之间读到了经验值页的段位，
+    缺 RP 的那局只按它所在那一小段算，别的局读错的 RP 不算到它头上（照用户本机 11-04 那一段编的：
+    缺的那局按两次大厅之差是 -62，按前后经验值页的段位是 -38，差的 24 是另一局对局中读的 +24）。"""
+    from ranks import score
+    t = datetime(2026, 11, 4, 21, 0)
+
+    def stamp(minutes):
+        return f"{t + timedelta(minutes=minutes):%Y-%m-%d %H:%M:%S}"
+
+    def setup(conn, x2_rp=None, log=None):
+        def game(minutes, rp=None, rank=None, source="经验值页", mode="ranked", edited=None):
+            fields = {"ended_at": stamp(minutes), "rp_delta": rp, "rp_source": source if rp is not None else None,
+                      "mode": mode, "player_name": "Me", "edited": edited}
+            fields.update(zip(("rank_tier", "rank_division", "rank_progress"), rank or ()))
+            return storage.insert_match(conn, fields)
+
+        def lobby(minutes, progress):
+            reading = {"read_at": stamp(minutes), "player_name": "Me", "rank_tier": "黄金", "rank_division": "III",
+                       "rank_progress": progress, "score": score("黄金", "III", progress)}
+            storage.save_lobby(conn, reading)
+            if log is not None:
+                calibration.calibrate(conn, reading, log.append)
+
+        lobby(0, 500)  # 6750
+        ids = {"x1": game(5, -32, ("黄金", "III", 468)),  # 6718
+               "x2": game(10, x2_rp, source="大厅校准"),  # 应该是 -38
+               "x3": game(15, -38, ("黄金", "III", 392)),  # 6642
+               "x4": game(20, 24, source="对局中"),  # 按前后的段位是 0
+               "x5": game(25, 212, ("黄金", "III", 604))}  # 6854
+        lobby(30, 604)  # 两次大厅之差 +104，读到的 RP 加起来 +166
+        if log is None:  # 补以前的局：用户改过 RP 的不动；模式没读出的局不给它补 RP
+            ids["y1"] = game(35, -50, source="大厅校准", edited="rp_delta")  # 按前后算是 -46
+            ids["y2"] = game(40, -38, ("黄金", "III", 520))  # 6770
+            ids["z1"] = game(45, mode=None)  # 按前后算是 0，可能是匹配
+            ids["z2"] = game(50, -20, ("黄金", "III", 500))
+        return ids
+
+    live, log = storage.connect(":memory:"), []
+    ids = setup(live, log=log)
+    x2 = pick(storage.get_match(live, ids["x2"]), "rp_delta", "rp_source")
+    rows = [(c["read_at"], c["delta"]) for c in
+            calibration.adjustments(storage.lobby_readings(live), storage.all_matches(live))]
+    old = storage.connect(":memory:")
+    ids = setup(old, x2_rp=-62)
+    fixed = calibration.fix_rps(old)
+    after = {k: pick(storage.get_match(old, ids[k]), "rp_delta") for k in ("x2", "y1", "z1")}
+    return {
+        f"回大厅时只缺一局 RP：按它前后经验值页的段位算 -38，不是两次大厅之差的 -62（{x2}）": x2 == (-38, "大厅校准"),
+        f"  日志写按前后的段位补的（{[l.strip() for l in log if '没有 RP' in l]}）":
+            any("编号 2 没有 RP：按前后的段位和各局 RP 补上 -38" in l for l in log),
+        f"  另一局读错的 +24 显示成那次回大厅的校准分数 -24（{rows}）": rows == [(stamp(30), -24)],
+        f"以前按两次大厅之差补的 -62：改成 -38；用户改过的 -50、模式没读出的局不动（{after}；{fixed}）":
+            after == {"x2": (-38,), "y1": (-50,), "z1": (None,)} and len(fixed) == 1
+            and "以前按两次大厅之差补的是 -62" in fixed[0],
+        "按前后的段位补 RP：再跑一次什么都不改": calibration.fix_rps(old) == [],
+    }
+
+
 def calibration_panel_checks():
     """战绩页的校准行（2026-11-11）：放在那次回大厅之前结束的那一局上面；只看匹配、只看待确认时不显示；
     打开面板时取消以前大厅校准标的待确认；翻页时每行只出现在一页上。"""
@@ -512,6 +571,7 @@ def main():
             r["fill_chain"] == [("II", 880), ("II", 835), ("II", 870)],
         f"  日志：{r['fill_chain_log']}": len(r["fill_chain_log"]) == 3,
         **rank_fill_checks(),
+        **rp_fix_checks(),
         f"那一局结束一周后才回大厅（中间换了赛季）：不补（{r['fill_rank_late']}）": r["fill_rank_late"] == (None, None),
         f"对局中比总结页少（最后一秒没截到）：用总结页的，不标；老板分、RP 用对局中的（{r['hud_less']}）":
             r["hud_less"] == (3, 900, 2, 30, "对局中", 0),

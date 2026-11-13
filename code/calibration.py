@@ -2,7 +2,14 @@
 
 前后两次大厅读数之间的排位局，RP 加起来应该等于两次总分之差（总分 = 段位换算成的连续分数，见 ranks.score）：
 - 对得上：没问题
-- 只缺一局的 RP（比如没进经验值页、成盒后提前回了大厅）：用差值补上，来源记"大厅校准"
+- 只缺一局的 RP（比如没进经验值页、成盒后提前回了大厅）：用差值补上，来源记"大厅校准"。
+  先按最近的参照点算（fix_rps，2026-11-13 用户同意）：中间几局读到了经验值页的段位，就等于知道了那几局结束时的总分，
+  两次大厅之间分成好几小段；缺 RP 的那局只用它所在那一小段的前后总分算，别的小段里读错的 RP 不会算到它头上。
+  大厅的总分不变，只是差值分得更准：2026-11-04 用户本机一局按两次大厅之差补成 -62，按前后经验值页的段位是 -38，
+  差的 24 多半来自另一局对局中读的 +24（按段位算是 0），改过来以后那次回大厅显示一行校准分数 -24。
+  这样也能补上两次大厅之间缺好几局 RP、但每一小段只缺一局的。以前按两次大厅之差补的，和按小段算的不一样时改过来；
+  前后跨了大段（升段奖励、降段保护）、模式没读出的局不补；用户在战绩页改过 RP 的局不动。
+  小段算不出时，照旧看两次大厅：整段只缺一局、没跨大段，就用差值补
 - 对不上（某局的 RP 读错了、缺两局以上、跨大段的升段奖励和降段保护、没开 Evo 时打过、别人用这个号打过）：
   不标待确认，战绩页在那次回大厅的位置显示一行"校准分数"（总分之差 − 中间各局 RP 之和，见 adjustments）。
   2026-11-11 用户决定：以前对不上就把中间各局全标待确认，打完直接重新匹配的玩家两次大厅之间常隔十几局，
@@ -23,8 +30,8 @@
 - 跨了大段（可能有升段奖励、降段保护）：只在 RP 都有、加起来正好对得上时补
 - 不补：两个参照点中间换了赛季、只有一头有参照点的、匹配等不算排位的局。模式没读出、又没有 RP 的局可能是排位，
   不补它，RP 当作不知道（推到它这里就断了）。大师、猎杀者不分段（分数的写法没核实）：前后一样时只补大段
-- "大厅校准"补出来的 RP 不当作读到的：它是用前后之差凑出来的，会把别的局读错的部分吸进去
-  （2026-11-04 用户本机：一局补成 -62，按前后经验值页的段位算是 -38；差的 24 多半来自另一局对局中读的 +24，按段位算是 0）
+- "大厅校准"补出来的 RP 不当作读到的：它是用前后之差凑出来的，可能把别的局读错的部分吸进去（见上面 -62 那局）；
+  用户在战绩页改过的 RP 当作读到的
 - 只补空着的项，经验值页读到的段位不改（读到了段、没读到段内分数的：算出来的段一样才补分数）。补上的在 readings 表
   记一行（来源"大厅校准"），推出来的局不当参照点
 - 每次回大厅补这个账号的（calibrate）；开始记录、打开面板时补所有账号以前的局（匿名统计、小程序同步看到这一局变了会重发）
@@ -66,9 +73,15 @@ def _check_rp(conn, reading, log):
     name = reading["player_name"]
     previous = [r for r in storage.lobby_readings(conn) if r["read_at"] < reading["read_at"]
                 and _same_player(r["player_name"], name)]
-    games = [m for m in conn.execute("SELECT * FROM matches WHERE ended_at <= ? ORDER BY ended_at, match_id",
-                                     (reading["read_at"],)) if _same_player(m["player_name"], name)]
-    _fill_last_rank(conn, reading, games, previous, log)
+
+    def games_before():
+        return [m for m in conn.execute("SELECT * FROM matches WHERE ended_at <= ? ORDER BY ended_at, match_id",
+                                        (reading["read_at"],)) if _same_player(m["player_name"], name)]
+
+    _fill_last_rank(conn, reading, games_before(), previous, log)
+    for line in fix_rps(conn, name):
+        log(f"           {line}")
+    games = games_before()  # 上面可能补了、改了 RP
     if not previous:
         log(f"           大厅校准：这是第一次读到大厅的段位（总分 {reading['score']}），以后从这里开始对账")
         return
@@ -169,11 +182,61 @@ def _fill_last_rank(conn, reading, games, previous, log):
         f"{ranks.rank_name(reading['rank_tier'], reading['rank_division'])} {reading['rank_progress']}")
 
 
-# ---------- 补段位（规则见文件开头"补段位"） ----------
+# ---------- 按最近的参照点补 RP、补段位（规则见文件开头） ----------
+
+def fix_rps(conn, name=None):
+    """每一小段（两个参照点之间）只缺一局 RP 时，用前后的总分推出它：补上没有 RP 的局，以前按两次大厅之差补的不一样时改过来。
+    name：只看这个玩家名的（回大厅时）；None = 所有账号（补以前的局）。返回日志，每改一局一行。"""
+    out = []
+    for a, gap, b in _all_segments(conn, name):
+        got = _missing_rp(a, gap, b)
+        if got is None:
+            continue
+        m, rp = got
+        row = storage.get_match(conn, m["match_id"])  # 读最新的（没有玩家名的局几个账号都会看到）
+        edited = _edited(row)
+        if row["rp_delta"] == rp or "rp_delta" in edited:
+            continue  # 已经是这个数；用户改过的不动
+        if row["rp_delta"] is not None and row["rp_source"] != SOURCE_LOBBY:
+            continue  # 经验值页、对局中读到的不改
+        storage.save_readings(conn, row["match_id"], SOURCE_LOBBY, {"rp_delta": rp}, b.time)
+        if edited:  # 用户改过别的项：只改 RP，不按各来源重新定（settle 会把用户改的数换回读到的）
+            storage.update_match(conn, row["match_id"], {"rp_delta": rp, "rp_source": SOURCE_LOBBY})
+        else:
+            settle(conn, row["match_id"], log=lambda _: None)
+        if row["rp_delta"] is None:
+            out.append(f"编号 {row['match_id']} 没有 RP：按前后的段位和各局 RP 补上 {rp:+d}")
+        else:
+            out.append(f"编号 {row['match_id']} 的 RP 按前后的段位改成 {rp:+d}（以前按两次大厅之差补的是 "
+                       f"{row['rp_delta']:+d}，差的部分在这一段以外的局上）")
+    return out
+
+
+def _missing_rp(a, gap, b):
+    """a、b 之间（同一个赛季、同一个分段的大段）只缺一局的 RP：(那一局, 前后总分之差减去其他各局 RP)；
+    缺的不是一局、跨了大段、缺的那局可能不是排位（模式没读出）、算出来不在 RP_RANGE 里都返回 None。"""
+    if seasons.of(a.time) != seasons.of(b.time) or a.tier != b.tier or not ranks.has_divisions(a.tier):
+        return None
+    chain = gap + ([b.match] if b.match is not None else [])  # b 是一局时，它的 RP 也在 a、b 之间
+    rps = [_rp(m) for m in chain]
+    missing = [m for m, rp in zip(chain, rps) if rp is None]
+    if len(missing) != 1 or not _ranked(missing[0]):
+        return None
+    rp = b.score - a.score - sum(r for r in rps if r is not None)
+    return (missing[0], rp) if RP_RANGE[0] <= rp <= RP_RANGE[1] else None
+
 
 def fill_ranks(conn, name=None):
     """用前后两个参照点和各局 RP 补中间各局的段位。name：只补这个玩家名的（回大厅时）；None = 所有账号（补以前的局）。
     返回补了的局：[(编号, 补全了没有（False = 只补了大段）, 日志)]，按时间从早到晚。"""
+    out = []
+    for before, gap, after in _all_segments(conn, name):
+        out += _fill_segment(conn, before, gap, after)
+    return out
+
+
+def _all_segments(conn, name=None):
+    """这个玩家名（None = 每个账号各算各的）的 [(前一个参照点, 中间的局, 后一个参照点)]，见 _segments。"""
     lobby = [r for r in storage.lobby_readings(conn) if r["score"] is not None]
     games = [m for m in conn.execute("SELECT * FROM matches WHERE ended_at IS NOT NULL ORDER BY ended_at, match_id")
              if m["mode"] not in ("pubs", "other")]
@@ -188,8 +251,7 @@ def fill_ranks(conn, name=None):
         events = sorted([(m["ended_at"], 0, m) for m in games if _same_player(m["player_name"], who)]
                         + [(r["read_at"], 1, r) for r in lobby if _same_player(r["player_name"], who)],
                         key=lambda e: e[:2])  # 同一秒的局算在大厅之前（和 calibrate 一样）
-        for before, gap, after in _segments(events, inferred):
-            out += _fill_segment(conn, before, gap, after)
+        out += _segments(events, inferred)
     return out
 
 
@@ -198,9 +260,21 @@ def _score(row):
     return ranks.score(row["rank_tier"], row["rank_division"], row["rank_progress"])
 
 
+def _edited(row):
+    """用户在战绩页改过哪几项。"""
+    return {f for f in (row["edited"] or "").split(",") if f}
+
+
+def _ranked(row):
+    """算排位的局：模式是排位，或者有 RP（模式没读出、又没有 RP 的可能是匹配）。"""
+    return row["mode"] == "ranked" or row["rp_delta"] is not None
+
+
 def _rp(row):
-    """算段位时用的 RP：大厅校准补出来的不算（见文件开头），没有为 None。"""
-    return None if row["rp_delta"] is None or row["rp_source"] == SOURCE_LOBBY else row["rp_delta"]
+    """推段位、推 RP 时用的 RP：大厅校准补出来的不算（见文件开头），用户在战绩页改过的算；没有为 None。"""
+    if row["rp_delta"] is None or (row["rp_source"] == SOURCE_LOBBY and "rp_delta" not in _edited(row)):
+        return None
+    return row["rp_delta"]
 
 
 def _segments(events, inferred):
@@ -226,7 +300,7 @@ def _segments(events, inferred):
 
 def _fill_segment(conn, a, gap, b):
     """补参照点 a、b 之间没有段位的排位局。"""
-    todo = [m for m in gap if (m["mode"] == "ranked" or m["rp_delta"] is not None) and _score(m) is None]
+    todo = [m for m in gap if _ranked(m) and _score(m) is None]
     if not todo or seasons.of(a.time) != seasons.of(b.time):
         return []
     guesses = _guess(a, gap, b)
