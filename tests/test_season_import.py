@@ -9,7 +9,8 @@
     被鼠标弹出的说明框挡住的（S27）不存、日志里提醒；0 局的（S13）不存；同一项再点回来、数字没变不再存；
     存一个赛季响一声（生涯合计不响）；停在数据页时每 0.3 秒一张
   - 录入模式关着：一张都不读，数据页上一次识别都不跑
-  - 页面上的名字不是 Evo 认识的：不读，日志说一次
+  - 设置页选了繁体（测试员 2026-11-13 的繁体截图，游戏 16:10 拉伸）：按繁体的规则认、读，排位的赛季名存"排位"
+  - 页面上的名字不是 Evo 认识的：不读，日志说一次；Evo 认识的名字带战队标签（"[DOGE]ImperialHzd"）、数据页上不带：照样读
   找不到截图时这部分跳过
 
 运行：python tests/test_season_import.py
@@ -25,6 +26,8 @@ from unittest import mock
 import fake_game
 from fake_game import SOUNDS_PLAYED, SHOTS, load, report, run_collect  # 要在项目代码之前导入（设置临时数据文件夹）
 
+import app_settings
+import game_lang
 import live_collect
 import ocr
 import season_import
@@ -32,6 +35,7 @@ import storage
 
 FOLDER = SHOTS / "frames" / "20261101_161135"
 ANSWERS = Path(__file__).with_name("season_stats_20261101.csv")
+TW_FOLDER = SHOTS / "testers" / "20261113_seasons_zhTW_16x10" / "pages"  # 繁体，游戏 16:10 拉伸（见 test_season_stats.py）
 TEMP = Path(tempfile.mkdtemp(prefix="evo-seasons-", dir=storage.DB_PATH.parent.parent))  # 在测试的临时数据文件夹里
 
 
@@ -65,6 +69,10 @@ def table_checks():
     storage.insert_match(conn, {"player_name": "Imperial Hzd", "ended_at": "2026-11-01 16:00:00"})
     out["Evo 认识的名字：对局里出现过的（去掉空格）"] = storage.known_names(conn) == {"ImperialHzd"}
     conn.close()
+    tags = {"[ABCD]小明同学": "小明同学", "[ABCD] 小明同学": "小明同学", "【DOGE】Dogga": "Dogga",
+            "(AB)Cd": "Cd", "小明同学": "小明同学", "[ABCD]": "[ABCD]", "Ab[CD]": "Ab[CD]"}
+    got = {name: storage.untagged_key(name) for name in tags}
+    out[f"比数据页上的名字时去掉开头的战队标签（数据页不带标签；只有标签、标签不在开头的不动）：{got}"] = got == tags
 
     old = TEMP / "old.db"
     raw = sqlite3.connect(old)
@@ -173,7 +181,40 @@ def collect_checks():
     told = [line for line in log if "不是 Evo 认识的你的名字" in line]
     out[f"页面上的名字不是 Evo 认识的（好友资料页）：不读，日志只说一次（{len(told)} 次）"] = (
         rows_of(fake_game.last_db) == [] and len(told) == 1)
+
+    # 2026-11-13 测试员：对局里记的名字带战队标签，数据页上不带，以前当成别人的、一项不存
+    season_import.start()
+    with mock.patch.object(live_collect.storage, "known_names", lambda conn: {"[DOGE]ImperialHzd"}):
+        _, _, log = run_collect(frames[:5], picture, game_aspect="16:10")
+    season_import.stop()
+    got = rows_of(fake_game.last_db)
+    out[f"Evo 认识的名字带战队标签、数据页上不带：照样读（{len(got)} 行）"] = (
+        len(got) == 3 and not any("不是 Evo 认识的你的名字" in line for line in log))
+    out.update(traditional_checks())
     return out
+
+
+def traditional_checks():
+    """设置页选了繁体：录入模式按繁体的规则认数据页（2026-11-13 以前一直按简体，繁体一张都认不出）。"""
+    if not TW_FOLDER.is_dir():
+        return {}
+    files = {f.name[:4]: f for f in TW_FOLDER.glob("*.jpg")}
+    # 加载画面 → S31 全部 → S31 排位 → S30 全部
+    frames = ["0001", "0003", "0003", "0004", "0004", "0005", "0005"]
+    app_settings.set_value(game_lang.SETTING_KEY, "zh-TW")
+    season_import.start()
+    try:
+        _, _, log = run_collect(frames, lambda key: load(files[key]), game_aspect="16:10")
+    finally:
+        season_import.stop()
+        app_settings.set_value(game_lang.SETTING_KEY, game_lang.AUTO)
+    conn = storage.connect(fake_game.last_db)
+    got = [(r["season"], r["kind"], r["season_name"], r["games"], r["assists"], r["respawns"])
+           for r in storage.season_rows(conn)]
+    conn.close()
+    want = [(31, "all", "破譯天機", 54, 76, 9), (31, "ranked", "排位", 54, 76, 9), (30, "all", "諸神烙印", 280, 317, 26),
+            (None, "career", "大逃杀", 1671, 3437, 74)]
+    return {f"设置页选了繁体：S31 全部、S31 排位、S30 全部、生涯合计存成待核对（{got}）": got == want}
 
 
 def main():

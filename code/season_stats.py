@@ -15,7 +15,8 @@
 
 检查截图：python code/season_stats.py 截图1.png [截图2.png ...]   （读两栏，打印结果和核对）
 生成参照图（两个角各一张）：python code/season_stats.py --save-template 截图.png
-游戏画面不是 16:9 时（比如拉伸的 16:10）两条命令都加 --aspect 16:10，和记录程序一样换算（见 layout.py）
+游戏画面不是 16:9 时（比如拉伸的 16:10）两条命令都加 --aspect 16:10，和记录程序一样换算（见 layout.py）；
+繁体的游戏画面加 --lang zh-TW（规则在 config/lang/zh-TW.json，参照图在 config/templates/zh-TW/）
 """
 
 import argparse
@@ -39,6 +40,7 @@ from summary_page import same_piece
 
 CONFIG_NAME = "season_stats.json"
 PAGE = "season_stats"  # detect 里这个画面的名字（参照图 config/templates/season_stats.png；另一个角 "as" 这个名字）
+RANKED_NAME = "排位"  # 排位那一项存的赛季名（storage.py 的 season_stats 表：ranked 写"排位"），不管游戏是哪种语言
 
 
 class SeasonPage:
@@ -107,8 +109,13 @@ class SeasonPage:
             return before[1]
         raw = "".join(t for t, *_ in self._texts(piece))
         m = re.match(spec["pattern"], raw)
-        found = (None, None, None, raw) if not m else \
-            (int(m[1]), (KIND_RANKED if m[2] == spec["ranked"] else KIND_ALL), m[2], raw)
+        ranked = spec["ranked"] if isinstance(spec["ranked"], list) else [spec["ranked"]]  # 繁体有几种读法
+        if not m:
+            found = (None, None, None, raw)
+        elif m[2] in ranked:  # 排位的赛季名一律存"排位"（繁体是"積分賽"，引擎有时读成"積分赛"）
+            found = (int(m[1]), KIND_RANKED, RANKED_NAME, raw)
+        else:
+            found = (int(m[1]), KIND_ALL, m[2], raw)
         if memo is not None:
             memo["label"] = (piece, found)
         return found
@@ -122,7 +129,9 @@ class SeasonPage:
     def _by_line(self, texts, names):
         """一块里的"名字 + 数"：名字和数连在一起读出来的（"最高4,453"）直接拆开；分开读出来的，每个数归到
         同一行、左边最近的那个名字；同一行没有名字的，归到正上方还没有数的那个名字（游戏把数折到了下一行，
-        见 config 的 wrap_gap）。names：名字 → 项。返回 ([(项, 数的文字)], [没归上的数 (文字, x, y)])。"""
+        见 config 的 wrap_gap）。names：名字 → 项。返回 ([(项, 数的文字)], [没归上的数 (文字, x, y)])。
+        一个名字只要离它最近的那个数：同一行右边那一项的名字没读出来（繁体"重生隊友次數"读成"重生隊友次数"）时，
+        它的数不能挤掉左边那一项的数（2026-11-13 以前"助攻 3,437"被换成了 74），宁可那一项空着、核对时标"没读到"。"""
         found, spots, rest = [], [], []
         for text, _, cx, cy in texts:
             head = next((n for n in names if text.startswith(n) and text != n), None)
@@ -132,13 +141,20 @@ class SeasonPage:
                 spots.append((names[text], cx, cy))
             elif self._number(text):
                 rest.append((text, cx, cy))
-        unsure = []
+        unsure, closest = [], {}  # closest：项 → (离名字多远, 数)
         for text, cx, cy in rest:
             near = [(cx - lx, field) for field, lx, ly in spots if lx < cx and abs(cy - ly) <= self.cfg["row_gap"]]
-            if near:
-                found.append((min(near)[1], text))
-            else:
+            if not near:
                 unsure.append((text, cx, cy))
+                continue
+            gap, field = min(near)
+            if field in closest and closest[field][0] <= gap:  # 这个名字已经有更近的数：这个数的名字多半没读出来
+                unsure.append((text, cx, cy))
+                continue
+            if field in closest:
+                unsure.append(closest[field][1])
+            closest[field] = (gap, (text, cx, cy))
+        found += [(field, item[0]) for field, (_, item) in closest.items()]
         gap, left = self.cfg["wrap_gap"], []
         for text, cx, cy in unsure:
             done = {field for field, _ in found}

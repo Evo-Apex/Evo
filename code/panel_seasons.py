@@ -35,12 +35,12 @@ def _is_demo():
 
 
 def _mine(rows):
-    """只留现在看的账号的（按名字，不管空格）。"""
+    """只留现在看的账号的（按名字，不管空格和战队标签：数据页上的名字不带标签，对局里的带）。"""
     names = account_names() if account_names else None
     if names is None:
         return rows
-    keys = {storage.name_key(n) for n in names}
-    return [r for r in rows if storage.name_key(r["player_name"]) in keys]
+    keys = {storage.untagged_key(n) for n in names}
+    return [r for r in rows if storage.untagged_key(r["player_name"]) in keys]
 
 
 def title(row):

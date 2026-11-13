@@ -514,11 +514,12 @@ class SeasonWatcher:
 
     OWNER_SECONDS = 30  # 读过一次页面上的名字，这么久之内回到数据页（比如下拉菜单收起来）不再读
 
-    def __init__(self, engine, conn, post, log, play=None, page=None):
-        """page：season_stats.SeasonPage（不给就在第一次用到时新建：读规则、参照图）。"""
+    def __init__(self, engine, conn, post, log, play=None, page=None, lang=None):
+        """page：season_stats.SeasonPage（不给就在第一次用到时新建：读规则、参照图）；lang：游戏语言（None 是简体）。"""
         self.engine, self.conn, self.post, self.log = engine, conn, post, log
         self.play = play or sounds.play
         self.page = page
+        self.lang = lang
         self.on = False
         self.saved = 0  # 这一次录入存了几项
         self._reset()
@@ -530,6 +531,12 @@ class SeasonWatcher:
         self.said = set()  # 已经在日志里说过的（被挡住、0 局、不是自己的），每项只说一次
         self.owner = None  # 页面上的名字和它是不是自己：(名字, 是不是自己, 读的时刻)
         self.showing = False  # 上一张是数据页（截图加快）
+
+    def use_language(self, lang):
+        """认定的游戏语言变了：数据页换成这种语言的规则（下次用到时新建）。2026-11-13 以前一直按简体认，繁体认不出。"""
+        if lang != self.lang:
+            self.lang, self.page = lang, None
+            self._reset()
 
     def check_mode(self, now):
         """看一眼设置里录入模式开没开（记录程序每隔几秒调用一次，和"游戏语言"一样）。"""
@@ -558,7 +565,7 @@ class SeasonWatcher:
             return
         if self.page is None:
             from season_stats import SeasonPage
-            self.page = SeasonPage(self.engine)
+            self.page = SeasonPage(self.engine, lang=self.lang)
         if not self.page.on_page(frame):
             return
         self.showing = True
@@ -573,9 +580,9 @@ class SeasonWatcher:
         """页面上的名字是不是自己（结果留 OWNER_SECONDS 秒）。"""
         if self.owner is None or (now - self.owner[2]).total_seconds() > self.OWNER_SECONDS:
             name = self.page.name(frame)
-            mine = storage.known_names(self.conn) | ({storage.name_key(self.post.player_name)}
-                                                      if self.post.player_name else set())
-            own = name is not None and (not mine or storage.name_key(name) in mine)
+            mine = {storage.untagged_key(k) for k in storage.known_names(self.conn)} | (
+                {storage.untagged_key(self.post.player_name)} if self.post.player_name else set())
+            own = name is not None and (not mine or storage.untagged_key(name) in mine)  # 数据页上的名字不带战队标签
             self.owner = (name, own, now)
             if not own:
                 self._say(("owner", name), now, f"数据页上是 {name or '（名字没读出来）'}，不是 Evo 认识的你的名字，不读"
@@ -720,7 +727,7 @@ def collect(db_path=storage.DB_PATH, interval=1.0, fast=0.3, summary_timeout=10.
     in_match = InMatchWatcher(hud, post, log, name_cfg, save=save_hud,
                               keep_all=lambda: other.keep_all, before_hand_over=summary.catch_up)
     lobby = LobbyWatcher(LobbyReader(engine, load_config("lobby.json", lang)), post, conn, log)
-    seasons = SeasonWatcher(engine, conn, post, log)  # 录入历史赛季数据（设置页的按钮）
+    seasons = SeasonWatcher(engine, conn, post, log, lang=lang)  # 录入历史赛季数据（设置页的按钮）
 
     def aspect_sources():
         """看游戏画面认比例时比哪些画面：认定了游戏语言就只比这种语言的；录入模式里加上数据页。"""
@@ -743,6 +750,7 @@ def collect(db_path=storage.DB_PATH, interval=1.0, fast=0.3, summary_timeout=10.
         hud.use_language(lang)
         in_match.name_place = names["places"]["hud"]
         lobby.reader.cfg = load_config("lobby.json", lang)
+        seasons.use_language(lang)
 
     log(f"屏幕: {camera.width}x{camera.height}（截屏：{how['截法']}）")
     if len(detector.detectors) > 1:

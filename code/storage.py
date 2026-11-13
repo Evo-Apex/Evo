@@ -12,6 +12,7 @@
 
 import argparse
 import csv
+import re
 import sqlite3
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -513,6 +514,17 @@ def name_key(name):
     return "".join(name.split())
 
 
+# 名字开头的战队标签，如 "[DOGE]"（识别时括号偶尔读成全角或圆括号）
+CLUB_TAG = re.compile(r"^[\[【［(（][^\]】］)）]{1,6}[\]】］)）]")
+
+
+def untagged_key(name):
+    """name_key 再去掉开头的战队标签：对局里、总结页上的名字带标签（"[DOGE] Dogga"），游戏里的数据页上
+    不带（"Dogga"）。2026-11-13 测试员反馈录不了，就是这样对不上。只剩标签时照原样。"""
+    key = name_key(name)
+    return CLUB_TAG.sub("", key) or key
+
+
 def name_similarity(a, b):
     """两个玩家名有多像（0 到 1，不管空格）。"""
     return SequenceMatcher(None, name_key(a), name_key(b)).ratio()
@@ -554,7 +566,7 @@ def sync_names(conn):
 
 def known_names(conn):
     """Evo 认识的、自己的玩家名（去掉空格的写法，见 name_key）：对局里出现过的所有名字。录入历史赛季数据时
-    用它分出数据页是不是自己的（好友资料页也是这一页）。"""
+    用它分出数据页是不是自己的（好友资料页也是这一页；比的时候去掉战队标签，见 untagged_key）。"""
     sync_names(conn)
     return {r[0] for r in conn.execute("SELECT name_key FROM player_names")}
 

@@ -7,7 +7,7 @@
 - 待核对：每项一张卡片；对不上的格子标出来（aria-invalid，连到写原因的那一行）；约数标"约"；
   "保存全部没问题的"只保存没问题的；保存（数字带逗号也行，改过的记下来）、填错不保存、删除
 - 历史赛季：全部 / 排位切换，生涯合计只在"全部"里、在第一行；胜率、前 5 率、场均击杀等算对；点开一行有 15 个格子
-- 多账号：只看选中的账号
+- 多账号：只看选中的账号（对局里的名字带战队标签、数据页上读到的不带，也算同一个账号）
 
 运行：python tests/test_seasons_page.py
 """
@@ -30,14 +30,14 @@ BASE = {"read_at": "2026-11-01 16:12:32", "wins": 26, "top5": 81, "damage": 1693
 
 
 def new_db(folder_name, file_name="evo.db"):
-    """大号 ImperialHzd、小号 AltAccount 各打过一局。大号：待核对 S30 排位（没问题）、S30 全部（击杀/阵亡比读错）；
+    """大号 ImperialHzd、小号 [DOGE]AltAccount（对局里的名字带战队标签，数据页上读到的不带）各打过一局。大号：待核对 S30 排位（没问题）、S30 全部（击杀/阵亡比读错）；
     保存过 S29 全部、S29 排位、生涯合计（前 5 名是约数）。小号：保存过 S29 全部。"""
     path = FOLDER / folder_name / file_name
     path.parent.mkdir()
     conn = storage.connect(path)
-    for name in ("ImperialHzd", "AltAccount"):
+    for name in ("ImperialHzd", "[DOGE]AltAccount"):
         storage.insert_match(conn, {"player_name": name, "ended_at": "2026-11-01 15:00:00", "mode": "ranked"})
-    storage.answer_name(conn, "AltAccount")
+    storage.answer_name(conn, "[DOGE]AltAccount")
     ids = {}
 
     def add(key, name="ImperialHzd", **row):
@@ -168,9 +168,9 @@ def main():
     out["只看选中的账号（小号的 S29 不在大号这里）"] = all_view.count("第 29 赛季 · 超频（全部）") == 1 and \
         ids["alt"] not in [int(i) for i, _, _ in rows]
     with client.session_transaction() as s:
-        s["account"] = accounts["AltAccount"]
+        s["account"] = accounts["[DOGE]AltAccount"]
     alt_view = client.get("/seasons").get_data(as_text=True)
-    out["换到小号：只有小号的 S29"] = re.findall(r'<th scope="row">([^<]+)</th>', alt_view) == ["第 29 赛季 · 超频（全部）"]
+    out["换到小号：只有小号的 S29（对局里的名字带战队标签、数据页上的不带，也算这个账号）"] = re.findall(r'<th scope="row">([^<]+)</th>', alt_view) == ["第 29 赛季 · 超频（全部）"]
 
     demo, _, _ = new_db("demo", "demo.db")
     panel_app.app.config["DB"] = str(demo)
