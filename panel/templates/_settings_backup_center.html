@@ -1,0 +1,170 @@
+{# 数据备份与云同步：本地历史、导入导出、恢复确认及 WebDAV 双向快照传输。 #}
+<section class="card settings-card" aria-labelledby="h-webdav" id="backup-center">
+  <h2 id="h-webdav">备份与云同步</h2>
+  <p class="webdav-intro">备份全部账号的战绩、账号对应关系和常规设置。换设备后恢复备份，继续记录同一个 Apex 账号。截图、录像、自定义提示音文件和登录凭证需单独保留。</p>
+  {% if is_demo %}<p class="setting-desc">正在查看演示数据，请切回正式战绩后再设置备份。</p>{% endif %}
+  {% if backups.result %}<p class="backup-notice">{{ backups.result }}</p>{% endif %}
+  {% if backups.pending %}<p class="backup-notice">恢复已准备好，正在等待重启。若没有自动重启，请从托盘退出并重新打开 Evo。</p>{% endif %}
+  <fieldset class="backup-fieldset" {{ 'disabled' if is_demo or backups.pending }}>
+  <div class="backup-panel">
+    <h3>导入与导出</h3>
+    <p class="setting-desc">使用 Evo 专用 ZIP 备份迁移数据。导入后先校验，再由你选择是否恢复。</p>
+    <form id="backup-import" class="backup-transfer" action="{{ url_for('backup_action', action='import') }}" method="post" enctype="multipart/form-data" data-local-job>
+      <input type="hidden" name="token" value="{{ token }}">
+      <label class="backup-file">选择 ZIP 备份<input type="file" name="archive" accept=".zip" required aria-label="选择 ZIP 备份"></label>
+      <div class="backup-transfer-actions">
+        <button class="btn" type="submit">导入备份</button>
+        <button type="button" class="btn" data-create>立即备份</button>
+        <button type="button" class="btn" data-open-backups>备份文件夹</button>
+      </div>
+    </form>
+    <p class="setting-desc">备份完成后自动显示在下方列表，可导出到其他位置。</p>
+  </div>
+  <div class="backup-panel">
+    <h3>本地备份与恢复</h3>
+    <form action="{{ url_for('backup_action', action='preferences') }}" method="post" data-local-job>
+      <input type="hidden" name="token" value="{{ token }}">
+      <div class="backup-grid">
+        <label>自动备份间隔<select name="hours">{% for value, label in [(0,'关闭'),(1,'1 小时'),(6,'6 小时'),(12,'12 小时'),(24,'24 小时'),(72,'3 天'),(168,'7 天')] %}<option value="{{ value }}" {{ 'selected' if backups.hours == value }}>{{ label }}</option>{% endfor %}</select></label>
+        <label>自动备份保留数量<select name="keep">{% for n in [5,10,20,50] %}<option value="{{ n }}" {{ 'selected' if backups.keep == n }}>{{ n }} 份</option>{% endfor %}</select></label>
+      </div>
+      <div class="backup-toolbar"><span class="setting-desc">Evo 运行时生效，游戏运行时延后。手动备份和恢复前备份保留到手动删除。</span><button class="btn" type="submit">保存</button></div>
+    </form>
+    <div id="backup-history">{% include "_backup_history.html" %}</div>
+  </div>
+  <p id="backup-progress" role="status" aria-live="polite" class="setting-desc"></p>
+  <p id="backup-list-status" role="status" aria-live="polite" class="setting-desc" hidden></p>
+  <div class="backup-panel">
+    <h3>WebDAV 云同步</h3>
+    <p class="setting-desc">两台设备填写相同的服务器、远程根目录和同步配置名。先在原设备上传，再在新设备下载并恢复。</p>
+    <form method="post" action="{{ url_for('webdav_action', action='save') }}" class="webdav-form" id="webdav-config" autocomplete="off">
+      <input type="hidden" name="token" value="{{ token }}">
+      <label for="webdav-url">WebDAV 服务器地址</label><input id="webdav-url" name="url" type="url" value="{{ webdav.url }}" placeholder="https://你的服务器/dav/" required maxlength="2048">
+      <p class="setting-desc">建议使用 HTTPS。HTTP 会明文传输账号和备份；缺少的目录会自动创建。</p>
+      <div class="backup-grid">
+        <div><label for="webdav-user">WebDAV 账号</label><input id="webdav-user" name="username" type="text" value="{{ webdav.username }}" maxlength="512" autocomplete="off"></div>
+        <div><label for="webdav-password">密码或应用专用密码</label><input id="webdav-password" name="password" type="password" value="" maxlength="4096" autocomplete="new-password" placeholder="{{ '已保存，留空保留原密码' if webdav.password_set else '输入应用专用密码' }}"></div>
+      </div>
+      <p class="setting-desc">请按服务商要求使用应用专用密码。连接凭证由 Windows 加密保存在本机；换设备后需重新填写。修改地址或账号时请重新输入密码。</p>
+      <div class="backup-grid">
+        <div><label for="webdav-root">远程根目录</label><input id="webdav-root" type="text" name="remote_root" value="{{ webdav.remote_root }}" required maxlength="300"></div>
+        <div><label for="webdav-profile">同步配置名</label><input id="webdav-profile" type="text" name="profile" value="{{ webdav.profile }}" required maxlength="100"></div>
+      </div>
+      <label class="webdav-auto"><input type="checkbox" name="on_change" value="1" {{ 'checked' if webdav.on_change }}>数据变化后自动上传</label>
+      <p class="setting-desc">每分钟检查战绩与常规设置变化，游戏退出后上传。自动上传不会下载或合并另一台设备的数据。</p>
+      <label class="webdav-auto"><input type="checkbox" name="automatic" value="1" {{ 'checked' if webdav.automatic }}>每天自动备份</label>
+      <p class="setting-desc">运行期间每天上传一次，失败后每小时重试。云端历史快照暂不自动清理。</p>
+      {% if webdav.paused %}<p class="backup-notice" id="webdav-paused">恢复后自动上传已暂停。确认本机数据后，重新保存配置或手动上传可恢复。</p>{% endif %}
+      <div class="webdav-save-row">
+        <button type="submit" class="btn">保存配置</button>
+        <span id="webdav-unsaved" class="setting-desc" role="status" aria-live="polite" hidden>配置已修改，请先保存再测试或同步。</span>
+      </div>
+    </form>
+    <div class="webdav-tools" id="webdav-tools" data-configured="{{ '1' if webdav.configured else '0' }}" data-busy="{{ '1' if webdav.job.phase == 'running' else '0' }}">
+      {% for action, label in [('test','测试连接'),('clear','清除配置'),('backup','上传到云端'),('download','从云端下载')] %}
+      <form method="post" action="{{ url_for('webdav_action', action=action) }}" {{ 'data-webdav-job' if action != 'clear' }}><input type="hidden" name="token" value="{{ token }}"><button class="btn{{ ' backup-primary' if action == 'backup' }}" type="submit" {{ 'disabled' if not webdav.configured or webdav.job.phase == 'running' }}>{{ label }}</button></form>
+      {% endfor %}
+    </div>
+    <p id="webdav-progress" role="status" aria-live="polite" class="setting-desc">{{ webdav.job.message or webdav.last_error or ('连接已保存。' if webdav.configured else '还未配置 WebDAV。') }}</p>
+    <p id="webdav-last" class="setting-desc">{% if webdav.last_success %}上次上传：{{ webdav.last_success.at }}{% endif %}</p>
+    <button class="btn" type="button" id="webdav-force" hidden>确认用本机覆盖云端当前版本</button>
+    <p class="setting-desc">下载后在本地列表点击“恢复”。恢复会替换全部账号的战绩与常规设置，并重启 Evo；恢复前自动备份当前数据。两端战绩不会自动合并。</p>
+  </div>
+  </fieldset>
+  <dialog id="backup-dialog" class="backup-dialog"><form method="dialog"><h3 id="backup-dialog-title"></h3><p id="backup-dialog-info"></p><input id="backup-dialog-name" maxlength="80" aria-label="备份名称" hidden><div class="backup-row-actions"><button class="btn" value="cancel">取消</button><button class="btn backup-primary" id="backup-dialog-ok" value="confirm">确认</button></div></form></dialog>
+</section>
+<script>
+(function () {
+  var center = document.getElementById('backup-center'), tools = document.getElementById('webdav-tools');
+  var message = document.getElementById('webdav-progress'), localMessage = document.getElementById('backup-progress');
+  var dialog = document.getElementById('backup-dialog'), field = document.getElementById('backup-dialog-name');
+  var timer, dirty = false, conflict = '', running = tools.dataset.busy === '1', saving = false, stateEpoch = 0;
+  var configForm = document.getElementById('webdav-config'), saveStatus = document.getElementById('webdav-unsaved');
+  var saveButton = configForm.querySelector('button[type="submit"]');
+  var token = {{ token|tojson }}, localBase = {{ url_for('backup_action', action='PLACEHOLDER')|tojson }};
+  var history = document.getElementById('backup-history'), listStatus = document.getElementById('backup-list-status');
+  var historyHTML = null, refreshing = null, refreshAgain = false, lastDownload = '';
+  var historyURL = {{ url_for('backup_history')|tojson }};
+  function refreshHistory() {
+    if (refreshing) { refreshAgain = true; return refreshing; }
+    refreshing = fetch(historyURL, {cache:'no-store'}).then(function(response) {
+      if (!response.ok) throw new Error('备份列表暂时未更新，正在自动重试。');
+      return response.text();
+    }).then(function(html) {
+      if (html !== historyHTML) {
+        var list = history.querySelector('.backup-list'), top = list ? list.scrollTop : 0;
+        history.innerHTML = html;
+        historyHTML = html;
+        history.querySelector('.backup-list').scrollTop = top;
+      }
+      listStatus.hidden = true;
+    }).catch(function() {
+      listStatus.textContent = '备份列表暂时未更新，正在自动重试。';
+      listStatus.hidden = false;
+    }).finally(function() {
+      refreshing = null;
+      if (refreshAgain) { refreshAgain = false; refreshHistory(); }
+    });
+  }
+  {% if not is_demo %}
+  setInterval(function(){if (!document.hidden) refreshHistory();}, 5000);
+  document.addEventListener('visibilitychange',function(){if (!document.hidden) refreshHistory();});
+  window.addEventListener('focus',refreshHistory);
+  {% endif %}
+  function data(values) { var body = new FormData(); body.append('token', token); Object.keys(values || {}).forEach(function(k){body.append(k,values[k]);}); return body; }
+  function post(url, body) { return fetch(url,{method:'POST',body:body,headers:{Accept:'application/json'}}).then(function(r){return r.json().then(function(d){if(!r.ok) throw new Error(d.error || '操作失败。'); return d;});}); }
+  function local(action, values) { return post(localBase.replace('PLACEHOLDER',action),data(values)); }
+  function fail(error) { localMessage.textContent = error.message || '操作失败，请重试。'; }
+  function complete(result) { localMessage.textContent = result.message; return refreshHistory(); }
+  function ask(title, info, name, done) { dialog.returnValue = ''; document.getElementById('backup-dialog-title').textContent=title; document.getElementById('backup-dialog-info').textContent=info; field.hidden=name === null; field.value=name || ''; dialog.onclose=function(){if(dialog.returnValue==='confirm') done(field.value);}; dialog.showModal(); }
+  center.querySelector('[data-create]').onclick=function(){var button=this; button.disabled=true; localMessage.textContent='正在生成本地快照……';local('create').then(complete).catch(fail).finally(function(){button.disabled=false;});};
+  center.querySelector('[data-open-backups]').onclick=function(){local('open-folder').then(function(r){localMessage.textContent=r.message;}).catch(fail);};
+  center.querySelectorAll('[data-local-job]').forEach(function(form){form.onsubmit=function(e){e.preventDefault();var button=form.querySelector('button[type="submit"]');button.disabled=true;localMessage.textContent='正在处理……';post(form.action,new FormData(form)).then(complete).catch(fail).finally(function(){button.disabled=false;});};});
+  history.addEventListener('click',function(event){
+    var button=event.target.closest('button'), row=button && button.closest('.backup-row');
+    if(!row || button.disabled || center.querySelector('.backup-fieldset').disabled) return;
+    var name=row.dataset.name;
+    if(button.hasAttribute('data-delete')) {
+      ask('删除本地备份','只删除选中的备份文件，当前战绩不会改变。',null,function(){local('delete',{name:name}).then(complete).catch(fail);});
+    } else if(button.hasAttribute('data-rename')) {
+      ask('重命名备份','为这份备份设置便于辨认的名称。',row.querySelector('strong').textContent,function(label){local('rename',{name:name,label:label}).then(complete).catch(fail);});
+    } else if(button.hasAttribute('data-restore')) {
+      localMessage.textContent='正在校验备份……';
+      local('preview',{name:name}).then(function(info){ask('恢复备份并重启','备份时间：'+info.created_at+'。包含 '+info.matches+' 局战绩、'+info.accounts+' 个账号。将替换当前全部战绩与常规设置，恢复前会自动备份。请先退出 Apex。',null,function(){local('restore',{name:name,fingerprint:info.fingerprint,confirm:'1'}).then(function(r){complete(r);center.querySelector('.backup-fieldset').disabled=true;}).catch(fail);});}).catch(fail);
+    }
+  });
+  function buttons(){tools.querySelectorAll('button').forEach(function(b){b.disabled=running || saving || dirty || tools.dataset.configured!=='1';});saveButton.disabled=running || saving;}
+  configForm.addEventListener('input',function(){dirty=true;saveStatus.textContent='配置已修改，请先保存再测试或同步。';saveStatus.classList.remove('update-error');saveStatus.hidden=false;buttons();});
+  configForm.onsubmit=function(event){
+    event.preventDefault();
+    if(saving || running) return;
+    var body=new FormData(configForm);
+    var controls=Array.from(configForm.querySelectorAll('input, button'));
+    var disabled=controls.map(function(control){return control.disabled;});
+    saving=true;stateEpoch++;clearTimeout(timer);
+    controls.forEach(function(control){control.disabled=true;});
+    saveButton.setAttribute('aria-busy','true');buttons();
+    saveStatus.textContent='正在保存……';saveStatus.classList.remove('update-error');saveStatus.hidden=false;
+    post(configForm.action,body).then(function(result){
+      dirty=false;tools.dataset.configured=result.configured ? '1' : '0';
+      var password=document.getElementById('webdav-password');
+      password.value='';password.placeholder=result.password_set ? '已保存，留空保留原密码' : '输入应用专用密码';
+      show(result.state);message.textContent=result.message;message.classList.remove('update-error');
+      saveStatus.textContent='配置已保存。';
+      var paused=document.getElementById('webdav-paused');
+      if(paused) paused.textContent='配置已保存，自动上传已按所选开关恢复。';
+    }).catch(function(error){
+      saveStatus.textContent=error.message || '保存失败，请重试。';saveStatus.classList.add('update-error');
+    }).finally(function(){
+      controls.forEach(function(control,index){control.disabled=disabled[index];});
+      saving=false;saveButton.removeAttribute('aria-busy');buttons();
+    });
+  };
+  function show(result){var job=result.job || {};running=job.phase==='running';buttons();message.textContent=job.message || result.last_error || '连接已保存。';message.classList.toggle('update-error',job.phase==='failed');conflict=job.conflict_revision || '';document.getElementById('webdav-force').hidden=!conflict || running;document.getElementById('webdav-last').textContent=result.last_success ? '上次上传：'+result.last_success.at : '';if(job.phase==='done' && job.kind==='download' && job.filename!==lastDownload){lastDownload=job.filename;refreshHistory();}if(running) timer=setTimeout(poll,1000);}
+  function poll(){var epoch=stateEpoch;fetch({{ url_for('webdav_status')|tojson }},{cache:'no-store'}).then(function(r){if(!r.ok) throw new Error('无法读取任务状态。');return r.json();}).then(function(result){if(epoch===stateEpoch) show(result);}).catch(function(e){if(epoch===stateEpoch) message.textContent=e.message;});}
+  function begin(url, body){clearTimeout(timer);running=true;buttons();message.textContent='正在开始任务……';post(url,body).then(show).catch(function(e){running=false;buttons();message.textContent=e.message;});}
+  tools.querySelectorAll('[data-webdav-job]').forEach(function(form){form.onsubmit=function(e){e.preventDefault();begin(form.action,new FormData(form));};});
+  document.getElementById('webdav-force').onclick=function(){if(dirty){message.textContent='请先保存配置。';return;}ask('确认覆盖云端版本','云端有另一份数据。继续后，其他设备下载到的将是本机战绩；云端旧快照文件仍会保留。若两端都有新战绩，建议先分别导出留存。',null,function(){begin({{ url_for('webdav_action', action='force')|tojson }},data({expected:conflict}));});};
+  if(tools.dataset.configured==='1') poll();
+})();
+</script>

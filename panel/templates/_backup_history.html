@@ -1,0 +1,14 @@
+{# 本地备份历史列表：名称、时间、导出、重命名、删除与恢复按钮，供设置页异步刷新。 #}
+    <div class="backup-list" aria-label="本地备份列表">
+      {% for item in backups.history %}
+      <div class="backup-row" data-name="{{ item.name }}">
+        <div class="backup-meta"><strong>{{ item.label }}</strong><span>{{ item.at }} · {{ '%.2f'|format(item.bytes / 1048576) }} MB{{ ' · 恢复前备份' if item.protected }}</span></div>
+        <div class="backup-row-actions">
+          <button type="button" class="btn" data-rename>重命名</button>
+          <form action="{{ url_for('backup_action', action='export') }}" method="post"><input type="hidden" name="token" value="{{ token }}"><input type="hidden" name="name" value="{{ item.name }}"><button class="btn" type="submit">导出</button></form>
+          <button type="button" class="btn" data-delete>删除</button><button type="button" class="btn" data-restore>恢复</button>
+        </div>
+      </div>
+      {% else %}<p class="backup-empty">还没有本地备份。点击“立即备份”保存第一份。</p>{% endfor %}
+    </div>
+    <p class="setting-desc">共 {{ backups.history|length }} 份 · {{ '%.2f'|format(backups.history|sum(attribute='bytes') / 1048576) }} MB。备份保存在当前数据目录的 data/backups 中。</p>

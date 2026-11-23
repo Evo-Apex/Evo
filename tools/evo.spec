@@ -2,6 +2,8 @@
 # 打包方式：文件夹模式（onedir）——一个很小的 Evo.exe 启动器 + _internal 文件夹（依赖、配置、网页、识别模型）。
 import os
 import subprocess
+import ssl
+from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, copy_metadata
 
@@ -23,6 +25,13 @@ datas = [
     (os.path.join(ROOT, "build", "webview2", "MicrosoftEdgeWebview2Setup.exe"), "webview2"),
 ]
 datas += [(os.path.join(ROOT, path), os.path.dirname(path)) for path in ASSETS if path]  # 图标、传奇头像、段位徽章、提示音
+# Preserve a Python distribution's certificate distrust policy when freezing ssl.
+ssl_policy = Path(ssl.__file__).with_name("codex-rejected-cas.pem")
+if ssl_policy.is_file():
+    datas.append((str(ssl_policy), "."))
+
+datas += collect_data_files("certifi")  # Portable public CA roots; verification stays enabled.
+datas += copy_metadata("certifi")      # MPL-2.0 license.
 datas += collect_data_files("rapidocr")      # 识别模型（.onnx）和识别引擎的配置（.yaml）
 datas += copy_metadata("pystray")            # pystray 的许可证信息（LGPL 要求）
 

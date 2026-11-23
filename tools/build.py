@@ -52,6 +52,7 @@ Evo 使用了以下第三方库，它们各自的许可证随库一起放在 _in
   你可以把它换成自己修改过的版本；pystray 的源代码：https://github.com/moses-palmer/pystray
 - 其他主要依赖：RapidOCR（Apache 2.0）、ONNX Runtime（MIT）、OpenCV（Apache 2.0）、NumPy（BSD）、
   Flask（BSD）、Pillow（MIT-CMU）、dxcam（MIT）、mss（MIT，dxcam 用不了时截屏）、PP-OCR 模型（Apache 2.0）
+- certifi（公共根证书库）：MPL-2.0，许可证见 _internal/certifi-*.dist-info/licenses/LICENSE。
 - 面板字体 Chakra Petch：SIL Open Font License 1.1，见 _internal/panel/static/fonts/OFL.txt
 - 窗口启动画面上那行字的字体 Cinzel、思源宋体（Noto Serif SC，都只含用到的几个字）：SIL Open Font License 1.1，
   见 _internal/assets/splash/OFL.txt

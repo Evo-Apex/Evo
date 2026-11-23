@@ -83,6 +83,9 @@ TESTS = {"总结页停留": "test_summary_page", "轻量（按需加载模型）
          "游戏里的数据页（认出、读两栏、核对，录入历史赛季数据用）": "test_season_stats",
          "录入历史赛季数据（新表、录入模式、记录程序读数据页）": "test_season_import",
          "\"赛季\"页面（录入按钮、待核对、保存、历史赛季表、设置页那一行）": "test_seasons_page",
+         "WebDAV 备份（快照、凭证、自动上传）": "test_webdav_backup",
+         "备份中心（下载、冲突、恢复、目录兼容）": "test_backup_center",
+         "WebDAV TLS（证书链、域名、有效期）": "test_webdav_tls",
          "代码地图（docs/代码地图.md 是最新的、每个文件都分了组）": "test_code_map",
          "联网出错的原因、国内备用线路的入口（GitHub 上没有备用线路时照旧；测试地址不走）": "test_net_route",
          "测试员 11-04 的截图（第 31 赛季 16:9、4:3：新地图、大厅分数、队友名字、经验值页段位）": "test_testers_1104"}

@@ -692,6 +692,9 @@ def main():
             tell_user("Evo 已经在运行了，请看任务栏右下角的托盘图标。")
         return
 
+    import backup_manager
+    backup_manager.recover_interrupted()
+    backup_manager.apply_pending()
     logger = setup_logging()
     log = logger.info
     # 后台线程里没接住的错误也写进日志（打包后没有终端窗口，出了问题只能看日志）
@@ -760,6 +763,14 @@ def main():
                       quit_app=lambda: shut_down("数据文件夹搬好了，正在退出，新位置的 Evo 马上打开……"),
                       relaunch=data_move.relaunch)
 
+    def restart_after_restore():
+        if FROZEN:
+            data_move.relaunch()
+            shut_down("备份准备好了，正在重启恢复……")
+
+    backup_manager.connect(game_running=lambda: game_running(recorder.game_names), hold=recorder.hold,
+                           restart=restart_after_restore if FROZEN else None)
+
     icon.menu = pystray.Menu(
         pystray.MenuItem("打开 Evo", lambda _i, _m: show_window(), default=True),
         pystray.MenuItem(lambda _m: "继续记录" if recorder.paused else "暂停记录", toggle_pause),
@@ -788,6 +799,8 @@ def main():
                 cloud_sync = None
             if cloud_sync is not None:
                 cloud_sync.start(log, stop_update_checker, background=args.background)
+            import webdav_backup
+            webdav_backup.start_scheduler(stop_update_checker, lambda: game_running(recorder.game_names))
             data_move.watch_auto_move(log, stop_update_checker)  # 数据还在 C 盘旧的默认位置：Apex 没开时自动搬到程序旁边
             if not args.background:
                 panel.open(window=not args.no_window)  # 一打开 Evo 就弹出窗口，而不是只在托盘里

@@ -12,7 +12,7 @@
 {% set rec_view = recording_settings() %}
 {% set categories = [("h-general", "常规", true), ("h-cloud", "微信小程序", cloud_view is defined), ("h-sounds", "提示音", true),
                      ("h-rec", "识别", true), ("h-video", "录像", rec_view.shown), ("h-accounts", "账号", accounts),
-                     ("h-data", "数据与隐私", true), ("h-stats", "匿名统计", true), ("h-follow", "电竞", true),
+                     ("h-data", "数据与隐私", true), ("h-webdav", "备份与云同步", true), ("h-stats", "匿名统计", true), ("h-follow", "电竞", true),
                      ("h-update", "更新", true)] %}
 <div class="settings-layout">
   <nav class="settings-nav" aria-label="设置分类">
@@ -453,6 +453,8 @@
 
     {# 匿名统计（telemetry.py）：默认关；打开后每小时发送一次同意以后的对局。只有开关和一句说明
        （2026-10-24 用户决定：不显示发送状态、发送内容的原样，去掉"关闭并删除已发送的数据"） #}
+    {% include "_settings_backup_center.html" %}
+
     <section class="card settings-card" id="stats" aria-labelledby="h-stats">
       <h2 id="h-stats">匿名统计</h2>
       <div class="setting">

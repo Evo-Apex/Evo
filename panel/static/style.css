@@ -736,6 +736,56 @@ table.stats-table { width: 100%; border-collapse: collapse; }
 .setting-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .setting-actions.inline { flex-wrap: nowrap; flex-shrink: 0; }  /* 下拉框和"保存"按钮并排，不换行（说明文字长时让文字那一栏变窄） */
 .setting-actions form, .danger-zone form { margin: 0; }
+.webdav-intro { margin: 0 0 16px; color: var(--muted); font-size: 13px; line-height: 1.7; }
+.webdav-form fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.webdav-form input[type="url"], .webdav-form input[type="text"], .webdav-form input[type="password"] {
+  display: block; width: 100%; min-height: 38px; padding: 8px 12px; font: inherit;
+  color: var(--text); background: var(--select-bg); border: 1px solid var(--input-border); border-radius: 4px; }
+.webdav-form label { margin: 12px 0 6px; }
+.webdav-form p { margin: 6px 0 12px; }
+.webdav-save-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
+.webdav-save-row > .btn { flex-shrink: 0; }
+.webdav-auto { display: flex; align-items: center; gap: 8px; }
+.webdav-actions { margin-top: 12px; }
+.webdav-tools { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--row-border); }
+.webdav-tools form { margin: 0; }
+#webdav-last { overflow-wrap: anywhere; }
+.webdav-restore { margin-top: 12px; }
+.webdav-restore summary { cursor: pointer; color: var(--p3-bg); font-size: 13px; }
+.backup-fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.backup-panel { border: 1px solid var(--row-border); border-radius: 8px; padding: 18px; margin-top: 18px; }
+.backup-panel h3 { margin: 0 0 12px; font-size: 15px; }
+.backup-grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 16px; }
+.backup-grid label, .webdav-form > label { display: block; font-size: 13px; }
+.backup-grid select { display: block; width: 100%; margin-top: 7px; min-height: 38px; }
+.backup-toolbar, .backup-transfer-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.backup-toolbar { justify-content: space-between; margin: 12px 0; }
+.backup-toolbar .setting-desc { flex: 1 1 240px; }
+.backup-list { max-height: 330px; overflow-y: auto; }
+.backup-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px; margin-bottom: 6px; border-radius: 6px; background: var(--select-bg); }
+.backup-meta { min-width: 0; flex: 1 1 220px; }
+.backup-meta strong { display: block; overflow-wrap: anywhere; font-size: 13px; font-weight: 500; }
+.backup-meta span { display: block; color: var(--muted); font-size: 12px; margin-top: 5px; }
+.backup-row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.backup-row-actions form { margin: 0; }
+.backup-row-actions .btn { padding: 5px 8px; font-size: 12px; }
+.backup-empty { text-align: center; padding: 24px 12px; color: var(--muted); font-size: 13px; }
+.backup-transfer { display: grid; gap: 12px; margin: 0; }
+.backup-file { font-size: 13px; display: grid; gap: 8px; max-width: 100%; }
+.backup-file input { width: 100%; min-width: 0; font: inherit; color: var(--muted); }
+.backup-file input::file-selector-button { font: inherit; white-space: nowrap; padding: 8px 16px; margin-right: 12px; border-radius: 4px; border: 1px solid var(--input-border); background: var(--card); color: var(--text); cursor: pointer; }
+.backup-file input::file-selector-button:hover { border-color: var(--muted); }
+.backup-file input:disabled::file-selector-button { opacity: .45; cursor: default; }
+.backup-primary { background: var(--accent); color: var(--text); }
+.backup-notice { border-left: 3px solid var(--accent); padding: 10px 12px; background: var(--select-bg); font-size: 13px; overflow-wrap: anywhere; }
+.backup-dialog { max-width: 480px; width: calc(100% - 40px); border: 1px solid var(--input-border); border-radius: 10px; background: var(--card); color: var(--text); padding: 24px; }
+.backup-dialog::backdrop { background: rgba(0,0,0,.6); }
+.backup-dialog p { font-size: 14px; line-height: 1.8; }
+.backup-dialog input { width: 100%; padding: 8px; margin: 8px 0 18px; }
+.backup-dialog .backup-row-actions { justify-content: flex-end; }
+.webdav-form .webdav-auto { display: flex; }
+.backup-fieldset [hidden], .backup-dialog [hidden] { display: none !important; }
+@container page (max-width: 620px) { .backup-grid { grid-template-columns: minmax(0,1fr); gap: 4px; } .backup-panel { padding: 12px; } }
 /* 设置页"账号"一栏（2026-11-19 改成每个账号一块）：标题（展示名）、局数、用过的名字；改展示名、每个名字属于哪个账号
    收在下面可展开的一栏里（链接样式的 summary 同"更改数据位置…"），展开的内容左边一条竖线，看得出属于上面那个账号 */
 .accounts-intro { margin: -8px 0 4px; line-height: 1.7; }

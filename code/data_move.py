@@ -247,6 +247,17 @@ def _writable(target):
 # ---------- 搬 ----------
 
 def start(chosen, use_existing=False, auto=False):
+    # 与备份共用入口锁：先标记搬家状态，再放行其他备份入口。
+    import webdav_backup
+    with webdav_backup._lock:
+        try:
+            webdav_backup._ensure_idle()
+        except webdav_backup.BackupError as error:
+            raise MoveError(str(error)) from None
+        return _start_locked(chosen, use_existing, auto)
+
+
+def _start_locked(chosen, use_existing=False, auto=False):
     """开始搬（后台线程）。use_existing：那里已经有 Evo 的数据时改用那份（不复制）。auto：自动从 C 盘搬到程序旁边。
     不能搬时抛出 MoveError。"""
     reason = blocker()

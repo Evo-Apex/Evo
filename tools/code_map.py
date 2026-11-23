@@ -62,7 +62,7 @@ SECTIONS = [
     ("底座", None, [
         "code/evo_app.py", "code/paths.py", "code/source_run.py", "code/storage.py", "code/app_settings.py",
         "code/data_move.py", "code/autostart.py", "code/process_info.py", "code/evo_usage.py", "code/icons.py",
-        "code/sounds.py",
+        "code/sounds.py", "code/webdav_backup.py", "code/webdav_sync.py", "code/backup_manager.py",
         "code/webview2.py", "code/update_check.py", "code/update_patch.py", "code/updater.py", "code/mirrorchyan.py",
         "code/telemetry.py", "code/notice_check.py", "code/net_route.py",
         ("server/stats/", "匿名统计的服务器（Cloudflare Worker + D1）：worker.js 收数据、给汇总（按天增量算），schema.sql 建表，"
@@ -101,6 +101,7 @@ SECTIONS = [
         "tools/train_data.py", "tools/train_digits.py", "tools/train_web.py"]),
     ("测试（tests/）", None, [
         "tests/run_all.py", "tests/fake_game.py", "tests/test_*.py",
+        ("tests/requirements-webdav-tls.txt", "仅 TLS 测试使用：生成隔离的本机证书"),
         ("tests/*.csv", "正确答案（整晚重放、数据页、武器）；队友名字的答案只在本机")]),
     ("其他", None, [
         ("assets/", "素材原图：icon/ 图标、legends/ 传奇头像（各自的许可在 LICENSE.txt）、ranks/ 段位、sounds/ 提示音、"
@@ -108,7 +109,7 @@ SECTIONS = [
         ("release/", "发版用：更新内容.txt、使用说明.txt（随安装包）、做图流程.md + 宣传图.json（新功能配图）"),
         ("docs/", "说明文档（什么时候读哪一份见 CLAUDE.md），images/ 是 README 的截图"),
         ("claude/", "进度和待办：progress.md、todo.md、progress_archive.md"),
-        ("README.md", "GitHub 上的介绍"), ("PRIVACY.md", "隐私说明"), ("LICENSE", "AGPL-3.0 许可证"),
+        ("README.md", "GitHub 上的介绍"), ("requirements-webdav.txt", "WebDAV 公共根证书依赖"), ("PRIVACY.md", "隐私说明"), ("LICENSE", "AGPL-3.0 许可证"),
         (".github/CODEOWNERS", "代码负责人：所有 PR 要 AugustHuangMX 批准才能合并进 main"),
         ("CLAUDE.md", "项目说明（给 Claude 的）"), (".gitignore", "不进 git 的文件（每一项为什么不进写在旁边）")]),
 ]

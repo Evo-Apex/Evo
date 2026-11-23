@@ -1,6 +1,6 @@
 """本地面板：用浏览器查看和修正战绩。只在本机（127.0.0.1）运行；会联网的只有"检查更新"和公告（update_check.py、
 notice_check.py，共用一个开关，可以关掉）、你点了才下载的一键更新（updater.py）、你同意了才发送的匿名统计（telemetry.py），
-和你打开"电竞"页（0.6.0、0.6.1 里叫"赛事"）时下载的赛程、查名单里的直播间在不在播（esports_data.py、live_status.py，不发送任何战绩）。
+和你打开"电竞"页（0.6.0、0.6.1 里叫"赛事"）时下载的赛程、查名单里的直播间在不在播（esports_data.py、live_status.py，不发送任何战绩），以及用户配置后发送到自选服务器的 WebDAV 备份（webdav_backup.py）。
 
 运行：python code/panel_app.py                    读正式数据库 data/evo.db
 演示：python code/panel_app.py --db data/demo.db   读伪数据（先运行 python tools/demo_data.py 生成）
@@ -50,6 +50,8 @@ import telemetry
 import update_check
 import updater
 import paths
+import webdav_backup
+import backup_manager
 try:  # 设置页"微信小程序"一栏。小程序的文件只在开发者电脑上，不上传 GitHub、小程序上线前不打进安装包
     import panel_cloud  # （2026-10-24 用户决定）：没有就不显示这一栏
 except ImportError:
@@ -252,12 +254,16 @@ def cache_fonts(response):
 
 @app.before_request
 def security_checks():
+    if request.path == "/settings/backups/import":
+        request.max_content_length = backup_manager.MAX_ARCHIVE + 1024 * 1024
     # 只接受用本机地址访问（防止恶意网页通过"DNS 重绑定"冒充本机来读数据）
     if request.host.split(":")[0] not in ("127.0.0.1", "localhost"):
         abort(403)
     # 修改、删除必须带上口令（防止别的网页偷偷替你提交）
     if request.method == "POST" and request.form.get("token") != app.config["TOKEN"]:
         abort(403)
+    if request.method == "POST" and backup_manager.pending():
+        return jsonify(error="正在等待重启恢复，请先从托盘退出并重新打开 Evo。"), 409
     # 正在搬数据文件夹（data_move.py）：这时改的东西会留在旧位置、被删掉，所以先不让改
     if request.method == "POST" and data_move.busy():
         flash("正在搬数据文件夹，搬完 Evo 会重新打开，到时候再改。", "error")
@@ -1544,6 +1550,7 @@ def settings():
         sounds_on=sounds.enabled(),
         maps_on=map_rotation.enabled(),
         sound=sound_view(),
+        webdav=webdav_backup.view(), backups=backup_manager.view(),
         data_dir=db_path().parent,
         db_file=db_path().name,
         db_size=size_text(db_path().stat().st_size) if db_path().exists() else "0 KB",
@@ -1572,6 +1579,115 @@ def settings():
                    "name_stats": [{**one, "last_text": time_text(one["last"])} for one in a["name_stats"]]}
                   for a in account_view()["accounts"]],
     )
+
+
+@app.post("/settings/webdav/<action>")
+def webdav_action(action):
+    if Path(app.config["DB"]).resolve() != paths.DB_PATH.resolve():
+        return jsonify(error="正在看演示或其他数据库，请切回正式战绩后再设置备份。"), 403
+    try:
+        if action == "save":
+            webdav_backup.save_config(request.form.get("url", ""), request.form.get("username", ""),
+                                      request.form.get("password", ""), request.form.get("automatic") == "1",
+                                      remote_root=request.form.get("remote_root"), profile=request.form.get("profile", "default"),
+                                      provider=request.form.get("provider", "custom"), on_change=request.form.get("on_change") == "1")
+            message = "WebDAV 配置已保存，自动上传按所选开关运行。"
+            if request.accept_mimetypes.best == "application/json":
+                cfg = webdav_backup.view()
+                return jsonify(message=message, configured=cfg["configured"], password_set=cfg["password_set"],
+                               state=webdav_backup.state()), 200, {"Cache-Control": "no-store"}
+        elif action == "clear":
+            webdav_backup.clear_config()
+            message = "WebDAV 连接已清除，自动备份已关闭；远端文件保留。"
+        elif action in ("test", "backup", "download", "force"):
+            webdav_backup.start(action, expected=request.form.get("expected"))
+            if request.accept_mimetypes.best == "application/json":
+                return jsonify(webdav_backup.state()), 202
+            message = "WebDAV 任务已开始，完成结果会显示在备份区域。"
+        else:
+            abort(404)
+    except webdav_backup.BackupError as error:
+        if request.accept_mimetypes.best == "application/json":
+            return jsonify(error=str(error)), 400
+        flash(str(error), "error")
+    except OSError:
+        if request.accept_mimetypes.best == "application/json":
+            return jsonify(error="无法保存配置，请检查数据目录写入权限。"), 400
+        flash("无法保存配置，请检查数据目录写入权限。", "error")
+    else:
+        flash(message, "ok")
+    return redirect(url_for("settings", _anchor="h-webdav"))
+
+
+@app.get("/settings/webdav/status")
+def webdav_status():
+    return jsonify(webdav_backup.state()), 200, {"Cache-Control": "no-store"}
+
+
+@app.get("/settings/backups/history")
+def backup_history():
+    if Path(app.config["DB"]).resolve() != paths.DB_PATH.resolve():
+        abort(403)
+    return render_template("_backup_history.html", backups={"history": backup_manager.history()}), 200, {"Cache-Control": "no-store"}
+
+
+@app.post("/settings/backups/<action>")
+def backup_action(action):
+    if Path(app.config["DB"]).resolve() != paths.DB_PATH.resolve():
+        return jsonify(error="请切回正式战绩后再操作备份。"), 403
+    try:
+        with webdav_backup._lock:
+            webdav_backup._ensure_idle()
+            name = request.form.get("name", "")
+            if action == "open-folder":
+                backup_manager.ROOT.mkdir(parents=True, exist_ok=True)
+                os.startfile(backup_manager.ROOT)
+                message = "已打开本地备份文件夹。"
+            elif action == "preferences":
+                backup_manager.save_preferences(request.form.get("hours"), request.form.get("keep"))
+                message = "本地备份设置已保存。"
+            elif action == "create":
+                path = backup_manager.create_local()
+                message = "本地备份已生成：" + path.name
+            elif action == "import":
+                upload = request.files.get("archive")
+                if not upload:
+                    raise webdav_backup.BackupError("请选择 Evo 导出的 ZIP 备份。")
+                path = backup_manager.import_archive(upload.stream)
+                message = "备份已导入并校验，请在列表中点击恢复。"
+            elif action in ("preview", "export", "delete", "rename"):
+                path = backup_manager.file_path(name)
+                if action == "export":
+                    return send_file(path, as_attachment=True, download_name=path.name)
+                if action == "preview":
+                    import tempfile
+                    import hashlib
+                    with tempfile.TemporaryDirectory(prefix="evo-preview-") as folder:
+                        info = backup_manager.validate(path, folder)
+                    return jsonify(name=name, matches=info["matches"], accounts=info["accounts"],
+                                   created_at=info["created_at"], fingerprint=hashlib.sha256(path.read_bytes()).hexdigest())
+                if action == "delete":
+                    path.unlink()
+                    message = "备份已删除。"
+                else:
+                    label = request.form.get("label", "").strip()
+                    if not label or len(label) > 80 or any(ord(c) < 32 for c in label):
+                        raise webdav_backup.BackupError("备份名称须为 1–80 个字符。")
+                    labels = app_settings.get("backup_labels", {})
+                    labels[name] = label
+                    app_settings.set_value("backup_labels", labels)
+                    message = "备份名称已修改。"
+            elif action == "restore":
+                if request.form.get("confirm") != "1":
+                    raise webdav_backup.BackupError("请先预览并确认恢复。")
+                backup_manager.prepare_restore(name, request.form.get("fingerprint", ""))
+                message = "已安排恢复，Evo 即将重启；源码运行请从托盘退出并重新启动。"
+            else:
+                abort(404)
+        return jsonify(message=message)
+    except (webdav_backup.BackupError, OSError) as error:
+        message = str(error) if isinstance(error, webdav_backup.BackupError) else "操作未完成，请检查磁盘空间和目录权限。"
+        return jsonify(error=message), 400
 
 
 def aspect_view():
