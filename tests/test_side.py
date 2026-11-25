@@ -20,6 +20,7 @@ from pathlib import Path
 from fake_game import report  # 要在项目代码之前导入（设置临时数据文件夹）
 
 import panel_app
+import app_settings
 import storage
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -106,6 +107,25 @@ def main():
     media = re.findall(r"@media \(max-width: (\d+)px\)", css)
     out["内容区按自己的宽度变成一列（@container page）；按窗口宽度的只剩外框留白和看直播页"] = (
         "container: page / inline-size" in css and css.count("@container page") >= 10 and sorted(media) == ["560", "900"])
+    endpoint = "/settings/sidebar"
+    token = panel_app.app.config["TOKEN"]
+    out["自动收起默认关闭，提交必须带正确 token"] = (
+        panel_app.sidebar_auto_seconds() == 0 and client.post(endpoint, data={"seconds": "5"}).status_code == 403)
+    saved = client.post(endpoint, data={"token": token, "seconds": "5"})
+    out["等待秒数保存在本地设置，并在其他页面和设置页恢复"] = (
+        saved.status_code == 302 and app_settings.get("sidebar_auto_seconds") == 5
+        and 'var autoSeconds = 5' in client.get("/matches").get_data(as_text=True)
+        and 'value="5" aria-describedby="sidebar-auto-desc"' in client.get("/settings").get_data(as_text=True))
+    out["拒绝非法秒数，不覆盖已保存的设置"] = all(
+        client.post(endpoint, data={"token": token, "seconds": value}).status_code == 400
+        and app_settings.get("sidebar_auto_seconds") == 5
+        for value in ("-1", "601", "1.5", "abc", ""))
+    client.post(endpoint, data={"token": token, "seconds": "0"})
+    out["0 秒关闭自动收起；旧设置损坏时安全回到关闭"] = panel_app.sidebar_auto_seconds() == 0
+    for invalid in (None, "5", True, -1, 601, {}):
+        app_settings.set_value("sidebar_auto_seconds", invalid)
+        out["0 秒关闭自动收起；旧设置损坏时安全回到关闭"] &= panel_app.sidebar_auto_seconds() == 0
+    app_settings.set_value("sidebar_auto_seconds", 0)
     return report(out)
 
 

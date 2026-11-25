@@ -31,11 +31,11 @@
 """
 
 import atexit
+import ctypes
 import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import threading
 import time
@@ -411,18 +411,47 @@ def delete():
     return redirect(url_for("recordings.page"))
 
 
+def _select_in_explorer(path):
+    shell = ctypes.OleDLL("shell32")
+    ole = ctypes.OleDLL("ole32")
+    ole.CoTaskMemFree.restype = None
+    ole.CoUninitialize.restype = None
+    item = ctypes.c_void_p()
+    ole.CoInitialize(None)
+    try:
+        shell.SHParseDisplayName(ctypes.c_wchar_p(str(path)), None, ctypes.byref(item), 0, None)
+        shell.SHOpenFolderAndSelectItems(item, 0, None, 0)
+    finally:
+        ole.CoTaskMemFree(item)
+        ole.CoUninitialize()
+
+
 @bp.post("/recordings/show")
 def show():
     """在资源管理器里打开录像文件夹；带 v 时选中那个录像。"""
-    path = resolve(request.form.get("v")) if request.form.get("v") else None
-    base = folder()
-    base.mkdir(parents=True, exist_ok=True)
-    if path is not None:
-        subprocess.Popen(["explorer", f"/select,{path}"])
-    else:
-        os.startfile(base)
-    back = request.form.get("next") or url_for("recordings.page")
-    return redirect(back if back.startswith(("/recordings", "/settings")) else url_for("recordings.page"))
+    rid = request.form.get("v")
+    back = request.form.get("next", "")
+    if not back.startswith(("/recordings", "/settings")):
+        back = url_for("recordings.page")
+    try:
+        if not rid:
+            base = folder()
+            base.mkdir(parents=True, exist_ok=True)
+            os.startfile(base)
+        else:
+            path = resolve(rid)
+            if path is None:
+                flash("找不到这个录像（可能已经删掉了）。", "error")
+                return redirect(url_for("recordings.page"))
+            try:
+                _select_in_explorer(path)
+            except OSError:
+                os.startfile(path.parent)
+                flash("已打开录像所在文件夹，但 Windows 未能选中该文件。", "error")
+    except OSError:
+        current_app.logger.warning("无法打开录像位置", exc_info=True)
+        flash("无法打开录像位置，请检查录像保存目录是否可用。", "error")
+    return redirect(back)
 
 
 # ---------- 设置页"录像"一栏 ----------

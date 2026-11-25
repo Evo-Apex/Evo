@@ -30,6 +30,8 @@ import time
 import wave
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest import mock
+from urllib.parse import urlencode
 
 from fake_game import report  # 要在项目代码之前导入（设置临时数据文件夹）
 
@@ -78,6 +80,49 @@ def make_clip(full, name, index, count, start, end, events=(), of_duration=600, 
         "duration": end - start, "match": {"legend": legend}, "events": list(events), "outages": []}, ensure_ascii=False),
         encoding="utf-8")
     return clip
+
+
+def show_checks(client, token, base):
+    base = base / "Evo 录像,备份"
+    video = make_recording(base, NOW, "排位, 高光", 20)
+    rid = f"{video.parent.name}/{video.stem}"
+    back = "/recordings/watch?" + urlencode({"v": rid, "t": 10})
+    form = {"token": token, "v": rid, "next": back}
+    shell, ole = mock.Mock(), mock.Mock()
+    libraries = {"shell32": shell, "ole32": ole}
+    with (mock.patch.object(panel_recordings, "folder", return_value=base),
+          mock.patch("ctypes.OleDLL", side_effect=libraries.__getitem__), mock.patch("subprocess.Popen"),
+          mock.patch("os.startfile") as open_folder):
+        shown = client.post("/recordings/show", data=form)
+        parsed = shell.SHParseDisplayName.call_args
+        selected = shell.SHOpenFolderAndSelectItems.call_args
+        exact = (parsed is not None and selected is not None and parsed.args[0].value == str(video.resolve())
+                 and parsed.args[2]._obj is selected.args[0] and selected.args[1:] == (0, None, 0)
+                 and ole.CoTaskMemFree.call_count == ole.CoUninitialize.call_count == 1 and not open_folder.called
+                 and shown.status_code == 302 and shown.headers["Location"] == back)
+
+        shell.SHOpenFolderAndSelectItems.side_effect = OSError("无法选中")
+        fallback = client.post("/recordings/show", data=form)
+        with client.session_transaction() as state:
+            flash_messages = state.pop("_flashes", [])
+        parent = (open_folder.call_args == mock.call(video.parent.resolve()) and fallback.headers["Location"] == back
+                  and any("未能选中" in msg for _, msg in flash_messages)
+                  and ole.CoTaskMemFree.call_count == ole.CoUninitialize.call_count == 2)
+
+        open_folder.reset_mock()
+        missing = client.post("/recordings/show", data={**form, "v": "2099-01/已删除"}, follow_redirects=True)
+        reports_missing = (missing.request.path == "/recordings" and "找不到这个录像" in missing.get_data(as_text=True)
+                           and not open_folder.called and shell.SHOpenFolderAndSelectItems.call_count == 2)
+
+        root = client.post("/recordings/show", data={"token": token, "next": "/settings#recording"})
+        opens_root = open_folder.call_args == mock.call(base) and root.headers["Location"] == "/settings#recording"
+    shutil.rmtree(base)
+    return {
+        "在资源管理器中显示：完整路径含空格、逗号和中文时，选中路径对应的 MP4": exact,
+        "Windows 无法选中录像时，打开实际所在目录并给出提示": parent,
+        "录像已找不到时，提示并回录像列表": reports_missing,
+        "打开文件夹：未指定录像时打开保存根目录，返回设置页": opens_root,
+    }
 
 
 def clip_checks(client, token, base, conn):
@@ -605,6 +650,7 @@ def checks():
 
     out.update(settings_checks(client, token, base))
     out.update(clip_checks(client, token, base, conn))
+    out.update(show_checks(client, token, base))
 
     r = client.post("/recordings/delete", data={"v": rid})
     still = new.exists()
