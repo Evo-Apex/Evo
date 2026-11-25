@@ -98,14 +98,22 @@ export function pageFromInput(input) {
 // ---------- 整理 ----------
 
 // 选手资料 links 里能直接当直播间用的（2026-11-18 实测 40 人：斗鱼 4、虎牙 1 给的是直播间地址；B站多是个人主页
-// space.bilibili.com、抖音多是 v.douyin.com 短链，那些不是直播间，不用；Twitch 已经能播了，但这里还没加它的链接匹配；
-// YouTube Evo 不支持）
+// space.bilibili.com、抖音多是 v.douyin.com 短链，那些不是直播间，不用；YouTube Evo 不支持）。
+// Twitch（2026-11-25，Evo 能播 Twitch 以后加的）：twitch.tv/登录名，**排在最后**：一个人同时写了国内平台和 Twitch 时
+// 用国内的（Evo 的玩家多在国内，Twitch 在国内上不去）。登录名 4–25 位（Twitch 的登录名最短 4 位）；
+// twitch.tv/videos 这类 Twitch 自己的页面、两段以上的路径（twitch.tv/x/videos、twitch.tv/team/x）不算
 const STREAM_LINKS = [
   ["douyu", /^https?:\/\/(?:www\.)?douyu\.com\/(\d{1,24})\/?(?:[?#].*)?$/i],
   ["huya", /^https?:\/\/(?:www\.)?huya\.com\/(\d{1,24})\/?(?:[?#].*)?$/i],
   ["bilibili", /^https?:\/\/live\.bilibili\.com\/(\d{1,24})\/?(?:[?#].*)?$/i],
   ["douyin", /^https?:\/\/live\.douyin\.com\/([A-Za-z0-9_]{1,24})\/?(?:[?#].*)?$/i],
+  ["twitch", /^https?:\/\/(?:(?:www|m|go)\.)?twitch\.tv\/([A-Za-z0-9_]{4,25})\/?(?:[?#].*)?$/i],
 ];
+// 不分大小写的平台：房间号存小写（同 esports.js 的 normalRoom）
+const LOWER_ROOMS = new Set(["douyin", "twitch"]);
+// twitch.tv/ 后面一段是 Twitch 自己的页面、不是谁的直播间
+const TWITCH_PAGES = new Set(["directory", "videos", "downloads", "jobs", "settings", "subscriptions", "inventory", "drops",
+  "wallet", "search", "store", "turbo", "prime", "friends", "messages", "following", "login", "signup", "about"]);
 
 export function streamsFromLinks(links) {
   const urls = links && typeof links === "object" ? Object.values(links).filter((v) => typeof v === "string") : [];
@@ -113,8 +121,9 @@ export function streamsFromLinks(links) {
   for (const [platform, re] of STREAM_LINKS) {
     for (const url of urls) {
       const found = re.exec(url.trim());
-      const room = found ? (platform === "douyin" ? found[1].toLowerCase() : found[1]) : null;
-      if (room && !out.some((s) => s.platform === platform && s.room === room)) out.push({ platform, room });
+      const room = found ? (LOWER_ROOMS.has(platform) ? found[1].toLowerCase() : found[1]) : null;
+      if (!room || (platform === "twitch" && TWITCH_PAGES.has(room))) continue;
+      if (!out.some((s) => s.platform === platform && s.room === room)) out.push({ platform, room });
     }
   }
   return out;

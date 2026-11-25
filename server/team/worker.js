@@ -23,7 +23,7 @@ import {
   sessionCookie, setRole, validId, whoami,
 } from "./auth.js";
 import { APP_JS, homePage, invitePage, layout, loginPage, membersPage, messagePage, publishBanner } from "./pages.js";
-import { eventsPage, logPage, playersPage, publishPage, roomsPage } from "./pages_esports.js";
+import { eventsPage, fillStreamsPage, logPage, playersPage, publishPage, roomsPage } from "./pages_esports.js";
 import { confirmPage, teamAnchor, teamsPage } from "./pages_teams.js";
 import { NONE, REGIONS, deletePlayers, deleteTeams, saveRegions, teamOverview, teamRegions } from "./teams.js";
 import { importEvents, importPlayers } from "./esports.js";
@@ -33,7 +33,7 @@ import {
 } from "./data.js";
 import { preview, publish, setPlatform, unpublished } from "./publish.js";
 import { liquipediaPage } from "./pages_lp.js";
-import { addFromLiquipedia, eventEntries, teamEntries } from "./lpimport.js";
+import { addFromLiquipedia, eventEntries, fillCandidates, fillStreams, teamEntries } from "./lpimport.js";
 import { logoHref, logoPage, logosPage } from "./pages_logos.js";
 import { LOGO_FILE, autoMatches, library, libraryKey, pickLogo, pickMany, removeLogo, search, suggest, teamLogos, uploadLogo } from "./logos.js";
 import { manualProPage, newProPage, proHref, proPage, prosPage, teamProfilePage } from "./pages_pros.js";
@@ -129,6 +129,10 @@ function okText(params) {
     return `从 Liquipedia 加进来 ${count("added")} 位${count("pending") ? `（${count("pending")} 位直播间待填：在下面补上，或者平台选"不直播"）` : ""}`
       + `${count("skipped") ? `，跳过 ${count("skipped")} 位（选手库里已经有了）` : ""}`;
   }
+  if (params.get("ok") === "filled") {
+    return `补上了 ${count("n")} 位的直播间：下次发布 Evo 就能看到`
+      + `${count("skipped") ? `（${count("skipped")} 位在你打开页面以后被人改过，没盖掉）` : ""}`;
+  }
   if (params.get("ok") === "logos") {
     return `配好了 ${count("n")} 支队的队徽：下次发布 Evo 就能看到`
       + `${count("skipped") ? `（${count("skipped")} 支在你打开页面以后别人已经配了，没盖掉）` : ""}`;
@@ -215,6 +219,28 @@ export async function handle(request, env, now = Date.now()) {
   }
   const notFound = () => respond(messagePage("没有这个页面", "地址可能写错了。", me), { status: 404 });
   const readOnly = () => respond(messagePage("不能改", "只读的身份只能看，要改请找管理员。", me), { status: 403 });
+
+  // ---------- 从 Liquipedia 补直播间（11-25；规矩在 lpimport.js） ----------
+  if (path === "/players/fill-streams") {
+    const show = async (options = {}, status = 200) => {
+      const [items, idx, changed] = await Promise.all([players(bucket), index(bucket), unpublished(env, now)]);
+      return respond(fillStreamsPage(me, { found: fillCandidates(items, idx), banner: publishBanner(me, changed, now), ...options }), { status });
+    };
+    if (method === "GET") return show({ ok: okText(url.searchParams) });
+    if (!can(me, "edit")) return readOnly();
+    try {
+      const form = await readFields(request);
+      const picks = Object.keys(form).filter((k) => /^use_\d+$/.test(k) && form[k] === "1").map((k) => {
+        const i = k.slice(4);
+        return { id: form[`id_${i}`] ?? "", platform: form[`platform_${i}`] ?? "", room: form[`room_${i}`] ?? "" };
+      });
+      const result = await fillStreams(bucket, me, picks, now);
+      return redirect(`/players/fill-streams?ok=filled&n=${result.done}&skipped=${result.skipped}`);
+    } catch (error) {
+      if (!(error instanceof Refuse)) throw error;
+      return show({ error: error.message }, 400);
+    }
+  }
 
   // ---------- 一键配队徽（11-19） ----------
   if (path === "/logos" || path === "/logos/bulk") {

@@ -196,7 +196,7 @@ export function playersPage(me, items, { now, error = "", ok = "", draft = null,
   return layout({ title: "选手库", me, current: "players", banner, body: `
 <div class="stack"><h1>选手库</h1>
   <p class="muted">${items.length} 位选手、${allTeams.size} 支队。一支队几个人都行（不开直播的平台选"不直播"），一个选手只能在一支队。点平台和房间号能打开直播间核对。</p>
-  ${items.length ? `<p class="links">${editable ? `<a href="/players/rooms${view ? `?view=${view}` : ""}">在一张表里批量修改 ›</a>` : ""}<a href="/teams">战队和赛区 ›</a>${editable ? '<a href="/logos">一键配队徽 ›</a>' : ""}</p>` : ""}</div>
+  ${items.length ? `<p class="links">${editable ? `<a href="/players/rooms${view ? `?view=${view}` : ""}">在一张表里批量修改 ›</a>` : ""}<a href="/teams">战队和赛区 ›</a>${editable ? '<a href="/logos">一键配队徽 ›</a><a href="/players/fill-streams">从 Liquipedia 补直播间 ›</a>' : ""}</p>` : ""}</div>
 ${notes({ error, ok })}
 ${noteList("error", `发布前要改好（${problems.length} 处）：`, problems)}
 ${pendingRooms(items)}
@@ -206,6 +206,41 @@ ${items.length ? regionTabs(region, Object.fromEntries([...new Set([...allTeams.
 ${teams.size > 1 ? `<nav class="team-index" aria-label="跳到某一队">${[...teams.keys()].map((t) => `<a href="#${teamAnchor(t)}">${escape(t)}</a>`).join("")}</nav>` : ""}
 ${sections || `<p class="muted">${items.length ? "这个赛区还没有队。" : "还没有选手。"}</p>`}
 ${editable ? importBox("/players/import", PLAYER_COLUMNS, "Kite\t星火电竞\t斗鱼\t520013\t", draftTable) : ""}` });
+}
+
+// ---------- 从 Liquipedia 补直播间（2026-11-25，规矩在 lpimport.js 的 fillCandidates / fillStreams；照一键配队徽的页面） ----------
+// found：fillCandidates 的结果
+export function fillStreamsPage(me, { found, error = "", ok = "", banner = "" }) {
+  const editable = can(me, "edit");
+  const room = (s) => `<a href="${escape(roomUrl(s.platform, s.room))}" target="_blank" rel="noopener noreferrer">${escape(PLATFORMS[s.platform]?.name ?? s.platform)} ${escape(s.room)}</a>`;
+  const row = (m, i) => `<li class="match-row">
+    <label class="match-pick"><input type="checkbox" name="use_${i}" value="1" checked${editable ? "" : " disabled"}>
+      <span class="match-team">${escape(m.name)}</span></label>
+    <input type="hidden" name="id_${i}" value="${escape(m.id)}"><input type="hidden" name="platform_${i}" value="${escape(m.platform)}">
+    <input type="hidden" name="room_${i}" value="${escape(m.room)}">
+    <span class="match-logo"><span class="small muted">${escape(m.team)}</span>
+      <span class="badge">${m.was === NO_STREAM ? "原来不直播" : "原来待填"}</span></span>
+    ${room(m)}
+  </li>`;
+  const rest = [found.noLink ? `${found.noLink} 位 Liquipedia 资料里没有能用的直播间` : "",
+    found.noData ? `${found.noData} 位的 Liquipedia 资料还没抓到` : "",
+    found.noPage ? `${found.noPage} 位没填 Liquipedia 页面名` : ""].filter(Boolean);
+  return layout({ title: "从 Liquipedia 补直播间", me, current: "players", banner, body: `
+<p class="small"><a href="/players">‹ 选手库</a></p>
+<div class="stack"><h1>从 Liquipedia 补直播间</h1>
+  <p class="muted">选手库里直播间待填、不直播的选手，按 Liquipedia 资料里写的直播间地址补上（几个平台都有时用国内的，Twitch 排最后）。
+    都已经勾上，点房间号能打开直播间核对，不对的取消勾。点"用勾上的这些"一次补好，下次发布 Evo 就能看到。</p>
+  <p class="small muted">Liquipedia 的资料每天抓一轮；刚能认出新平台（2026-11-25 加了 Twitch）要等下一轮抓完，在 <a href="/liquipedia">Liquipedia</a> 页点"现在更新"能让下一轮马上开始。</p></div>
+${notes({ error, ok })}
+${found.matches.length ? `<form class="card stack" method="post" action="/players/fill-streams">
+  <h2>能补的（${found.matches.length} 位）</h2>
+  <ul class="list match-list">${found.matches.map(row).join("")}</ul>
+  ${editable ? `<div class="bulk-bar"><button class="btn btn-primary" type="submit">用勾上的这些</button></div>` : ""}
+</form>` : `<p class="muted">没有能补的了。</p>`}
+${found.taken.length ? `<details class="card fold"><summary class="fold-head"><span>直播间被别人占着的（${found.taken.length} 位）</span></summary>
+  <div><p class="small muted">Liquipedia 上写的直播间，选手库里已经是别人的了（或者这一页上排在前面的人也写了它）。是谁的弄错了，去选手库里改。</p>
+  <ul class="plain">${found.taken.map((t) => `<li>${escape(t.name)}（${escape(t.team)}）：${room(t)} 是「${escape(t.owner)}」的</li>`).join("")}</ul></div></details>` : ""}
+${rest.length ? `<p class="small muted">另外：${escape(rest.join("，"))}。</p>` : ""}` });
 }
 
 // ---------- 赛程 ----------
