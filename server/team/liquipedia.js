@@ -98,7 +98,8 @@ export function pageFromInput(input) {
 // ---------- 整理 ----------
 
 // 选手资料 links 里能直接当直播间用的（2026-11-18 实测 40 人：斗鱼 4、虎牙 1 给的是直播间地址；B站多是个人主页
-// space.bilibili.com、抖音多是 v.douyin.com 短链，那些不是直播间，不用；Twitch、YouTube Evo 不支持）
+// space.bilibili.com、抖音多是 v.douyin.com 短链，那些不是直播间，不用；Twitch 已经能播了，但这里还没加它的链接匹配；
+// YouTube Evo 不支持）
 const STREAM_LINKS = [
   ["douyu", /^https?:\/\/(?:www\.)?douyu\.com\/(\d{1,24})\/?(?:[?#].*)?$/i],
   ["huya", /^https?:\/\/(?:www\.)?huya\.com\/(\d{1,24})\/?(?:[?#].*)?$/i],

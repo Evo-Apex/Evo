@@ -5,8 +5,9 @@
    左边：赛事名、播放器、正在看的选手和三个去平台的按钮、同队视角；右边：队伍和选手，在播的可以点。
    名单先由服务器画好（都不能点）；谁在播由下面的脚本每 60 秒问一次 /esports/<赛事>/status，再把在播的点亮。
    能在窗口里播的：配置里有嵌入播放器的平台（B站，放它官方的播放器），和用 Evo 自己的播放器的平台（斗鱼：
-   mpegts.js 连面板的本机中转；抖音：mpegts.js 直接连抖音的视频服务器。控制条是自己的：播放 / 暂停、刷新、音量、
-   清晰度、全屏；平时藏着，鼠标在画面上动一下才出来）。别的显示"去 X 看"的退路。
+   mpegts.js 连面板的本机中转；抖音：mpegts.js 直接连抖音的视频服务器；Twitch：和登录以后的 B站一样，后台取 HLS、
+   经本机中转接成一条 TS 流。控制条是自己的：播放 / 暂停、刷新、音量、清晰度、全屏；平时藏着，鼠标在画面上动一下才出来）。
+   别的显示"去 X 看"的退路。
    B站不登录最高 720p：选手那一行有"登录 B站看原画"，扫码登录以后 B站也改用 Evo 自己的播放器（经过本机中转）。
    主播名单也用这一页（solo，2026-11-19；panel_esports.py 的 /esports/streamers）：左边一样，右边不分队伍，只有一列主播、
    在播的排前面；没有"同队视角"；页面上的"选手"都写成"主播"（noun） #}
@@ -135,6 +136,9 @@
       </div>
       {% endif %}
     </div>
+    {# 名单里有 Twitch 的选手、Twitch 又连不上时显示这一行（2026-11-25；连上了就藏起来，脚本管）。
+       Twitch 在中国大陆上不去，玩家要自己开着能访问国外网站的工具，Evo 不提供代理 #}
+    <p class="watch-offline-note" id="watch-unreachable" role="status" hidden>连不上 Twitch：在国内要能访问国外网站</p>
     <div class="watch-list" id="watch-list">
       {# 我关注的（2026-11-20 用户要的）：名单里有关注的人时，最上面多这一组，里面的几行是脚本从下面抄上来的
          （renderFav；关注、取消以后马上跟着变）。不算进"在播 N / M"，筛选"在播的"时没人在播就收起来 #}
@@ -249,6 +253,7 @@
               grid: false,  // 4 格时：是不是四宫格（2×2，四格一样大）；不是就是四屏（一大三小）
               mainOpen: false,  // 主舞台那一栏里没开播的几路：点开了没有
               playFailed: {},  // Evo 自己的播放器：哪些人没播成
+              unreachable: {},  // 哪些人是连不上平台（现在只有 Twitch：在国内要能访问国外网站）
               accounts: data.accounts || {}};  // 要登录才能看高画质的平台：{平台: {logged_in, name}}
     function saved(key, fallback) { try { var v = localStorage.getItem(key); return v === null ? fallback : v; } catch (e) { return fallback; } }
     function save(key, value) { try { localStorage.setItem(key, value); } catch (e) {} }
@@ -308,8 +313,12 @@
           btn.setAttribute("aria-pressed", id === st.sel ? "true" : "false");
           setAvatar(btn.querySelector("[data-avatar]"), p, live ? s : null);
           var time = btn.querySelector("[data-time]");
-          time.textContent = p.off ? p.platform_name : !st.status ? "…" : live ? clock(s.since) : s && s.state === "error" ? "没查到" : "未开播";
-          if (live) time.title = spoken(s.since); else time.removeAttribute("title");
+          // Twitch 连不上（在国内要能访问国外网站）：写"连不上"（悬停说明），别的没查到照旧写"没查到"
+          time.textContent = p.off ? p.platform_name : !st.status ? "…" : live ? clock(s.since)
+            : s && s.unreachable ? "连不上" : s && s.state === "error" ? "没查到" : "未开播";
+          if (s && s.unreachable) time.title = "Twitch 在国内要能访问国外网站";
+          else if (live) time.title = spoken(s.since);
+          else time.removeAttribute("title");
         });
         var main = box.hasAttribute("data-main"), fav = box.hasAttribute("data-fav");  // "我关注的"一组是抄上来的，不重复数
         if (!main && !fav) liveTotal += n;
@@ -363,6 +372,11 @@
         if (!box.hidden && !fav) shown++;
       });
       $("watch-none").hidden = shown > 0;
+      // Twitch 连不上（网络层失败：在国内要能访问国外网站）：名单上方说一句；连上了就藏起来
+      $("watch-unreachable").hidden = !data.players.some(function (x) {
+        var s = info(x.id);
+        return x.platform === "twitch" && !!s && !!s.unreachable;
+      });
       var count = $("watch-count");
       count.textContent = "";
       if (st.status) count.append("在播 ", el("span", "num watch-count-live", liveTotal), " / ", el("span", "num", data.players.filter(function (x) { return !x.main && !x.off; }).length), data.solo ? " 位" : " 人");
@@ -495,6 +509,15 @@
       if (text) box.append(el("p", "watch-msg-text", text));
       return box;
     }
+    // 连不上 Twitch（在国内要能访问国外网站）时这一格显示的（文字是用户 2026-11-25 定的）和一个"重试"按钮：onRetry(按钮)
+    function twitchDown(onRetry) {
+      var box = message("啊哦，看起来你不具备看Twitch的“环境”，重试一下吧", "你知道怎么做的，对吧");
+      var again = el("button", "watch-primary", "重试");
+      again.type = "button";
+      again.addEventListener("click", function () { onRetry(again); });
+      box.append(again);
+      return box;
+    }
 
     // 一格里显示什么。只在"该显示什么"变了的时候重画：每分钟刷新状态时不能把正在播的画面重新加载一遍
     function renderCell(cell) {
@@ -535,8 +558,14 @@
           return anyLive ? message("在右边选一位在播的" + noun) : message("现在没有" + noun + "在播", "有" + noun + "开播以后，右边的名单会亮起来，最慢 2 分钟。");
         };
       } else if (!live) {
-        key = "offline:" + p.id + ":" + (s ? s.state : "");
+        key = "offline:" + p.id + ":" + (s ? s.state : "") + (s && s.unreachable ? ":down" : "");
         build = function () {
+          // 连不上 Twitch（在国内要能访问国外网站）：不说"没查到"。文字是用户 2026-11-25 定的；点"重试"马上重查
+          if (s && s.unreachable) return twitchDown(function (btn) {
+            btn.disabled = true;
+            btn.textContent = "正在重试…";
+            refresh(true);
+          });
           return message(p.name + (s && s.state === "error" ? " 的直播间没查到" : " 现在没有开播"),
                          anyLive ? "在右边选一位在播的" + noun + "。" : "有" + noun + "开播以后，右边的名单会亮起来，最慢 2 分钟。");
         };
@@ -557,8 +586,10 @@
         build = function () { return buildPlayer(p, cell); };
       } else {
         // 退路：平台开关关了、这个平台还不能在窗口里播，或者刚才没播成。按钮用玩家自己的默认浏览器打开直播间（2026-11-17 用户定的）
-        key = "fallback:" + p.id + ":" + (st.playFailed[p.id] ? "failed" : "");
+        key = "fallback:" + p.id + ":" + (st.playFailed[p.id] ? "failed" : "") + (st.unreachable[p.id] ? ":down" : "");
         build = function () {
+          // 连不上 Twitch（在国内要能访问国外网站）：和名单上连不上时一样的说法，点"重试"再要一次地址
+          if (st.unreachable[p.id]) return twitchDown(function () { delete st.playFailed[p.id]; delete st.unreachable[p.id]; render(); });
           var box = message(p.platform_name + "的直播暂时不能在 Evo 里直接播放", "可以去" + p.platform_name + "看 " + p.name + " 的直播，会用你的浏览器打开。");
           var link = el("a", "watch-primary", "打开" + p.platform_name + "直播间");
           link.href = p.url;
@@ -568,7 +599,7 @@
           if (st.playFailed[p.id]) {  // 刚才试过没播成（没取到地址、连不上视频服务器……）：可以再试一次
             var retry = el("button", "watch-secondary", "再试一次");
             retry.type = "button";
-            retry.addEventListener("click", function () { delete st.playFailed[p.id]; render(); });
+            retry.addEventListener("click", function () { delete st.playFailed[p.id]; delete st.unreachable[p.id]; render(); });
             box.append(retry);
           }
           return box;
@@ -602,7 +633,7 @@
       setAvatar($("watch-avatar"), p, live ? s : null);
       $("watch-name").textContent = p.name;
       $("watch-team").textContent = p.team;
-      $("watch-live-title").textContent = live ? (s.title || "") : "未开播";
+      $("watch-live-title").textContent = live ? (s.title || "") : s && s.unreachable ? "连不上" : "未开播";
       $("watch-room-dot").className = "es-dot pf-" + p.platform;
       $("watch-room-text").textContent = canEmbed(p) && !canPlay(p) ? p.platform_name + "官方播放器 · 房间 " + p.room : p.platform_name + " 房间 " + p.room;
       [["watch-danmu", "发弹幕"], ["watch-gift", "送礼物"], ["watch-go", "看直播"]].forEach(function (pair) {
@@ -634,7 +665,8 @@
       }).map(function (m) {
         if (!isLive(m.id)) {
           var off = el("span", "watch-mate dis");
-          off.append(m.name, el("span", "watch-mate-sub", m.off ? m.platform_name : st.status ? "未开播" : "…"));
+          var ms = info(m.id);
+          off.append(m.name, el("span", "watch-mate-sub", m.off ? m.platform_name : !st.status ? "…" : ms && ms.unreachable ? "连不上" : "未开播"));
           return off;
         }
         var btn = el("button", "watch-mate" + (m.id === p.id ? " on" : ""));
@@ -818,6 +850,30 @@
       clearTimeout(live.retry);
       try { if (live.socket) { live.socket.onclose = null; live.socket.close(); } } catch (e) {}
     }
+    // Twitch：IRC over WebSocket，匿名只读（2026-11-25，协议照 PureLive 读来的）。一帧可能有好几行（按 \r\n 分）：
+    // PING 要回 PONG；含 " PRIVMSG #" 的是一句聊天，文字在 " PRIVMSG #频道 :" 后面；开头 @ 到第一个空格是标签，
+    // color=#RRGGBB 是名字的颜色；/me 的文字包在 \x01ACTION …\x01 里，去掉包装。表情就显示成文字，不加载表情图
+    function twitchRead(cell, chat, socket, text) {
+      String(text || "").split(/\r?\n/).forEach(function (line) {
+        if (line.indexOf("PING") === 0) {
+          try { socket.send(line.replace("PING", "PONG").trim()); } catch (e) {}
+          return;
+        }
+        var msg = line.indexOf(" PRIVMSG #");
+        if (msg < 0) return;
+        var at = line.indexOf(" :", msg);
+        if (at < 0) return;
+        var content = line.slice(at + 2), color = "";
+        if (line.charAt(0) === "@") {
+          line.slice(1, line.indexOf(" ")).split(";").forEach(function (tag) {
+            if (tag.indexOf("color=") === 0 && /^#[0-9A-Fa-f]{6}$/.test(tag.slice(6))) color = tag.slice(6);
+          });
+        }
+        var action = /^\x01ACTION ([\s\S]*?)\x01?$/.exec(content);
+        if (action) content = action[1];
+        if (content) shoot(cell, content, color);
+      });
+    }
     // 这一格现在该不该连着弹幕：开关开着、是 Evo 自己的播放器在播、（多屏时）是选中的那一格
     function syncDanmaku(cell) {
       var p = cell.id ? byId[cell.id] : null;
@@ -844,15 +900,22 @@
           return;
         }
         var bili = found.platform === "bilibili";
+        var twitch = found.platform === "twitch";
         // B站给了几个弹幕服务器：连不上就换下一个
         var socket = chat.socket = new WebSocket(bili ? found.urls[chat.tries % found.urls.length] : found.url);
-        socket.binaryType = "arraybuffer";
+        if (!twitch) socket.binaryType = "arraybuffer";  // Twitch 收到的是文本帧
         socket.onopen = function () {
           if (bili) {
             // 游客身份（uid 0）；protover 2 = 压过的通知用 zlib（浏览器自己能解），不要 3（brotli）
             socket.send(biliPacket(7, JSON.stringify({ uid: 0, roomid: found.room, protover: 2, buvid: found.buvid, platform: "web", type: 2, key: found.token })));
             socket.send(biliPacket(2, ""));
             chat.beat = setInterval(function () { if (socket.readyState === 1) socket.send(biliPacket(2, "")); }, 30000);
+          } else if (twitch) {
+            // 匿名只读：不要登录，justinfan 是一个随机游客编号；每行一帧
+            socket.send("CAP REQ :twitch.tv/tags");
+            socket.send("PASS SCHMOOPIIE");
+            socket.send("NICK justinfan" + (1000 + Math.floor(Math.random() * 99000)));
+            socket.send("JOIN #" + found.room);
           } else {
             socket.send(douyuPacket("type@=loginreq/roomid@=" + found.room + "/"));
             socket.send(douyuPacket("type@=joingroup/rid@=" + found.room + "/gid@=-9999/"));
@@ -860,7 +923,13 @@
           }
         };
         socket.onmessage = function (e) {
-          if (cell.chat !== chat || !(e.data instanceof ArrayBuffer)) return;
+          if (cell.chat !== chat) return;
+          if (typeof e.data === "string") {  // Twitch：一帧文本里可能有好几行
+            chat.tries = 0;
+            twitchRead(cell, chat, socket, e.data);
+            return;
+          }
+          if (!(e.data instanceof ArrayBuffer)) return;
           chat.tries = 0;  // 收到过东西才算连上了
           if (bili) biliRead(cell, chat, new Uint8Array(e.data), 0); else douyuRead(cell, e.data);
         };
@@ -872,7 +941,7 @@
       }
       fetch(p.danmaku + "?s=" + cell.index, { cache: "no-store" }).then(function (r) { return r.json(); })
         .then(function (found) {
-          if (found.ok && (found.platform === "douyu" || found.feed || (found.platform === "bilibili" && found.urls && found.urls.length))) connect(found);
+          if (found.ok && (found.platform === "douyu" || found.platform === "twitch" || found.feed || (found.platform === "bilibili" && found.urls && found.urls.length))) connect(found);
         })
         .catch(function () {});
     }
@@ -1110,9 +1179,11 @@
       cell.video = video;
       cell.showSound = showSound;
       var seq = cell.seq;  // 这一格这次开播的编号：换了人、换了清晰度以后，晚到的回包和事件都不算数
-      function failed(detail) {
+      function failed(detail, reason) {
         if (seq !== cell.seq) return;
         st.playFailed[p.id] = failText(detail);
+        // 连不上平台（现在只有 Twitch：在国内要能访问国外网站）：退路里单独说明白
+        if (reason === "unreachable") st.unreachable[p.id] = true; else delete st.unreachable[p.id];
         // 告诉后台一声，写进运行记录（玩家反馈"播不了"时好查）
         post(data.failed_url + encodeURIComponent(p.id), { reason: String(detail || "") }).catch(function () {});
         render();
@@ -1159,7 +1230,12 @@
         return fetch(p.play + "?s=" + cell.index + (wanted ? "&q=" + encodeURIComponent(wanted) : ""), { cache: "no-store" }).then(function (r) { return r.json(); });
       }).then(function (info) {
         if (seq !== cell.seq) return;
-        if (!info.ok) throw new Error(info.detail || "没取到播放地址");
+        if (!info.ok) {
+          var problem = new Error(info.detail || "没取到播放地址");
+          problem.reason = info.reason;  // "unreachable"：连不上平台（Twitch 在国内要能访问国外网站）
+          throw problem;
+        }
+        delete st.unreachable[p.id];  // 这次取到地址了
         fillMenu(info);
         // 斗鱼、抖音是 FLV；B站经本机中转来的是接好的 TS 流（info.kind 是 "mpegts"）
         var player = mpegts.createPlayer({ type: info.kind === "mpegts" ? "mpegts" : "flv", isLive: true, url: info.stream },
@@ -1179,7 +1255,7 @@
         player.attachMediaElement(video);
         player.load();
         tryPlay();
-      }).catch(function (e) { failed(e && e.message); });
+      }).catch(function (e) { failed(e && e.message, e && e.reason); });
       return box;
     }
 
@@ -1338,9 +1414,10 @@
       if (pick) select(pick.id);
     }
 
-    function refresh() {
+    // retry：Twitch 连不上时玩家点了"重试"（2026-11-25）：服务器忘掉刚才的"连不上"、马上重查，不用 50 秒内查过的
+    function refresh(retry) {
       st.lastTry = Date.now();
-      fetch(data.status_url, { cache: "no-store" })
+      fetch(data.status_url + (retry ? (data.status_url.indexOf("?") < 0 ? "?" : "&") + "retry=1" : ""), { cache: "no-store" })
         .then(function (r) {
           if (r.status === 404) { location.reload(); throw new Error("gone"); }  // 这场赛事（主播名单）从赛程里拿掉了：回电竞页
           return r.json();
@@ -1349,10 +1426,15 @@
           st.status = r.players;
           st.platforms = r.platforms;
           st.failed = false;
+          if (retry) redrawDown();
           autoSelect();
           render();
         })
-        .catch(function () { st.failed = true; render(); });
+        .catch(function () { st.failed = true; if (retry) redrawDown(); render(); });
+    }
+    // 重试完了：显示"连不上 Twitch"的那几格重画（还是连不上时"正在重试…"的按钮要变回来），正在播的格子不动
+    function redrawDown() {
+      cells.forEach(function (c) { if (/:down$/.test(c.key || "")) c.key = null; });
     }
     function checkGame() {
       fetch(data.game_url, { cache: "no-store" })
@@ -1415,7 +1497,7 @@
       showSide(on);
     });
     showSide(saved("evo-watch-side", "1") !== "0");
-    $("watch-failed-retry").addEventListener("click", function () { if (st.sel) { delete st.playFailed[st.sel]; render(); } });
+    $("watch-failed-retry").addEventListener("click", function () { if (st.sel) { delete st.playFailed[st.sel]; delete st.unreachable[st.sel]; render(); } });
     $("watch-apex-keep").addEventListener("click", function () { st.apexOk = true; renderApex(); });
     $("watch-apex-close").addEventListener("click", function () { st.closed = true; render(); });
     document.addEventListener("visibilitychange", tick);

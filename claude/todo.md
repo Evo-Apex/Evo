@@ -126,6 +126,11 @@
     - 选手资料不放进 `esports.json`（赛事页开着时每 10 分钟下载一次，要小）：另放一个文件，用 players 里已有的 `liquipedia` 字段（页面名）对上；Evo 要显示时找那个窗口
     - 动 `code/esports_data.py`、`tools/esports.py` 之前先跟那个窗口说
 
+- [ ] **看直播加 Twitch**（2026-11-25 用户要的，定了用 Evo 自己的播放器、不用 Twitch 官方嵌入播放器；照 PureLive。做法见 `docs/面板.md`、`docs/底座.md` 的 Twitch 一节）：
+  - 第 1 步 Evo 这边做完、提交了（查开播、播放、弹幕、连不上时的提示和"重试"、旧版本兼容写法，`server/team/esports.js` 生成和读取也跟着改了）。连不上时那一格的话是用户定的（"啊哦，看起来你不具备看Twitch的“环境”，重试一下吧" / "你知道怎么做的，对吧"）。**还要用户自己看一眼**：在看直播页播一路 Twitch，画面有没有花屏（Claude 的浏览器面板截到过马赛克，查下来中转的数据完好、浏览器报 0 帧解坏，像是面板在后台时截图截到半解码的帧，没在真的 Evo 窗口里看过）
+  - 第 2 步（没做）：协作网页 `team.evotracker.cn` 从 Liquipedia 选手资料里认 Twitch 链接（`server/team/liquipedia.js` 的 `STREAM_LINKS`、`lpimport.js`），一键给国外选手填上 Twitch 直播间（名单 245 人里 218 人现在是"不直播"）；部署 Worker 前先问用户
+  - 发版前：协作网页先部署（它生成的 `esports.json` 才会写 Twitch 的兼容写法），官网隐私页随下一版上传；主舞台可以加 ALGS 官方的 Twitch（`playapex`）
+
 ## 一、先做
 
 - [ ] **笔记本上识别慢、提示音很久才响（1diot、0010）**：原因和数据见 `docs/识别经验.md`"笔记本上识别慢"；0.4.2 已经带上两项改动。等两人更新后照常打（电源模式别改）、发日志，`python tools/log_speed.py 旧日志 新日志` 比（旧日志在 `bugs_test/`）。没变快：说明不是省电限速，再考虑读结算画面时临时提到普通优先级（要再问用户）

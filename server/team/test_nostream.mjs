@@ -44,7 +44,7 @@ check("两个不直播的不算重复（平台写中文也认）", r.location ==
 r = await add("甲四", "别的队", "none", "123");
 check("不直播还写了房间号 → 提示要空着", r.status === 400 && r.text.includes("不直播的选手「房间号」要空着（现在是「123」）"));
 r = await add("甲四", "别的队", "快手", "1");
-check("不认识的平台 → 提示里有不直播", r.status === 400 && r.text.includes("只能是 斗鱼 / 虎牙 / B站 / 抖音 / 不直播"));
+check("不认识的平台 → 提示里有不直播", r.status === 400 && r.text.includes("只能是 斗鱼 / 虎牙 / B站 / 抖音 / Twitch / 不直播"));
 r = await editor.get("/players");
 check("列表上标着不直播", r.text.includes('<span class="badge">不直播</span>') && !r.text.includes("安静队」有"));
 check("改动记录写着不直播", env.DATA.json("log.json").items.some((x) => x.text === "添加选手 甲二（安静队，不直播）"));
@@ -68,7 +68,7 @@ check("粘贴导入：不直播写了房间号 → 说第几行", r.status === 4
 await editor.post("/events/add", [["name", "训练赛"], ["type", "训练赛"], ["stage", ""], ["start", "2026-11-18T19:00"], ["end", "2026-11-18T22:00"],
   ["teams", "安静队"], ["teams", "吵闹队"], ["main_platform", "none"], ["main_room", "1"], ["main_name", "官方"]]);
 r = await editor.post("/events/import", { table: "杯赛\t杯赛\t\t2026-11-19 19:00\t2026-11-19 22:00\t安静队\t不直播 1 某某" });
-check("主舞台写不直播 → 不认识", r.status === 400 && r.text.includes("主舞台的平台「不直播」不认识，只能写 斗鱼 / 虎牙 / B站 / 抖音"));
+check("主舞台写不直播 → 不认识", r.status === 400 && r.text.includes("主舞台的平台「不直播」不认识，只能写 斗鱼 / 虎牙 / B站 / 抖音 / Twitch"));
 r = await editor.post("/events/add", [["name", "训练赛"], ["type", "训练赛"], ["stage", ""], ["start", "2026-11-18T19:00"], ["end", "2026-11-18T22:00"],
   ["teams", "安静队"], ["teams", "吵闹队"]]);
 

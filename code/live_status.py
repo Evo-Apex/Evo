@@ -1,19 +1,24 @@
-"""查直播间现在在不在播（斗鱼、虎牙、B站、抖音的公开网页接口，不登录）：赛事页、看直播页和 tools/esports.py --check 用。
+"""查直播间现在在不在播（斗鱼、虎牙、B站、抖音、Twitch 的公开网页接口，不登录）：赛事页、看直播页和 tools/esports.py --check 用。
 
 只查交给它的房间（esports.json 名单里的），只在页面开着或开发者运行 --check 时查；同时最多 CONFIG["parallel"] 个请求
-（用户定的：要克制），B站一次查多个房间。请求和浏览器打开直播间时发的一样（带浏览器的 User-Agent，不带 Evo 的版本号、
-不发送任何战绩或电脑信息）；抖音给的游客 Cookie（ttwid）只留在内存里，不存盘，不登录任何平台账号。
+（用户定的：要克制），配置里写了 batch_size 的平台一次查多个房间（B站 30、Twitch 100），别的平台一个一个问。
+请求和浏览器打开直播间时发的一样（带浏览器的 User-Agent，不带 Evo 的版本号、不发送任何战绩或电脑信息）；
+抖音给的游客 Cookie（ttwid）只留在内存里，不存盘，不登录任何平台账号。
 接口地址、请求头都在 config/watch.json（平台改了接口先改那里）；怎么查是照 DTV（https://github.com/chen-zeong/DTV ）
 的流程写的，每个平台回什么见 watch.json 里的说明。抖音 2026-11-20 起照 PureLive（https://github.com/wzgrx/PureLive ）
-先问 room/web/enter（省流量），问不到再走 DTV 那两步。
+先问 room/web/enter（省流量），问不到再走 DTV 那两步。Twitch（2026-11-25）也照 PureLive：GraphQL 的 users(logins:)
+一次查多个，匿名，不登录。Twitch 在中国大陆上不去：连不上（网络层失败，不是 HTTP 4xx/5xx）时这一批结果都标着
+"unreachable"，之后 unreachable_retry_seconds 秒以内再查 Twitch 不发请求、马上回同样的"连不上"（只记在内存里）。
 
 每个房间的结果：{"state": "live" 在播 / "offline" 没开播 / "missing" 房间不存在 / "error" 没查到,
                 "loop": 是不是在轮播（算没开播）, "name": 平台上的主播名, "title": 直播标题, "avatar": 头像地址,
-                "since": 开播时刻（time.time() 那种秒数，不知道是 None）, "error": 没查到的原因}
-房间号只接受数字；抖音还可以写主播的抖音号（字母、数字、下划线，config/watch.json 里的 room_pattern）：
-esports.json 被人改了也只能让 Evo 去问这几个平台的直播间，不能让它连别的地址（room_ok()）。
+                "since": 开播时刻（time.time() 那种秒数，不知道是 None）, "error": 没查到的原因,
+                "unreachable": 是不是连不上这个平台（只有 Twitch 会，别的平台一直是 False）}
+房间号只接受数字；抖音还可以写主播的抖音号、Twitch 写登录名（字母、数字、下划线，
+config/watch.json 里的 room_pattern）：esports.json 被人改了也只能让 Evo 去问这几个平台的直播间，不能让它连别的地址（room_ok()）。
 
 用法：python code/live_status.py 斗鱼 9999 B站 6   → 查这几个房间并打印
+      python code/live_status.py Twitch imperialhal__   → 查 Twitch（在中国大陆要能访问国外网站）
 """
 
 import gzip
@@ -39,22 +44,36 @@ NAMES = {key: platform["name"] for key, platform in PLATFORMS.items()}  # {"douy
 LIVE, OFFLINE, MISSING, ERROR = "live", "offline", "missing", "error"
 BEIJING = timezone(timedelta(hours=8))
 ROOM_RE = re.compile(r"\d{1,24}")  # 房间号：只能是数字（配置里没写 room_pattern 的平台）
-# 每个平台的房间号可以怎么写：抖音还收字母和下划线（主播的抖音号），拼不出 / ? # 这些能指到别处的字符
+# 每个平台的房间号可以怎么写：抖音还收字母和下划线（主播的抖音号），Twitch 收登录名（字母、数字、下划线），
+# 拼不出 / ? # 这些能指到别处的字符
 ROOM_RES = {key: re.compile(platform.get("room_pattern") or ROOM_RE.pattern) for key, platform in PLATFORMS.items()}
 DOUYIN_ROOM_ID = re.compile(rb'\\"roomId\\":\\"(\d{10,})\\"|"roomId":"(\d{10,})"|\\"room_id\\":\\"(\d{10,})\\"')
 MAX_BYTES = 1_000_000
 CHUNK = 64 * 1024
+TWITCH_QUERY = ("query($l:[String!]){users(logins:$l){login displayName profileImageURL(width:70) "
+                "stream{createdAt title type}}}")  # 一次查多个登录名（最多 100 个）
+_device = [""]  # Twitch 的 Device-ID：32 位小写十六进制，进程里生成一次，只在内存里（不存盘、不交给页面）
+_twitch_down = [0.0]  # 这个时刻以前不再问 Twitch（刚才连不上），直接回"连不上"
 
 _cookies = http.cookiejar.CookieJar()  # 只给抖音用：游客 Cookie，只在内存里
 _cookie_opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_cookies))
 
 
-class StatusError(Exception):
-    """这次没查到（连不上、被拦、回的格式不认识）。status：HTTP 状态码（没连上是 None）。"""
+def device_id():
+    """Twitch 的 Device-ID：32 位小写十六进制随机数，进程里只生成一次，只在内存里。"""
+    if not _device[0]:
+        _device[0] = secrets.token_hex(16)
+    return _device[0]
 
-    def __init__(self, message, status=None):
+
+class StatusError(Exception):
+    """这次没查到（连不上、被拦、回的格式不认识）。status：HTTP 状态码（没连上是 None）；
+    body：平台回的那段（只有 HTTP 错误时有，最多两千字节；Twitch 的 403 靠它说明原因）。"""
+
+    def __init__(self, message, status=None, body=b""):
         super().__init__(message)
         self.status = status
+        self.body = body
 
 
 def room_ok(platform, room):
@@ -69,10 +88,10 @@ def room_url(platform, room):
     return PLATFORMS[platform]["room_url"].format(room=room)
 
 
-def result(state, name="", title="", avatar="", since=None, loop=False, error=""):
+def result(state, name="", title="", avatar="", since=None, loop=False, error="", unreachable=False):
     since = since if isinstance(since, (int, float)) and since > 0 else None
     return {"state": state, "loop": bool(loop), "name": str(name or ""), "title": str(title or ""),
-            "avatar": str(avatar or ""), "since": since, "error": error}
+            "avatar": str(avatar or ""), "since": since, "error": error, "unreachable": bool(unreachable)}
 
 
 def _int(value):
@@ -98,13 +117,15 @@ def _json(body, who):
 
 # ---------- 联网 ----------
 
-def fetch(url, headers, limit=MAX_BYTES, until=None, cookies=False):
-    """下载一个地址，最多读 limit 字节；给了 until（正则）时读到它出现就停（抖音的直播间网页有 1 MB，
-    要的房间号在前面）。连不上、状态码不是 200 抛 StatusError。测试时整个换掉。"""
-    request = urllib.request.Request(url, headers=headers)
+def fetch(url, headers, limit=MAX_BYTES, until=None, cookies=False, data=None, timeout=None):
+    """下载一个地址（data 是字节时 POST 这些字节，不给是 GET），最多读 limit 字节；给了 until（正则）时读到它出现就停
+    （抖音的直播间网页有 1 MB，要的房间号在前面）。timeout 没给时用 CONFIG["timeout"]（Twitch 自己在配置里写了 5 秒）。
+    连不上、状态码不是 200 抛 StatusError。测试时整个换掉。"""
+    request = urllib.request.Request(url, data=data, headers=headers)
     opener = _cookie_opener.open if cookies else urllib.request.urlopen
+    wait = CONFIG["timeout"] if timeout is None else timeout
     try:
-        with opener(request, timeout=CONFIG["timeout"]) as response:
+        with opener(request, timeout=wait) as response:
             body = b""
             while len(body) < limit:
                 chunk = response.read(min(CHUNK, limit - len(body)))
@@ -116,7 +137,11 @@ def fetch(url, headers, limit=MAX_BYTES, until=None, cookies=False):
                     break
             return body
     except urllib.error.HTTPError as e:
-        raise StatusError(f"HTTP {e.code}", e.code) from e
+        try:
+            detail = e.read(2000)
+        except OSError:
+            detail = b""
+        raise StatusError(f"HTTP {e.code}", e.code, detail) from e
     except OSError as e:
         raise StatusError(f"连不上（{e}）") from e
 
@@ -128,6 +153,9 @@ def _headers(platform, room=None):
                "Referer": cfg.get("referer") or cfg["room_url"].format(room=room)}
     if cfg.get("origin"):
         headers["Origin"] = cfg["origin"]
+    if cfg.get("client_id"):  # Twitch：网页版自己的 client id，加一个只在内存里的设备号
+        headers["Client-ID"] = cfg["client_id"]
+        headers["Device-ID"] = device_id()
     return headers
 
 
@@ -247,6 +275,44 @@ def parse_douyin_room(body):
     return result(LIVE if live else OFFLINE, name=owner.get("nickname"), title=room.get("title"),
                   avatar=avatars[0] if isinstance(avatars, list) and avatars else "",
                   since=_int(room.get("create_time")) if live else None)
+
+
+def _utc(text):
+    """"2026-11-25T14:20:13Z"（Twitch 的 createdAt，UTC）→ time.time() 那种秒数；写错了是 None。"""
+    try:
+        moment = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return moment.timestamp() if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc).timestamp()
+
+
+def parse_twitch(body, rooms):
+    """Twitch 的 users(logins:) 回包 → {房间号: 结果}，按交进来的房间号原样回（大小写都认，对的时候按小写的 login）。
+    stream 是 null = 没开播；type 是 "live" = 在播（createdAt 是开播时刻），"rerun" = 重播（当轮播，算没开播）。
+    回包里的人的 login 没有对应的房间就是"房间不存在"；回包里有 errors 当作这次没查到。"""
+    data = _json(body, "Twitch")
+    if data.get("errors"):
+        raise StatusError("Twitch 回了错误")
+    users = _dict(data.get("data")).get("users")
+    if not isinstance(users, list):
+        raise StatusError("Twitch 回的不是房间数据")
+    found = {}
+    for user in users:
+        if isinstance(user, dict) and user.get("login"):
+            found[str(user["login"]).lower()] = user
+    out = {}
+    for room in rooms:
+        user = found.get(str(room).lower())
+        if user is None:
+            out[room] = result(MISSING)
+            continue
+        stream = _dict(user.get("stream"))
+        kind = str(stream.get("type") or "").lower()
+        live = kind == "live"
+        out[room] = result(LIVE if live else OFFLINE, loop=kind == "rerun",
+                           name=user.get("displayName"), title=stream.get("title"),
+                           avatar=user.get("profileImageURL"), since=_utc(stream.get("createdAt")) if live else None)
+    return out
 
 
 # ---------- 每个平台：查（rooms → {房间号: 结果}） ----------
@@ -377,12 +443,57 @@ def _douyin_room(inner, get):
     return parse_douyin_room(douyin_info(inner, get))
 
 
-CHECKERS = {"douyu": check_douyu, "huya": check_huya, "bilibili": check_bilibili, "douyin": check_douyin}
+def retry_twitch():
+    """玩家在看直播页点了"重试"（2026-11-25 用户要的）：忘掉刚才的"连不上"，下一次查开播马上再问 Twitch。"""
+    _twitch_down[0] = 0.0
+
+
+def check_twitch(rooms, get=None):
+    """一次查多个登录名（users(logins:)，最多 batch_size 个）。登录名转小写、结果按交进来的房间号原样回。
+    连不上（StatusError 没有 HTTP 状态码：网络层失败）时还没查到的房间带 unreachable，之后 unreachable_retry_seconds 秒
+    以内不再发请求、马上回同样的"连不上"（只记在内存里）。HTTP 4xx/5xx 不算连不上，照旧抛出去；
+    回包里有 errors、回的不认识算"这次没查到"（state 是 error，不算连不上、不冷却）。"""
+    cfg, get = PLATFORMS["twitch"], get or fetch
+    if time.time() < _twitch_down[0]:
+        return {room: result(ERROR, error="连不上 Twitch", unreachable=True) for room in rooms}
+    size = max(1, _int(cfg.get("batch_size")) or 100)
+    wait = cfg.get("timeout") or CONFIG["timeout"]
+    headers = {**_headers("twitch"), "Content-Type": "text/plain;charset=UTF-8"}
+    out = {}
+    for start in range(0, len(rooms), size):
+        batch = rooms[start:start + size]
+        try:
+            body = get(cfg["gql_url"], headers, data=twitch_body(batch), timeout=wait)
+        except StatusError as e:
+            if e.status is not None:
+                raise  # 平台回了 HTTP 错误：照旧当这次没查到（不算连不上）
+            _twitch_down[0] = time.time() + (_int(cfg.get("unreachable_retry_seconds")) or 120)
+            return {**out, **{room: result(ERROR, error=f"连不上 Twitch（{e}）", unreachable=True)
+                              for room in rooms if room not in out}}
+        except OSError as e:  # 测试时换掉的联网函数可能直接抛 OSError
+            _twitch_down[0] = time.time() + (_int(cfg.get("unreachable_retry_seconds")) or 120)
+            return {**out, **{room: result(ERROR, error=f"连不上 Twitch（{e}）", unreachable=True)
+                              for room in rooms if room not in out}}
+        try:
+            out.update(parse_twitch(body, batch))
+        except StatusError as e:  # Twitch 回了错误、回的不认识：这一批当作没查到，不算连不上
+            out.update({room: result(ERROR, error=str(e)) for room in batch})
+    return out
+
+
+def twitch_body(rooms):
+    """Twitch 的 GraphQL 请求正文（查开播状态）：一次问这些登录名（转小写）。"""
+    return json.dumps({"query": TWITCH_QUERY, "variables": {"l": [str(room).lower() for room in rooms]}}).encode("utf-8")
+
+
+CHECKERS = {"douyu": check_douyu, "huya": check_huya, "bilibili": check_bilibili, "douyin": check_douyin,
+            "twitch": check_twitch}
 
 
 def query(players, get=None):
     """查一批选手的直播间。players：[{"id", "platform", "room"}, ...]（esports.json 里的选手就是这样）。
     返回 {选手 id: 结果}。同一个房间只查一次；某个平台出错只影响它自己的房间（state 是 "error"）。
+    config 里写了 batch_size 的平台一次查多个房间（B站 30、Twitch 100），别的平台一个一个问。
     get：测试时换掉联网的那个函数。"""
     get = get or fetch
     wanted = {}  # (平台, 房间号) → 结果
@@ -393,10 +504,13 @@ def query(players, get=None):
         else:
             wanted.setdefault(key, None)
     todo = sorted(key for key, value in wanted.items() if value is None)
-    size = max(1, _int(PLATFORMS["bilibili"].get("batch_size")) or 30)
-    bili = [room for platform, room in todo if platform == "bilibili"]
-    jobs = [("bilibili", bili[i:i + size]) for i in range(0, len(bili), size)]
-    jobs += [(platform, [room]) for platform, room in todo if platform != "bilibili"]
+    jobs = []  # [(平台, [房间号, ...]), ...]：todo 按平台、房间号排好序，一次查多个的平台把相邻的房间号攒成一批
+    for platform, room in todo:
+        size = _int(PLATFORMS[platform].get("batch_size"))
+        if size > 0 and jobs and jobs[-1][0] == platform and len(jobs[-1][1]) < size:
+            jobs[-1][1].append(room)
+        else:
+            jobs.append((platform, [room]))
 
     def run(job):
         platform, rooms = job
@@ -424,6 +538,8 @@ def describe(found):
         return ("在轮播（不算在播）" if found["loop"] else "没开播") + (f"：{found['name']}" if found["name"] else "")
     if found["state"] == MISSING:
         return "房间不存在"
+    if found.get("unreachable"):
+        return "连不上 Twitch（在国内要能访问国外网站）"
     return f"没查到（{found['error']}）"
 
 

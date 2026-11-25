@@ -9,9 +9,12 @@
   签名用的两个 key（nav 接口给）和 buvid（spi 接口给）在内存里记 6 小时。选手库里写的可能是短号，先换成真实房间号
 - 抖音：页面连不了（连接时要带网页脚本带不了的 Cookie 和来源页），由托盘里的 Evo 去连、再转给页面（douyin_chat.py，
   面板的 /esports/danmaku-feed/<选手>）。这里只回 {"platform": "douyin"}，转弹幕的地址由面板填
+- Twitch（2026-11-25）：官方的聊天服务器（IRC over WebSocket，地址在 config/watch.json 的 twitch 的 danmaku_url），
+  匿名只读：页面直接连，发 PASS SCHMOOPIIE、NICK justinfan…、JOIN #频道（不登录，只看不发）。这里回平台、地址和小写的登录名，
+  不用联网、不用口令；表情就显示成文字（如 KEKW），不加载表情图
 - 虎牙还没做（Evo 里本来就不播虎牙）：返回 None，页面就不显示弹幕的开关
 
-用法：python code/danmaku.py 房间号 [douyu / bilibili]   → 打印页面会拿到的东西（B站的口令不打印）
+用法：python code/danmaku.py 房间号 [douyu / bilibili / twitch]   → 打印页面会拿到的东西（B站的口令不打印）
 """
 
 import hashlib
@@ -133,7 +136,15 @@ def douyin(room, get=None):
     return {"platform": "douyin"}
 
 
-SOURCES = {"douyu": douyu, "bilibili": bilibili, "douyin": douyin}
+def twitch(room, get=None):
+    """Twitch：官方的聊天服务器，匿名只读，页面直接连（不联网、不用口令）。房间号是登录名，转小写。"""
+    url = live_status.PLATFORMS["twitch"].get("danmaku_url")
+    if not isinstance(url, str) or not url.startswith("wss://"):
+        return None
+    return {"platform": "twitch", "url": url, "room": str(room).lower()}
+
+
+SOURCES = {"douyu": douyu, "bilibili": bilibili, "douyin": douyin, "twitch": twitch}
 
 
 def supported(platform):

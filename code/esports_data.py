@@ -14,10 +14,16 @@ esports.json 由 tools/esports.py 从两张 CSV 表生成、上传：
      "teams": {"星火电竞": {"logo": "3fa9c1d2e4b5a6f7.webp"}},
      "streamers": [{"id": "douyu-123456", "name": "某主播", "platform": "douyu", "room": "123456"}]}
 - platforms：远程开关。某个平台是 false，Evo 就不在窗口里播它，改成"去 X 看"。没写的平台当作 true
-- players：id 只有字母、数字、- 和 _；platform 是 config/watch.json 里的四个之一；room 只能是数字，
+- players：id 只有字母、数字、- 和 _；platform 是 config/watch.json 里的五个之一；room 只能是数字，
   **不开直播的选手**（2026-11-18 用户定的：也录进名单，页面上照样列在队里、标"不直播"）：platform 写 "none"、room 是空的，
   id 是 "none-" + 选手名（UTF-8）的 sha256 前 12 位。不查他的开播状态，不算进"在播 N / M 人"（streaming()）。
-  抖音的还可以是主播的抖音号（字母、数字、下划线；live_status.room_ok()）
+  抖音的还可以是主播的抖音号（字母、数字、下划线；live_status.room_ok()），Twitch 写登录名（字母、数字、下划线，最长 25 位）。
+  **Twitch 的选手多认一种写法**（2026-11-25 旧版本兼容）：0.7.2 及以前的 Evo 不认识 twitch，会把这样的选手从队伍里
+  整个丢掉（platform 不认识、room_ok() 不过）。所以公布的文件里 Twitch 的选手写成
+  {"platform": "none", "room": "", "stream": {"platform": "twitch", "room": "imperialhal__"}, ...}：
+  旧版本照旧当"不直播"，新版本看到 stream 里的平台认识、房间号对，就当这位选手在 Twitch 播（主舞台、主播不用这样写）。
+  stream 写得不对（平台不认识、房间号不对、不是对象）就忽略它，照旧"不直播"。平台**直接**写 "twitch" 也认。
+  Twitch 的登录名不分大小写：读的时候存成小写（id 不变）
 - events：type 是 联赛 / 训练赛 / 杯赛；start、end 带时区，end 晚于 start；teams 是队名，对应 players 里的 team。
   main（可以没有）：这场赛事的**主舞台**，就是播导播视角的直播间（官方直播、解说、看比赛的主播的直播间），照写的顺序，
   最多 24 路（2026-11-21 用户定的，原来 8 路：赛管填满了；0.6.x 和更早的 Evo 只读前 8 路，官方直播要写在前面）：
@@ -31,13 +37,13 @@ esports.json 由 tools/esports.py 从两张 CSV 表生成、上传：
 - **电竞页的"主播"一块**（streamers()，2026-11-19 用户定的："默认职业选手就是主播""只放我们有上传直播链接的选手"）：
   players 里所有开直播的选手（发布时要放选手库里的全部选手，不只是这几场赛事用到的队），后面接 streamers 里另外加的
 - streamers（可以没有；现在没人写它，留着以后加不是职业选手的主播）：另外加的主播，和赛事、队伍无关，
-  照写的顺序（页面上在播的排前面）。每位和主舞台的一路一样写：id、name、platform（四个平台之一，不能是 "none"）、room。
+  照写的顺序（页面上在播的排前面）。每位和主舞台的一路一样写：id、name、platform（五个平台之一，不能是 "none"）、room。
   最多 40 位，其中抖音最多 10 位（抖音没开播的房间每查一次要开约 1 MB 的网页），多出来的去掉。
   主播可以同时是 players 里的选手（同一个平台和房间）；id 和某位选手、某路主舞台一样，房间却不一样的那一位去掉
   （播放时按 id 找直播间，find_stream()）。0.6.0、0.6.1 不认识这一项，会忽略
 - "进行中 / 即将开始 / 已结束"按 start、end 和电脑上的时间算（status()），不用手动改
 格式不对的那一条去掉，不影响别的；整个文件不对（不是 JSON、version 不认识）当作没读到。
-存储桶的密钥就算泄露，别人也只能改赛程上的字和房间号（只会去问这四个平台的直播间），不能让 Evo 打开别的网站。
+存储桶的密钥就算泄露，别人也只能改赛程上的字和房间号（只会去问这五个平台的直播间），不能让 Evo 打开别的网站。
 
 测试时用环境变量 EVO_ESPORTS_URL 换地址：可以是测试文件 https://dl.evotracker.cn/esports_test.json ，
 也可以是本机的一个文件（如 E:\\Evo\\dist\\esports.json，tools/esports.py --out 生成的）。
@@ -112,14 +118,24 @@ def clean_player(raw):
     if platform == NO_STREAM:  # 不开直播的选手：没有房间
         if room != "":
             return None
+        # 旧版本的 Evo（0.7.2 及以前）不认识 twitch，会把这样的选手从队伍里整个丢掉，所以 Twitch 的选手写成
+        # platform "none"、房间号放在 stream 里（旧版本照旧当"不直播"）。stream 写得不对就忽略它、照旧不直播
+        stream = raw.get("stream")
+        if isinstance(stream, dict):
+            candidate = stream.get("platform")
+            if isinstance(candidate, str) and candidate != NO_STREAM and live_status.room_ok(candidate, stream.get("room")):
+                platform, room = candidate, stream["room"]
     elif not isinstance(platform, str) or not live_status.room_ok(platform, room):
         return None
+    if platform == "twitch":  # 登录名不分大小写：存成小写（id 不变）
+        room = room.lower()
     return {"id": pid, "name": name, "team": team, "platform": platform, "room": room,
             "liquipedia": _text(raw.get("liquipedia"), 100, required=False) or ""}
 
 
 def clean_stream(raw):
-    """主舞台的一路直播间：{"id", "name", "platform", "room"}；写得不对返回 None。"""
+    """主舞台的一路直播间：{"id", "name", "platform", "room"}；写得不对返回 None。
+    Twitch 的登录名不分大小写：存成小写（id 不变，和 clean_player 一样）。"""
     if not isinstance(raw, dict):
         return None
     pid, name, platform, room = raw.get("id"), _text(raw.get("name"), 40), raw.get("platform"), raw.get("room")
@@ -127,7 +143,7 @@ def clean_stream(raw):
         return None
     if not isinstance(platform, str) or not live_status.room_ok(platform, room):
         return None
-    return {"id": pid, "name": name, "platform": platform, "room": room}
+    return {"id": pid, "name": name, "platform": platform, "room": room.lower() if platform == "twitch" else room}
 
 
 def clean_event(raw):

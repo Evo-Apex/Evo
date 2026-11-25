@@ -1,5 +1,5 @@
-"""在 Evo 窗口里播斗鱼、抖音（flv_relay.py、watch_douyu.py、watch_douyin.py、panel_esports.py 的 /esports/play 和
-/esports/stream）。不联网：视频是这里拼出来的假 FLV，斗鱼、抖音的接口换成假的。
+"""在 Evo 窗口里播斗鱼、抖音、Twitch（flv_relay.py、watch_douyu.py、watch_douyin.py、watch_twitch.py、hls_relay.py、
+panel_esports.py 的 /esports/play 和 /esports/stream）。不联网：视频是这里拼出来的假 FLV，斗鱼、抖音、Twitch 的接口换成假的。
 
 - FLV 拆标签：不管数据怎么分块，拆出来的都一样；不是 FLV 报错；认得出 H.264、H.265（老式和新式两种写法）
 - 中转：第一段原样转；不是 H.264 一开始就报错、什么都不发；
@@ -12,9 +12,14 @@
 - 抖音取地址：各档从好到差、叫什么（抖音菜单上的名字加分辨率或码率）、只有声音的不算；没选过时要码率不超过上限的
   最好一档；选了按选的；地址换成 https；只要 H.264，一档都没有、没开播说明原因；记着这一场的内部房间号就只问一个请求，
   没记着、记着的那一场结束了就开直播间网页
+- Twitch 取地址（照 PureLive）：先要播放令牌（固定的查询编号、登录名转小写），再问 usher（只要 H.264）；
+  多档目录从好到差、名字用 NAME（原画写"1080p60（原画）"）、不要 audio_only；默认给原画、选了按选的、选的那档没有给最好的；
+  令牌是 null、usher 404 / 403（地区限制、订阅专属）、PersistedQueryNotFound 的报错；连不上带 unreachable；
+  remember / reuse；中转第一次用刚取到的地址、地址重取时还是同一档
 - 面板的接口：问清晰度和播放地址（不是能播的选手回 404、平台开关关了回 404、取不到说明原因）；
   中转要带口令；一次只播一路，开新的一路上一路就停；不是 H.264 回 502；
-  抖音：给页面的是抖音自己的视频地址（页面直接连），不中转
+  抖音：给页面的是抖音自己的视频地址（页面直接连），不中转；Twitch：回清晰度和中转地址，连不上回 reason "unreachable"
+  （播放地址和中转的 502 都算）
 
 运行：python tests/test_watch_play.py
 """
@@ -22,6 +27,7 @@
 import hashlib
 import json
 import tempfile
+import urllib.parse
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -29,12 +35,14 @@ from fake_game import report  # 要在项目代码之前导入（设置临时数
 
 import esports_data
 import flv_relay
+import hls_relay
 import panel_app
 import panel_esports
 import live_status
 import storage
 import watch_douyin
 import watch_douyu
+import watch_twitch
 from flv_relay import AUDIO, SCRIPT, VIDEO
 
 HEADER = b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00"
@@ -449,6 +457,121 @@ def douyin_checks(out):
     out["抖音：打印地址时不带口令"] = "secret" not in watch_douyin.mask(found["url"]) and "douyincdn.com" in watch_douyin.mask(found["url"])
 
 
+TWITCH_TOKEN = {"data": {"streamPlaybackAccessToken": {"value": "VALUE+token=", "signature": "SIG/sig="}}}
+TWITCH_URLS = {"chunked": "https://video-weaver.arn02.hls.ttvnw.net/v1/playlist/source.m3u8",
+               "720p60": "https://video-weaver.arn02.hls.ttvnw.net/v1/playlist/720.m3u8",
+               "480p30": "https://video-weaver.arn02.hls.ttvnw.net/v1/playlist/480.m3u8",
+               "160p30": "https://video-weaver.arn02.hls.ttvnw.net/v1/playlist/160.m3u8"}
+# 多档目录（照 2026-11-25 实测的样子）：故意不按清晰度排，最后一档只有声音
+TWITCH_MASTER = """#EXTM3U
+#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="chunked",NAME="1080p60 (source)",DEFAULT=YES
+#EXT-X-STREAM-INF:BANDWIDTH=8269706,RESOLUTION=1920x1080,CODECS="avc1.64002A,mp4a.40.2",VIDEO="chunked",FRAME-RATE=60.000
+{chunked}
+#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="480p30",NAME="480p"
+#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=852x480,CODECS="avc1.4d401e,mp4a.40.2",VIDEO="480p30",FRAME-RATE=30.000
+{480p30}
+#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="160p30",NAME="160p"
+#EXT-X-STREAM-INF:BANDWIDTH=230000,RESOLUTION=284x160,CODECS="avc1.42c00b,mp4a.40.2",VIDEO="160p30",FRAME-RATE=30.000
+{160p30}
+#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="720p60",NAME="720p60"
+#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2",VIDEO="720p60",FRAME-RATE=60.000
+{720p60}
+#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="audio_only",NAME="audio only"
+#EXT-X-STREAM-INF:BANDWIDTH=160000,CODECS="mp4a.40.2",VIDEO="audio_only"
+https://video-weaver.arn02.hls.ttvnw.net/v1/playlist/audio.m3u8
+""".format(**TWITCH_URLS)
+
+
+def twitch_ask(calls=None, token=None, playlist=None):
+    """假的 Twitch 联网：要令牌回 TWITCH_TOKEN，问 usher 回多档目录。token / playlist 换成回包或要抛的错。"""
+    def ask(url, headers, limit=None, until=None, cookies=False, data=None, timeout=None):
+        if calls is not None:
+            calls.append({"url": url, "headers": headers, "data": data, "timeout": timeout})
+        if url == live_status.PLATFORMS["twitch"]["gql_url"]:
+            if isinstance(token, Exception):
+                raise token
+            return token if token is not None else json.dumps(TWITCH_TOKEN).encode("utf-8")
+        if isinstance(playlist, Exception):
+            raise playlist
+        return playlist if playlist is not None else TWITCH_MASTER.encode("utf-8")
+    return ask
+
+
+def twitch_checks(out):
+    watch_twitch._recent.clear()
+    calls = []
+    ask = twitch_ask(calls)
+    found = watch_twitch.resolve("ImperialHal__", None, ask=ask)
+    out["Twitch：各档从好到差（原画最前），名字用目录里的 NAME（原画去掉 (source)、加\"原画\"），不要 audio_only"] = (
+        [(q["id"], q["name"]) for q in found["qualities"]] == [
+            ("chunked", "1080p60（原画）"), ("720p60", "720p60"), ("480p30", "480p"), ("160p30", "160p")]
+        and found["rate"] == "chunked" and found["kind"] == "mpegts" and found["ttl"] is None
+        and found["hls"] == [TWITCH_URLS["chunked"]])
+    token_call, playlist_call = calls[0], calls[1]
+    sent = json.loads(token_call["data"].decode("utf-8"))
+    parts = urllib.parse.urlsplit(playlist_call["url"])
+    params = urllib.parse.parse_qs(parts.query)
+    out["Twitch 取地址：先要播放令牌（PlaybackAccessToken，固定的查询编号，登录名转小写），再问 usher（只要 H.264、带令牌）"] = (
+        token_call["url"] == live_status.PLATFORMS["twitch"]["gql_url"]
+        and sent["operationName"] == "PlaybackAccessToken" and sent["variables"]["login"] == "imperialhal__"
+        and sent["variables"]["isLive"] is True
+        and sent["extensions"]["persistedQuery"]["sha256Hash"] == live_status.PLATFORMS["twitch"]["token_hash"]
+        and parts.path.endswith("/imperialhal__.m3u8") and params["sig"] == ["SIG/sig="]
+        and params["token"] == ["VALUE+token="] and params["supported_codecs"] == ["h264"]
+        and params["allow_source"] == ["true"] and token_call["timeout"] == 5)
+
+    problems = []
+    for ask_one in (
+        twitch_ask(token=json.dumps({"data": {"streamPlaybackAccessToken": None}}).encode("utf-8")),
+        twitch_ask(token=json.dumps({"errors": [{"message": "PersistedQueryNotFound"}]}).encode("utf-8")),
+        twitch_ask(playlist=live_status.StatusError("HTTP 404", 404)),
+        twitch_ask(playlist=live_status.StatusError("HTTP 403", 403, b'{"error":"geo","error_code":"GEOBLOCK"}')),
+        twitch_ask(playlist=live_status.StatusError("HTTP 403", 403, b'{"error":"subscription required"}')),
+        twitch_ask(token=live_status.StatusError("连不上（超时）")),
+        twitch_ask(token=OSError("timed out")),
+    ):
+        try:
+            watch_twitch.resolve("imperialhal__", None, ask=ask_one)
+            problems.append(None)
+        except watch_twitch.TwitchPlayError as e:
+            problems.append((str(e), e.unreachable))
+    out["Twitch：令牌是 null（没这个频道）、PersistedQueryNotFound（改了接口）、usher 404（没开播）、403（地区限制、订阅专属）"
+        "都说明白；连不上带 unreachable"] = (
+        "没有这个直播间" in problems[0][0] and "改了接口" in problems[1][0] and "没开播" in problems[2][0]
+        and "地区" in problems[3][0] and "订阅" in problems[4][0]
+        and "连不上" in problems[5][0] and problems[5][1] is True and problems[6][1] is True)
+    out["Twitch：没选过给原画（chunked）；选了按选的；选的那一档这次没有就给最好的一档"] = (
+        found["rate"] == "chunked"
+        and watch_twitch.resolve("imperialhal__", "720p60", ask=ask)["hls"] == [TWITCH_URLS["720p60"]]
+        and watch_twitch.resolve("imperialhal__", "720p60", ask=ask)["rate"] == "720p60"
+        and watch_twitch.resolve("imperialhal__", "1080p60", ask=ask)["rate"] == "chunked")
+
+    watch_twitch._recent.clear()
+    fresh = watch_twitch.resolve("ImperialHal__", "720p60", ask=ask)
+    count = len(calls)
+    watch_twitch.remember("ImperialHal__", "720p60", fresh, now=1000.0)
+    kept = watch_twitch.resolve("imperialhal__", "720p60", ask=ask, now=1010.0, reuse=True)
+    quiet = len(calls) - count
+    watch_twitch.resolve("imperialhal__", "720p60", ask=ask, now=1794900000, reuse=True)
+    out["Twitch：页面刚问过清晰度，紧接着开播：直接用刚取的地址（只用一次），不再问一遍"] = (
+        kept is fresh and quiet == 0 and len(calls) - count >= 2)
+
+    real_fetch = live_status.fetch
+    live_status.fetch = ask
+    try:
+        watch_twitch._recent.clear()
+        relay = watch_twitch.open_relay("ImperialHal__", "720p60")
+        first = relay.open_playlist()
+        again = relay.open_playlist()
+    finally:
+        live_status.fetch = real_fetch
+    out["Twitch 的中转：给 HlsRelay 的是选的那一档；地址要重取时还是同一档（按 id 对）"] = (
+        isinstance(relay, hls_relay.HlsRelay) and first == [TWITCH_URLS["720p60"]]
+        and again == [TWITCH_URLS["720p60"]] and relay.fetch is watch_twitch.fetch)
+    out["Twitch：打印地址时不带令牌（只留主机和路径开头）"] = (
+        "VALUE+token=" not in watch_twitch.mask(TWITCH_URLS["chunked"]) and "ttvnw.net" in watch_twitch.mask(TWITCH_URLS["chunked"]))
+
+
 class FakeDouyin:
     """假的"抖音取地址"：页面直接连平台的那一种（DIRECT）。"""
     DIRECT = True
@@ -607,14 +730,97 @@ def panel_checks(out):
         panel_esports._playing.clear()
 
 
+class FakeTwitch:
+    """假的"Twitch 取地址"：经本机中转（有 open_relay）的那一种。"""
+
+    def __init__(self):
+        self.asked, self.fail, self.relay_fail = [], None, None
+
+    def resolve(self, room, rate=None):
+        self.asked.append(("resolve", room, rate))
+        if self.fail:
+            raise watch_twitch.TwitchPlayError(self.fail[0], unreachable=self.fail[1])
+        return {"qualities": [{"id": "chunked", "name": "1080p60（原画）"}, {"id": "720p60", "name": "720p60"}],
+                "rate": rate or "chunked", "kind": "mpegts", "hls": [TWITCH_URLS["chunked"]], "ttl": None}
+
+    def remember(self, room, rate, found):
+        self.asked.append(("remember", room, rate))
+
+    def open_relay(self, room, rate=None, on_event=None):
+        self.asked.append(("open_relay", room, rate))
+        if self.relay_fail:
+            raise watch_twitch.TwitchPlayError(self.relay_fail[0], unreachable=self.relay_fail[1])
+        raise watch_twitch.TwitchPlayError("测试里不真的连视频服务器")
+
+
+def twitch_panel_checks(out):
+    """面板的 /esports/play 对 Twitch 选手：清晰度、中转地址、连不上、平台开关。"""
+    folder = tempfile.mkdtemp(prefix="evo-twitch-play-")
+    now = datetime.now().astimezone()
+    players = [{"id": "twitch-imperialhal__", "name": "ImperialHal", "team": "甲队", "platform": "twitch",
+                "room": "imperialhal__"},
+               {"id": "douyu-101", "name": "Kite", "team": "甲队", "platform": "douyu", "room": "101"}]
+    event = {"id": "live", "name": "联赛", "type": "联赛", "stage": "", "start": (now - timedelta(hours=1)).isoformat(),
+             "end": (now + timedelta(hours=3)).isoformat(), "teams": ["甲队"]}
+
+    def serve(platforms=None):
+        path = Path(folder) / "esports.json"
+        path.write_text(json.dumps({"version": 1, "updated": now.isoformat(), "players": players, "events": [event],
+                                    "platforms": platforms or {}}), encoding="utf-8")
+        esports_data.URL = str(path)
+        esports_data.CACHE_PATH.unlink(missing_ok=True)
+        esports_data.get(force=True)
+
+    db = Path(folder) / "evo.db"
+    storage.connect(db).close()
+    panel_app.app.config["DB"] = str(db)
+    client = panel_app.app.test_client()
+    token = panel_app.app.config["TOKEN"]
+    fake, real = FakeTwitch(), panel_esports.PLAYERS
+    panel_esports.PLAYERS = {**real, "twitch": fake}
+    try:
+        serve()
+        page = client.get("/esports/live/watch").get_data(as_text=True)
+        data = json.loads(page.split('id="watch-data">')[1].split("</script>")[0])
+        member = {p["id"]: p for p in data["players"]}["twitch-imperialhal__"]
+        info = client.get("/esports/play/twitch-imperialhal__").get_json()
+        chosen = client.get("/esports/play/twitch-imperialhal__?q=720p60").get_json()
+        out["面板：Twitch 选手带着问清晰度的接口和弹幕地址（没有嵌入播放器）；回清晰度、实际那一档和中转地址"] = (
+            member["play"] == "/esports/play/twitch-imperialhal__" and member["embed"] is None
+            and member["danmaku"] == "/esports/danmaku/twitch-imperialhal__"
+            and member["url"] == "https://www.twitch.tv/imperialhal__"
+            and info["ok"] and info["kind"] == "mpegts" and info["applied"] == "chunked"
+            and [q["id"] for q in info["qualities"]] == ["chunked", "720p60"]
+            and info["stream"] == f"/esports/stream/twitch-imperialhal__?q=chunked&s=0&t={token}"
+            and chosen["applied"] == "720p60" and ("resolve", "imperialhal__", "720p60") in fake.asked)
+        fake.fail = ("连不上 Twitch（在国内要能访问国外网站）", True)
+        down = client.get("/esports/play/twitch-imperialhal__").get_json()
+        fake.fail = None
+        fake.relay_fail = ("连不上 Twitch（在国内要能访问国外网站）", True)
+        relay_down = client.get(f"/esports/stream/twitch-imperialhal__?q=chunked&t={token}")
+        fake.relay_fail = None
+        serve({"twitch": False})
+        off = client.get("/esports/play/twitch-imperialhal__").status_code
+        out["面板：Twitch 连不上回 reason \"unreachable\"（播放地址和中转都算）；平台开关关了回 404"] = (
+            down == {"ok": False, "reason": "unreachable", "detail": "连不上 Twitch（在国内要能访问国外网站）"}
+            and relay_down.status_code == 502 and relay_down.get_json()["reason"] == "unreachable"
+            and off == 404)
+    finally:
+        panel_esports.PLAYERS = real
+        panel_esports._playing.clear()
+        panel_esports._status.update(at=0.0, found={})
+
+
 def main():
-    print("在 Evo 窗口里播斗鱼、抖音（FLV 拆标签和接续、斗鱼取地址、抖音取地址、面板的两个接口）")
+    print("在 Evo 窗口里播斗鱼、抖音、Twitch（FLV 拆标签和接续、斗鱼 / 抖音 / Twitch 取地址、面板的两个接口）")
     out = {}
     demux_checks(out)
     relay_checks(out)
     douyu_checks(out)
     douyin_checks(out)
+    twitch_checks(out)
     panel_checks(out)
+    twitch_panel_checks(out)
     return report(out)
 
 

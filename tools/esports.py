@@ -10,7 +10,9 @@
     python tools/esports.py --init          esports/ 里还没有表时，建两张示例表和一份填写说明
 
 两张表在 E:\\Evo\\esports\\（不进 git：里面是别人的房间号），用 Excel 或 WPS 改，存成 CSV；GBK、UTF-8 都认。
-- 选手库.csv：选手,战队,平台,房间号,Liquipedia页面名。平台只能写 斗鱼 / 虎牙 / B站 / 抖音；房间号只写数字（抖音的也可以写主播的抖音号：字母、数字、下划线，存的时候转成小写）；最后一列可以空。
+- 选手库.csv：选手,战队,平台,房间号,Liquipedia页面名。平台只能写 斗鱼 / 虎牙 / B站 / 抖音 / Twitch；房间号只写数字
+  （抖音的也可以写主播的抖音号：字母、数字、下划线；Twitch 写登录名：字母、数字、下划线；这两个存的时候转成小写）；
+  最后一列可以空。
   不开直播的选手也写进来：平台写「不直播」，房间号空着。一支队几个人都行（2026-11-18 用户定的：不加 3 人的限制）
 - 赛程.csv：名称,类型,阶段,开始,结束,队伍。类型是 联赛 / 训练赛 / 杯赛；时间写北京时间 2026-11-17 19:00；
   队伍用顿号「、」隔开，每个队名都要在选手库里。
@@ -21,9 +23,12 @@
 - **选手库里的选手全部放进去**（2026-11-19 用户定的："默认职业选手就是主播"，电竞页"主播"一块"只放我们有上传直播链接的选手"）：
   原来只放这几场赛事用到的队的选手，没有比赛的队就不在文件里、主播一块也就没有他们
 - 主播.csv（可以没有这张表；现在用不上，留着以后加不是职业选手的主播）：主播,平台,房间号。
-  和赛事、队伍无关，照表里的顺序；平台只能写四个平台，房间号的规矩同选手库；最多 40 位，其中抖音最多 10 位。
+  和赛事、队伍无关，照表里的顺序；平台只能写五个平台，房间号的规矩同选手库；最多 40 位，其中抖音最多 10 位。
   **没有这张表时，上传照线上现在的主播名单带上**（和队徽一样：名单可能是在协作网页上管的，不能被这里冲掉）；
   有这张表、里面一行都没有，才是"不要主播这一块"
+- **Twitch 的选手发布时写成兼容写法**（2026-11-25）：platform 写 "none"、room 空着，真正的平台和房间号放在
+  "stream": {"platform": "twitch", "room": "…"} 里：0.7.2 及以前的 Evo 不认识 twitch，会把这样的选手从队里整个丢掉；
+  旧版本看到 platform "none" 照旧当"不直播"，新版本从 stream 里认出来。主舞台、主播的 Twitch 直接写 platform "twitch"
 有错就指出是哪个文件第几行，不上传。结束超过 7 天的赛事不放进去（赛事页只显示最近 7 天的）。
 平台开关记在线上的文件里：平常上传时照线上现在的开关，--off / --on 只改开关、不动别的。
 只传 R2（https://dl.evotracker.cn/esports.json ，和 notice.json 一起）：COS 停用中，Evo 也只读 R2。
@@ -68,10 +73,11 @@ GUIDE = """赛事数据怎么填（python tools/esports.py --init 生成的说�
 
 选手库.csv：选手,战队,平台,房间号,Liquipedia页面名
   - 一个选手一行；一个选手只能在一支队；一支队几个人都行（不足 3 人、超过 3 人都可以）
-  - 平台只能写：斗鱼 / 虎牙 / B站 / 抖音 / 不直播
+  - 平台只能写：斗鱼 / 虎牙 / B站 / 抖音 / Twitch / 不直播
   - 不开直播的选手也可以写进来：平台写「不直播」，房间号空着。Evo 里照样列在队里，标"不直播"
   - 房间号只写数字，就是直播间地址最后那串数字（虎牙要数字房间号，不要写英文别名）。
-    抖音的地址 live.douyin.com/ 后面有的是字母（主播的抖音号，如 xxfps），照着写就行，大小写都可以
+    抖音的地址 live.douyin.com/ 后面有的是字母（主播的抖音号，如 xxfps），照着写就行，大小写都可以。
+    Twitch 写直播间地址 twitch.tv/ 后面那一段（登录名，字母、数字、下划线，如 imperialhal__），大小写都可以
   - Liquipedia页面名可以空着
   - 只有转会、换平台时才改
 
@@ -86,7 +92,7 @@ GUIDE = """赛事数据怎么填（python tools/esports.py --init 生成的说�
 
 主播.csv（可以没有这张表）：主播,平台,房间号
   - 电竞页上"主播"那一块：和比赛无关的知名主播，一位一行，照表里的顺序（页面上在播的排前面）
-  - 平台只能写：斗鱼 / 虎牙 / B站 / 抖音；房间号的写法同选手库
+  - 平台只能写：斗鱼 / 虎牙 / B站 / 抖音 / Twitch；房间号的写法同选手库
   - 最多 40 位，其中抖音最多 10 位
   - 没有这张表：上传时照线上现在的主播名单带上，不动它
 
@@ -148,12 +154,16 @@ def parse_time(text):
 
 def check_room(platform, room):
     """房间号写得对不对。platform 是中文的平台名。返回 (要存的房间号, 哪里不对或 None)。
-    抖音可以写主播的抖音号（字母、数字、下划线），存的时候转成小写：抖音不分大小写，转了以后 XXFPS 和 xxfps 才查得出是同一个房间，
-    id 也不会变。"""
+    抖音可以写主播的抖音号（字母、数字、下划线），Twitch 写登录名（字母、数字、下划线），存的时候都转成小写：
+    它们不分大小写，转了以后 XXFPS 和 xxfps 才查得出是同一个房间，id 也不会变。"""
     if platform == "抖音":
         if live_status.room_ok("douyin", room):
             return room.lower(), None
         return room, f"房间号「{room}」只能是字母、数字、下划线（直播间地址 live.douyin.com/ 后面那一段）"
+    if platform == "Twitch":
+        if live_status.room_ok("twitch", room):
+            return room.lower(), None
+        return room, f"房间号「{room}」只能是字母、数字、下划线（直播间地址 twitch.tv/ 后面那一段）"
     if not live_status.ROOM_RE.fullmatch(room):
         return room, f"房间号「{room}」只能是数字（直播间地址最后那串数字）"
     return room, None
@@ -340,6 +350,17 @@ def player_id(player):
     return f"{player['platform']}-{player['room']}"
 
 
+def player_entry(player):
+    """一位选手写进 esports.json 的那一项。**Twitch 的选手写成旧版本也认得的兼容写法**（2026-11-25）：0.7.2 及以前的
+    Evo 不认识 twitch，会把这样的选手从队伍里整个丢掉；写成 platform "none"、真正的平台和房间号放在 stream 里，
+    旧版本照旧当"不直播"，新版本（esports_data.clean_player）从 stream 里认出来。"""
+    entry = {"id": player_id(player), "name": player["name"], "team": player["team"],
+             "platform": player["platform"], "room": player["room"], "liquipedia": player["liquipedia"]}
+    if player["platform"] == "twitch":
+        entry.update(platform=esports_data.NO_STREAM, room="", stream={"platform": "twitch", "room": player["room"]})
+    return entry
+
+
 def build(players, events, switches, notes, now=None, teams=None, streamers=None, everyone=False):
     """teams：{队名: {"logo": 文件名}}（队徽；这个脚本不管队徽，上传时照线上现在的带上）。只留这次用到的队，一个都没有就不写这一项。
     everyone：选手库里的选手全部放进去（2026-11-19 起本机脚本发布时都是这样：电竞页"主播"一块列所有开直播的选手）；
@@ -366,9 +387,7 @@ def build(players, events, switches, notes, now=None, teams=None, streamers=None
     used = {team for event in kept for team in event["teams"]}
     data = {"version": esports_data.VERSION, "updated": now.isoformat(timespec="seconds"),
             "platforms": {key: switches.get(key) is not False for key in live_status.PLATFORMS},
-            "players": [{"id": player_id(p), "name": p["name"], "team": p["team"],
-                         "platform": p["platform"], "room": p["room"], "liquipedia": p["liquipedia"]}
-                        for p in players if everyone or p["team"] in used],
+            "players": [player_entry(p) for p in players if everyone or p["team"] in used],
             "events": kept}
     logos = esports_data.clean_teams(teams, used)
     if logos:

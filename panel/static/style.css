@@ -1304,13 +1304,16 @@ table.stats-table { width: 100%; border-collapse: collapse; }
    占满整个窗口：左边播放器那一栏和右边的队伍列表各自滚动，页面本身不滚。
    平台的色点（用户给的颜色）：深色主题直接用；浅色主题在白底上不到 3:1，换成同一色相深一些的（下面 --pf-*）。
    播放器那一块不分主题，一直是深色的，里面的色点用原来的亮色 */
-:root, [data-theme="dark"] { --pf-douyu: #FF7A2F; --pf-huya: #F2B705; --pf-bilibili: #FB7299; --pf-douyin: #25D9E8; }
-[data-theme="light"] { --pf-douyu: #D4561A; --pf-huya: #9A7400; --pf-bilibili: #D63F75; --pf-douyin: #0C8794; }
+:root, [data-theme="dark"] { --pf-douyu: #FF7A2F; --pf-huya: #F2B705; --pf-bilibili: #FB7299; --pf-douyin: #25D9E8;
+  --pf-twitch: #A970FF; }  /* Twitch 的紫：对深色底 5.4:1（2026-11-25 算过） */
+[data-theme="light"] { --pf-douyu: #D4561A; --pf-huya: #9A7400; --pf-bilibili: #D63F75; --pf-douyin: #0C8794;
+  --pf-twitch: #772CE8; }  /* 浅色主题的白底上用深一些的紫：5.9:1 */
 .es-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
 .es-dot.pf-douyu { background: var(--pf-douyu); }
 .es-dot.pf-huya { background: var(--pf-huya); }
 .es-dot.pf-bilibili { background: var(--pf-bilibili); }
 .es-dot.pf-douyin { background: var(--pf-douyin); }
+.es-dot.pf-twitch { background: var(--pf-twitch); }
 .es-avatar { position: relative; flex: none; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%;
   background: var(--nav-on-bg); font-size: 12px; font-weight: 700; }
 .es-avatar img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
@@ -1348,7 +1351,8 @@ table.stats-table { width: 100%; border-collapse: collapse; }
 
 /* 播放器：16:9；窗口很大时不让它高过窗口（否则要滚动才看得到下面的按钮） */
 .watch-stage-box { position: relative; flex: none; width: 100%; max-width: max(480px, calc((100vh - 300px) * 16 / 9)); aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden;
-  background: #161A22; color: #ECEEF2; --pf-douyu: #FF7A2F; --pf-huya: #F2B705; --pf-bilibili: #FB7299; --pf-douyin: #25D9E8; }
+  background: #161A22; color: #ECEEF2; --pf-douyu: #FF7A2F; --pf-huya: #F2B705; --pf-bilibili: #FB7299; --pf-douyin: #25D9E8;
+  --pf-twitch: #A970FF; }
 .watch-screen { position: absolute; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; background: #000000; }
 /* 多屏同看：2 格并排（整块变成 32:9，每格还是 16:9）。选中的那一格有一圈红边、有声音 */
 .watch-stage-box.n2, .watch-stage-box.n3, .watch-stage-box.n4 { max-width: none; }
@@ -1521,6 +1525,10 @@ button.watch-mate:focus-visible { outline: 2px solid var(--p3-bg); outline-offse
 .watch-mate-sub { font-size: 12px; color: var(--muted); }
 
 .watch-side { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--card); border-left: 1px solid var(--border); }
+/* 名单上方那一行（2026-11-25）：名单里有 Twitch 的选手、Twitch 又连不上时才有（在国内要能访问国外网站），连上了就藏起来 */
+.watch-offline-note { margin: 0; padding: 8px 16px; border-top: 1px solid var(--border); border-left: 3px solid var(--warn-border);
+  background: var(--warn-bg); color: var(--warn-text); font-size: 12px; line-height: 1.6; }
+.watch-offline-note[hidden] { display: none; }
 .watch-side-head { padding: 14px 16px 10px; display: flex; flex-direction: column; gap: 10px; }
 .watch-side-title { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .watch-side-title h2 { margin: 0; font-size: 15px; font-weight: 700; }

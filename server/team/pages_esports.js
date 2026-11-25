@@ -48,7 +48,7 @@ function playerForm(action, p, teamNames, submit, view = "") {
       <input class="input" name="team" value="${escape(p.team)}" maxlength="40" required list="team-names" autocomplete="off"></label>
     <div class="two">
       <label class="field">平台<span class="help">不开直播的选"不直播"</span><select class="input" name="platform" required>${playerPlatformOptions(p.platform)}</select></label>
-      <label class="field">房间号<span class="help">直播间地址最后那一段：一般是数字；抖音也可以是主播的抖音号（字母、数字、下划线）。不直播的空着</span>
+      <label class="field">房间号<span class="help">直播间地址最后那一段：一般是数字；抖音也可以是主播的抖音号（字母、数字、下划线），Twitch 写登录名（字母、数字、下划线）。不直播的空着</span>
         <input class="input" name="room" value="${escape(p.room)}" maxlength="24" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
     </div>
     <label class="field">Liquipedia 页面名<span class="help">可以空着；贴 Liquipedia 选手页的网址就行，会自动存成页面名（比如 Panic_(American_player)）</span>
@@ -124,7 +124,7 @@ export function roomsPage(me, items, { now, view = "pending", regions = {}, erro
   return layout({ title: "批量修改选手", me, current: "players", banner, body: `
 <p class="small"><a href="/players">‹ 选手库</a></p>
 <div class="stack"><h1>批量修改选手</h1>
-  <p class="muted">一张表里改很多人的名字、战队、平台和房间号，点一次保存。战队可以从下拉里选，也可以写新队名（就是换队）。房间号是直播间地址最后那一段：一般是数字；抖音也可以是主播的抖音号。
+  <p class="muted">一张表里改很多人的名字、战队、平台和房间号，点一次保存。战队可以从下拉里选，也可以写新队名（就是换队）。房间号是直播间地址最后那一段：一般是数字；抖音也可以是主播的抖音号，Twitch 写登录名。
     不开直播的选"不直播"，房间号空着。只存改过的；有一个人不对就整批都不存，会说是谁。要删的人先勾上，再点"删掉勾选的…"（删之前会再问一次）。</p></div>
 ${notes({ error, ok })}
 ${tabs}
@@ -330,7 +330,7 @@ ${editable ? importBox("/events/import", [...EVENT_COLUMNS, "主舞台（可以�
 function fileSummary(info) {
   if (!info) return `<p class="muted">线上还没有这个文件。</p>`;
   return `<p>${escape(info.summary)}${info.logos ? `，${info.logos} 支队有队徽` : ""}</p><p class="small muted">文件里写的更新时间：${escape(info.updated || "没有")}`
-    + `${info.platformsOff.length ? `；关掉的平台：${escape(info.platformsOff.join("、"))}` : "；四个平台都开着"}</p>`;
+    + `${info.platformsOff.length ? `；关掉的平台：${escape(info.platformsOff.join("、"))}` : "；五个平台都开着"}</p>`;
 }
 
 function eventList(info) {

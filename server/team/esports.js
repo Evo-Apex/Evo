@@ -7,12 +7,14 @@ import { Refuse } from "./store.js";
 import { pageFromInput } from "./liquipedia.js";
 
 // 同 config/watch.json 的 platforms（顺序也一样）。pattern 同那里的 room_pattern：房间号可以怎么写，没写的只能是数字。
-// 抖音的地址后面也可以是主播的抖音号（字母、数字、下划线，不分大小写；2026-11-18 用户同意、Evo 那边先改的）
+// 抖音的地址后面也可以是主播的抖音号（字母、数字、下划线，不分大小写；2026-11-18 用户同意、Evo 那边先改的）；
+// Twitch 写登录名（字母、数字、下划线，最长 25 位，不分大小写；2026-11-25 Evo 那边加的）
 export const PLATFORMS = {
   douyu: { name: "斗鱼", room: "https://www.douyu.com/{room}" },
   huya: { name: "虎牙", room: "https://www.huya.com/{room}" },
   bilibili: { name: "B站", room: "https://live.bilibili.com/{room}" },
   douyin: { name: "抖音", room: "https://live.douyin.com/{room}", pattern: "[A-Za-z0-9_]{1,24}" },
+  twitch: { name: "Twitch", room: "https://www.twitch.tv/{room}", pattern: "[A-Za-z0-9_]{1,25}" },
 };
 export const TYPES = { 联赛: "league", 训练赛: "scrim", 杯赛: "cup" };
 export const USUAL_TEAMS = 20;
@@ -31,9 +33,10 @@ export function roomOk(platform, room) {
   return Object.hasOwn(ROOM_RES, platform) && typeof room === "string" && ROOM_RES[platform].test(room);
 }
 
-// 抖音不分大小写：存的、发布的都转成小写，XXFPS 和 xxfps 才查得出是同一个房间，选手的 id 也不会变（同 tools/esports.py）
+// 抖音、Twitch 不分大小写：存的、发布的都转成小写，XXFPS 和 xxfps 才查得出是同一个房间，选手的 id 也不会变
+// （同 tools/esports.py 的 check_room）
 export function normalRoom(platform, room) {
-  return platform === "douyin" ? String(room).toLowerCase() : String(room);
+  return platform === "douyin" || platform === "twitch" ? String(room).toLowerCase() : String(room);
 }
 const ID = /^[A-Za-z0-9_-]{1,40}$/;
 const MAX_PLAYERS = 2000;   // Evo 读的时候只看前这么多（esports_data.clean）
@@ -99,6 +102,16 @@ export function sha256Hex(text) {
 // 选手在 esports.json 里的 id：开直播的是"平台-房间号"，不直播的是 none-<选手名 sha256 的前 12 位>
 export function playerId(p) {
   return p.platform === NO_STREAM ? `${NO_STREAM}-${sha256Hex(p.name).slice(0, 12)}` : `${p.platform}-${p.room}`;
+}
+
+// 一位选手写进 esports.json 的那一项。**Twitch 的选手写成旧版本也认得的兼容写法**（2026-11-25）：0.7.2 及以前的 Evo
+// 不认识 twitch，会把这样的选手从队伍里整个丢掉；写成 platform "none"、真正的平台和房间号放在 stream 里，
+// 旧版本照旧当"不直播"，新版本（esports_data.clean_player）从 stream 里认出来。同 tools/esports.py 的 player_entry。
+// 主舞台、主播的 Twitch 直接写 platform "twitch"（走的是另外两处）。
+export function playerEntry(p) {
+  const entry = { id: playerId(p), name: p.name, team: p.team, platform: p.platform, room: p.room, liquipedia: p.liquipedia ?? "" };
+  if (p.platform === "twitch") Object.assign(entry, { platform: NO_STREAM, room: "", stream: { platform: "twitch", room: p.room } });
+  return entry;
 }
 
 
@@ -170,6 +183,7 @@ export function cleanPlayerFields(form) {
   if (platform === NO_STREAM && raw) throw new Refuse(`不直播的选手「房间号」要空着（现在是「${raw}」）`);
   if (platform !== NO_STREAM && !roomOk(platform, raw)) {
     throw new Refuse(platform === "douyin" ? `房间号「${raw}」只能是字母、数字、下划线（直播间地址 live.douyin.com/ 后面那一段）`
+      : platform === "twitch" ? `房间号「${raw}」只能是字母、数字、下划线（直播间地址 twitch.tv/ 后面那一段）`
       : `房间号「${raw}」只能是数字（直播间地址最后那串数字；虎牙要数字房间号）`);
   }
   const room = normalRoom(platform, raw);
@@ -192,6 +206,7 @@ function checkStream(platformText, roomText, nameText) {
   const room = squash(roomText);
   if (!roomOk(platform, room)) {
     return { error: platform === "douyin" ? `主舞台的房间号「${room}」只能是字母、数字、下划线（直播间地址 live.douyin.com/ 后面那一段）`
+      : platform === "twitch" ? `主舞台的房间号「${room}」只能是字母、数字、下划线（直播间地址 twitch.tv/ 后面那一段）`
       : `主舞台的房间号「${room}」只能是数字（直播间地址最后那串数字）` };
   }
   const name = squash(nameText);
@@ -390,8 +405,7 @@ export function build(players, events, switches, now, teams = {}) {
     version: VERSION,
     updated: isoBeijing(Math.floor(now / 1000) * 1000),
     platforms: Object.fromEntries(Object.keys(PLATFORMS).map((key) => [key, switches?.[key] !== false])),
-    players: players.map((p) => ({ id: playerId(p), name: p.name, team: p.team,
-      platform: p.platform, room: p.room, liquipedia: p.liquipedia ?? "" })),
+    players: players.map((p) => playerEntry(p)),
     events: kept,
   };
   const logos = {};
@@ -430,18 +444,32 @@ function cleanPlayer(raw) {
   const name = text(raw.name, 40);
   const team = text(raw.team, 40);
   if (typeof raw.id !== "string" || !ID.test(raw.id) || name === null || team === null) return null;
+  let platform = raw.platform;
+  let room = raw.room;
   // 不直播的：房间号必须正好是空的（同 esports_data.clean_player）
-  if (raw.platform === NO_STREAM ? raw.room !== "" : !roomOk(raw.platform, raw.room)) return null;
-  return { id: raw.id, name, team, platform: raw.platform, room: raw.room, liquipedia: text(raw.liquipedia, 100, false) || "" };
+  if (platform === NO_STREAM) {
+    if (room !== "") return null;
+    // 旧版本兼容写法（2026-11-25，同 esports_data.clean_player）：stream 里的平台认识、房间号对，就当这位在那边播；
+    // 写得不对就忽略它、照旧"不直播"
+    const stream = raw.stream;
+    if (stream && typeof stream === "object" && !Array.isArray(stream) && stream.platform !== NO_STREAM
+        && roomOk(stream.platform, stream.room)) {
+      platform = stream.platform;
+      room = stream.room;
+    }
+  } else if (!roomOk(platform, room)) {
+    return null;
+  }
+  return { id: raw.id, name, team, platform, room: normalRoom(platform, room), liquipedia: text(raw.liquipedia, 100, false) || "" };
 }
 
-// 主舞台的一路（同 esports_data.clean_stream）
+// 主舞台的一路（同 esports_data.clean_stream；Twitch 的登录名读进来也存小写，id 不变）
 function cleanStream(raw) {
   if (!raw || typeof raw !== "object") return null;
   const name = text(raw.name, 40);
   if (typeof raw.id !== "string" || !ID.test(raw.id) || name === null) return null;
   if (typeof raw.platform !== "string" || !roomOk(raw.platform, raw.room)) return null;
-  return { id: raw.id, name, platform: raw.platform, room: raw.room };
+  return { id: raw.id, name, platform: raw.platform, room: raw.platform === "twitch" ? String(raw.room).toLowerCase() : raw.room };
 }
 
 function cleanEvent(raw) {

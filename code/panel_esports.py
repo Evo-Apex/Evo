@@ -15,9 +15,13 @@
 - 页面上先把名单画好，谁在播由脚本问 GET /esports/<赛事>/status：页面开着、看得见时每 60 秒问一次
   （这里 50 秒内不重查，开播、下播后 2 分钟内页面跟着变）。顺便带上平台开关（esports.json 5 分钟内下载过就不重下）
 - 能在窗口里播的平台：配置里有 embed_url 的用平台官方的嵌入播放器（现在是 B站）；配置里 player 是 flv（斗鱼，经过
-  本机中转）、direct（抖音、登录了的 B站，页面直接连平台的视频服务器）的用 Evo 自己的播放器（mpegts.js）。
-  别的平台（虎牙：用户 2026-11-18 定了不做）、平台开关关了的显示退路"去 X 看"
+  本机中转）、direct（抖音、登录了的 B站，页面直接连平台的视频服务器）、hls（Twitch，经本机中转接成一条 TS 流）的
+  用 Evo 自己的播放器（mpegts.js）。别的平台（虎牙：用户 2026-11-18 定了不做）、平台开关关了的显示退路"去 X 看"
 - 抖音：不登录，取地址在 watch_douyin.py（只要 H.264 的档；没选过清晰度时要码率不超过配置里那个数的最好一档）
+- Twitch（2026-11-25，照 PureLive）：不登录，走 Evo 自己的播放器（和登录以后的 B站一样，不用 player.twitch.tv 的嵌入
+  播放器）。取地址在 watch_twitch.py：先要播放令牌，再要各档的目录（只要 H.264，清晰度 id 用 GROUP-ID：chunked 是原画，
+  还有 720p60、480p30…），视频经本机中转（hls_relay.py）。广告照放、不过滤。**Twitch 在中国大陆上不去**：连不上时
+  开播状态带着 unreachable（页面写"连不上"、名单上方一行说明），/esports/play 回 reason "unreachable"
 - B站：没登录的用官方嵌入播放器（最高 720p）；玩家扫码登录了 B站（bili_login.py，登录信息加密存在本机）以后改用
   Evo 自己的播放器播原画，视频经过本机中转（watch_bilibili.py：优先 HLS，hls_relay.py；2026-11-19 改的，原来是页面直接连，
   国内的玩家播不成）。
@@ -55,6 +59,7 @@ import qr
 import watch_bilibili
 import watch_douyin
 import watch_douyu
+import watch_twitch
 
 bp = Blueprint("esports", __name__)
 WEEKDAYS = "一二三四五六日"
@@ -64,15 +69,16 @@ WATCH_DATA_SECONDS = 300   # 看直播页开着时，这么久重新下载一次
                            # 原来是 10 分钟，2026-11-18 用户要改成 5 分钟）
 EMBED = {key: platform["embed_url"] for key, platform in live_status.PLATFORMS.items() if platform.get("embed_url")}
 # 用 Evo 自己的播放器播的平台 → 取地址的模块。模块里 DIRECT 是 True 的（抖音）：页面直接连平台的视频服务器；
-# 别的（斗鱼、B站）：经过本机中转（/esports/stream）。模块里有 open_relay 的（B站）自己决定接 HLS 还是 FLV
-PLAYERS = {"douyu": watch_douyu, "bilibili": watch_bilibili, "douyin": watch_douyin}
+# 别的（斗鱼、B站、Twitch）：经过本机中转（/esports/stream）。模块里有 open_relay 的（B站、Twitch）自己决定怎么接
+PLAYERS = {"douyu": watch_douyu, "bilibili": watch_bilibili, "douyin": watch_douyin, "twitch": watch_twitch}
 PLAYERS = {key: module for key, module in PLAYERS.items() if live_status.PLATFORMS[key].get("player") in ("flv", "direct", "hls")}
 # 要玩家登录了才用 Evo 自己的播放器的平台 → 管登录的模块（没登录的用平台官方的嵌入播放器）
 LOGINS = {"bilibili": bili_login}
 # 登录是可选的平台 → 管登录的模块（斗鱼，2026-11-21）：不登录也用 Evo 自己的播放器播，登录了才有原画。
 # 登录不是扫码，是在 Evo 窗口另开的小窗口里打开平台官方的登录页（login_window.py）
 WINDOW_LOGINS = {"douyu": douyu_login}
-RATE_RE = re.compile(r"-?\d{1,5}|[a-z]{1,12}")  # 清晰度：斗鱼、B站是编号，抖音是档名（origin、uhd、hd……）
+RATE_RE = re.compile(r"-?\d{1,5}|[a-z0-9_]{1,16}")  # 清晰度：斗鱼、B站是编号，抖音是档名（origin、uhd、hd……），
+# Twitch 是 GROUP-ID（chunked、720p60、480p30……）
 SLOTS = ("0", "1", "2", "3")  # 多屏同看：页面上最多 4 格，每格一路中转
 _playing = {}  # 格子 → 正在中转的那一路（每格一次只播一路：这一格开新的一路就停掉它上一路）
 _chats = {}    # 格子 → 正在转的那一路抖音弹幕（同上，每格一次只转一路）
@@ -257,9 +263,10 @@ def live():
 
 
 def status_view(got):
-    """一个直播间的开播状态里给页面的那几项（头像只要 https 的）。"""
+    """一个直播间的开播状态里给页面的那几项（头像只要 https 的）。unreachable：连不上这个平台（现在只有 Twitch），
+    页面据此写"连不上"、名单上方说一句"在国内要能访问国外网站"。"""
     return {"state": got["state"], "loop": got["loop"], "title": got["title"], "since": got["since"],
-            "avatar": safe_image(got["avatar"])}
+            "avatar": safe_image(got["avatar"]), "unreachable": bool(got.get("unreachable"))}
 
 
 def watch_page_data(data, members, selected, status_url):
@@ -302,9 +309,18 @@ def streamers_status():
     streamers = esports_data.streamers(data)
     if not streamers:
         return jsonify(error="gone"), 404
-    found = players_status(streamers, WATCH_STATUS_SECONDS)
+    found = players_status(streamers, _status_age())
     return jsonify(checked=time.time(), platforms=data["platforms"],
                    players={pid: status_view(got) for pid, got in found.items()})
+
+
+def _status_age():
+    """看直播页问开播状态时，多久以内查过的可以直接用。网址带 retry=1（Twitch 连不上时玩家点了"重试"，2026-11-25）：
+    忘掉刚才的"连不上"、不用上次的，马上重查。"""
+    if request.args.get("retry") == "1":
+        live_status.retry_twitch()
+        return 0
+    return WATCH_STATUS_SECONDS
 
 
 @bp.route("/esports/<event_id>/watch")
@@ -336,7 +352,7 @@ def status(event_id):
         return jsonify(error="gone"), 404
     # 主舞台的直播间也查；不开直播的选手不查
     players = esports_data.event_main(data, event) + esports_data.streaming(esports_data.event_players(data, event))
-    found = players_status(players, WATCH_STATUS_SECONDS) if players else {}
+    found = players_status(players, _status_age()) if players else {}
     return jsonify(checked=time.time(), platforms=data["platforms"],
                    players={pid: status_view(got) for pid, got in found.items()})
 
@@ -376,8 +392,8 @@ def _rate():
 def play(player_id):
     """看直播页开播前问的：{"ok": True, "qualities": [{"id", "name"}], "applied": 实际给的那一档, "stream": 播放地址,
     "kind": 播放器按哪种放（"flv" / "mpegts"）, "logged": 这次是不是带着玩家在这个平台的登录要到的（斗鱼）}；
-    取不到是 {"ok": False, "reason": "upstream", "detail": 原因}。
-    不能在窗口里播的选手回 404。"""
+    取不到是 {"ok": False, "reason": "upstream", "detail": 原因}；Twitch 连不上（在国内要能访问国外网站）是
+    {"ok": False, "reason": "unreachable", "detail": 原因}。不能在窗口里播的选手回 404。"""
     player = _player(player_id)
     if player is None:
         return jsonify(ok=False, reason="unsupported"), 404
@@ -386,7 +402,8 @@ def play(player_id):
         found = module.resolve(player["room"], _rate())
     except Exception as e:  # noqa: BLE001  平台那边的各种错：页面显示退路
         log.info("看直播：%s 房间 %s 没取到地址：%s", player["platform"], player["room"], e)
-        return jsonify(ok=False, reason="upstream", detail=str(e))
+        reason = "unreachable" if getattr(e, "unreachable", False) else "upstream"
+        return jsonify(ok=False, reason=reason, detail=str(e))
     if getattr(module, "DIRECT", False):  # 页面直接连平台的视频服务器
         return jsonify(ok=True, qualities=found["qualities"], applied=found["rate"], stream=found["url"], kind="flv")
     module.remember(player["room"], found["rate"], found)  # 紧接着播放器来连时直接用，不再问一遍
@@ -485,12 +502,13 @@ def stream(player_id):
     def on_event(text):
         log.info("看直播：%s 房间 %s %s", player["platform"], player["room"], text)
 
-    if hasattr(module, "open_relay"):  # 这个平台自己决定怎么接（B站：有 HLS 接 HLS）
+    if hasattr(module, "open_relay"):  # 这个平台自己决定怎么接（B站：有 HLS 接 HLS；Twitch：接 HLS）
         try:
             relay = module.open_relay(player["room"], rate, on_event=on_event)
         except Exception as e:  # noqa: BLE001  取地址出的各种错
             log.info("看直播：%s 房间 %s 没取到地址：%s", player["platform"], player["room"], e)
-            return jsonify(ok=False, reason="upstream", detail=str(e)), 502
+            reason = "unreachable" if getattr(e, "unreachable", False) else "upstream"
+            return jsonify(ok=False, reason=reason, detail=str(e)), 502
     else:
         relay = flv_relay.Relay(open_segment, lead=live_status.PLATFORMS[player["platform"]].get("renew_lead", 5), on_event=on_event)
     slot = _slot()

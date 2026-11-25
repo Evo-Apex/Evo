@@ -1,14 +1,19 @@
 """赛事数据（esports_data.py、live_status.py、abogus.py、tools/esports.py）。不联网：赛事文件由本机的小服务器提供，
-平台的回包是照 2026-11-17 实际问到的样子写的（名字换成了示例）。
+平台的回包是照 2026-11-17 实际问到的样子写的（名字换成了示例）；Twitch 的回包照 2026-11-25 实测的样子写。
 
 - 赛事文件：格式不对的那一条去掉、不影响别的；整个不对当作没读到；平台开关没写的当作开；
   进行中 / 即将开始 / 已结束按时间算，"最近结束"只留 7 天
 - 下载：只带 User-Agent（Evo/版本号）；60 秒内不重下；连不上、格式不对时用上次存下的
-- 查开播状态：四个平台的回包读得对（在播、轮播、没开播、房间不存在）；同时最多 4 个请求；B站一次查多个；
-  同一个房间只查一次；一个平台出错不影响别的；房间号不是数字的不发请求
+- 查开播状态：五个平台的回包读得对（在播、轮播、没开播、房间不存在）；同时最多 4 个请求；B站一次查 30 个、
+  Twitch 一次查 100 个；同一个房间只查一次；一个平台出错不影响别的；房间号不是数字的不发请求
+- Twitch：查开播的 POST 正文（query、登录名转小写、请求头）；超过 100 个分两批（自己一次收到超过 100 个时，
+  前一批查到的留着）；连不上时结果带 unreachable、120 秒以内不再发请求、过了再问；HTTP 错误和回包里的 errors
+  都不算连不上（errors 也不冷却）
+- Twitch 的赛事文件：platform 直接写 twitch 认；旧版本兼容写法（platform none、房间号放在 stream 里）也认；
+  stream 写得不对照旧"不直播"；登录名带 / 或超过 25 个字不收
 - 抖音签名：SM3 对得上国密标准里的两个样例；固定时间下的签名和 2026-11-17 记下的一样（那天用它问通了抖音的接口）
 - tools/esports.py：GBK、带 BOM 的 UTF-8 都读得出；Excel 改过的日期也认；每种写错都指出文件和行号、不生成文件；
-  结束超过 7 天的赛事不放进去；选手只放用到的
+  结束超过 7 天的赛事不放进去；选手只放用到的；Twitch 的房间号认登录名、生成兼容写法
 
 运行：python tests/test_esports.py
 """
@@ -23,7 +28,7 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fake_game import report  # 要在项目代码之前导入（设置临时数据文件夹）
@@ -139,7 +144,7 @@ def format_checks(out):
     out["整个文件不对（不是字典、版本不认识、缺了选手或赛事）当作没读到"] = broken == 4
     switches = esports_data.clean(file(platforms={"douyu": False, "huya": "false", "kuaishou": False}))["platforms"]
     out["平台开关：写了 false 的是关，没写、写错的当作开，不认识的平台不要"] = switches == {
-        "douyu": False, "huya": True, "bilibili": True, "douyin": True}
+        "douyu": False, "huya": True, "bilibili": True, "douyin": True, "twitch": True}
 
 
 def status_checks(out):
@@ -224,6 +229,14 @@ DOUYIN_ENTER = {"status_code": 0, "data": {"room_status": 0, "user": {"nickname"
 DOUYIN_ENTER_OFF = {"status_code": 0, "data": {"room_status": 2, "data": [], "user": {
     "nickname": "没开播的", "avatar_thumb": {"url_list": ["https://p3.douyinpic.com/b.jpeg"]}}}}
 DOUYIN_ENTER_GONE = {"status_code": 4001038, "data": {"prompts": "该内容暂时无法无法查看"}}
+# Twitch 的 users(logins:) 回包：在播（开播时刻是 UTC）、没开播、重播、名字不存在
+TWITCH = {"data": {"users": [
+    {"login": "imperialhal__", "displayName": "ImperialHal", "profileImageURL": "https://static-cdn.jtvnw.net/a.png",
+     "stream": {"createdAt": "2026-11-25T14:20:13Z", "title": "示例标题", "type": "live"}},
+    {"login": "genburten", "displayName": "Genburten", "profileImageURL": "", "stream": None},
+    {"login": "rerun_one", "displayName": "重播的", "profileImageURL": "", "stream": {
+        "createdAt": "2026-11-20T01:00:00Z", "title": "重播", "type": "rerun"}},
+    None]}}
 
 
 def raw(data):
@@ -237,7 +250,8 @@ def parse_checks(out):
     gone = live_status.parse_douyu("<html><title>提示信息 -斗鱼</title>该房间目前没有开放</html>".encode("utf-8"))
     out["斗鱼：在播（主播名、标题、头像、开播时刻）、轮播不算在播、没开播、房间不存在"] = (
         live == {"state": "live", "loop": False, "name": "示例主播", "title": "示例标题",
-                 "avatar": "https://apic.douyucdn.cn/x_middle.jpg", "since": 1794924295, "error": ""}
+                 "avatar": "https://apic.douyucdn.cn/x_middle.jpg", "since": 1794924295, "error": "",
+                 "unreachable": False}
         and (loop["state"], loop["loop"], loop["since"]) == ("offline", True, None)
         and (off["state"], off["loop"]) == ("offline", False) and gone["state"] == "missing")
     on = live_status.parse_huya(raw(HUYA_ON))
@@ -283,6 +297,22 @@ def parse_checks(out):
         and (over["state"], over_inner) == ("offline", None)
         and live_status.parse_douyin_enter(raw(DOUYIN_ENTER_GONE)) == (live_status.result("missing"), None)
         and odd is not None and "10011" in odd)
+    twitch = live_status.parse_twitch(raw(TWITCH), ["ImperialHal__", "genburten", "rerun_one", "nobody"])
+    since = datetime(2026, 11, 25, 14, 20, 13, tzinfo=timezone.utc).timestamp()
+    out["Twitch：在播（开播时刻按 UTC）、没开播、重播当轮播、名字不存在；房间号不分大小写，按登录名对回去"] = (
+        (twitch["ImperialHal__"]["state"], twitch["ImperialHal__"]["name"], twitch["ImperialHal__"]["title"],
+         twitch["ImperialHal__"]["avatar"], twitch["ImperialHal__"]["since"])
+        == ("live", "ImperialHal", "示例标题", "https://static-cdn.jtvnw.net/a.png", since)
+        and (twitch["genburten"]["state"], twitch["genburten"]["name"]) == ("offline", "Genburten")
+        and (twitch["rerun_one"]["state"], twitch["rerun_one"]["loop"]) == ("offline", True)
+        and twitch["nobody"]["state"] == "missing" and all(not got["unreachable"] for got in twitch.values()))
+    weird = 0
+    for body in (raw({"errors": [{"message": "boom"}]}), b"<html></html>", raw({"data": {}})):
+        try:
+            live_status.parse_twitch(body, ["imperialhal__"])
+        except live_status.StatusError:
+            weird += 1
+    out["Twitch：回包里写着错误、回的不是房间数据：当作这次没查到，不当成没开播"] = weird == 3
     errors = 0
     for parser, body in ((live_status.parse_douyu, b"<html>502</html>"), (live_status.parse_huya, b"[]"),
                          (live_status.parse_huya, raw({"status": 500})), (live_status.parse_douyin_room, raw({"data": {}})),
@@ -391,6 +421,129 @@ def query_checks(out):
     out["房间号写得不对的不去问平台"] = all(found["state"] == live_status.ERROR for found in odd.values())
 
 
+def twitch_checks(out):
+    """Twitch 查开播：一次查多个、POST 正文、分批、连不上（unreachable 和 120 秒以内不再问）、HTTP 错误不算连不上。"""
+    calls = []
+
+    def get(url, headers, limit=None, until=None, cookies=False, **more):
+        calls.append((url, headers, more))
+        return raw(TWITCH)
+
+    live_status._twitch_down[0] = 0.0
+    found = live_status.query([{"id": "1", "platform": "twitch", "room": "ImperialHal__"},
+                               {"id": "2", "platform": "twitch", "room": "genburten"}], get)
+    sent = json.loads(calls[0][2]["data"].decode("utf-8"))
+    out["Twitch 查开播：POST 到 GraphQL，正文里是一次问的登录名（转小写），请求头带 Client-ID 和设备号，只等 5 秒"] = (
+        calls[0][0] == live_status.PLATFORMS["twitch"]["gql_url"]
+        and sent["variables"] == {"l": ["imperialhal__", "genburten"]} and "users(logins:$l)" in sent["query"]
+        and calls[0][1]["Client-ID"] == live_status.PLATFORMS["twitch"]["client_id"]
+        and len(calls[0][1]["Device-ID"]) == 32 and calls[0][1]["Content-Type"] == "text/plain;charset=UTF-8"
+        and calls[0][2]["timeout"] == 5
+        and (found["1"]["state"], found["2"]["state"]) == ("live", "offline"))
+    calls.clear()
+    many = [{"id": f"t{n}", "platform": "twitch", "room": f"user{n}"} for n in range(101)]
+    live_status.query(many, get)
+    sizes = [len(json.loads(more["data"])["variables"]["l"]) for _, _, more in calls]
+    out["Twitch 一次最多查 100 个：101 个分两批（100 + 1）"] = sizes == [100, 1]
+    bili = []
+
+    def bili_get(url, headers, limit=None, until=None, cookies=False, **more):
+        bili.append(url)
+        return raw(BILI)
+
+    live_status.query([{"id": str(n), "platform": "bilibili", "room": str(1000 + n)} for n in range(31)], bili_get)
+    out["B站照旧一次最多查 30 个：31 个分两批"] = (
+        len(bili) == 2 and bili[0].count("room_ids=") == 30 and bili[1].count("room_ids=") == 1)
+
+    asked = []
+
+    def down(url, headers, limit=None, until=None, cookies=False, **more):
+        asked.append(url)
+        raise live_status.StatusError("连不上（超时）")
+
+    live_status._twitch_down[0] = 0.0
+    first = live_status.query([{"id": "1", "platform": "twitch", "room": "a"}], down)["1"]
+    second = live_status.query([{"id": "2", "platform": "twitch", "room": "b"}], down)["2"]
+    quiet = len(asked)  # 前两次之间没有再发请求
+    live_status._twitch_down[0] = time.time() - 1  # 当作过了 120 秒
+    third = live_status.query([{"id": "1", "platform": "twitch", "room": "a"}], down)["1"]
+    out["Twitch 连不上：结果带 unreachable；120 秒以内再查（别的房间也一样）不发请求、马上回连不上；过了再问"] = (
+        first["state"] == "error" and first["unreachable"] is True and "连不上" in first["error"]
+        and second["state"] == "error" and second["unreachable"] is True and quiet == 1
+        and third["unreachable"] is True and len(asked) == 2)
+    live_status._twitch_down[0] = 0.0
+
+    def bad(url, headers, limit=None, until=None, cookies=False, **more):
+        raise live_status.StatusError("HTTP 500", 500)
+
+    got = live_status.query([{"id": "1", "platform": "twitch", "room": "a"}], bad)["1"]
+    out["Twitch 回了 HTTP 4xx/5xx 不算连不上：照旧\"没查到\"，之后照常问"] = (
+        got["state"] == "error" and got["unreachable"] is False and live_status._twitch_down[0] < time.time())
+    live_status._twitch_down[0] = 0.0
+
+    def broken_reply(url, headers, **more):
+        return raw({"errors": [{"message": "boom"}]})
+
+    got = live_status.query([{"id": "1", "platform": "twitch", "room": "a"}], broken_reply)["1"]
+    out["Twitch 回包里有 errors：算\"没查到\"，不算连不上、不冷却（下次还问）"] = (
+        got["state"] == "error" and got["unreachable"] is False and live_status._twitch_down[0] < time.time()
+        and "错误" in got["error"])
+    batches = []
+
+    def half(url, headers, **more):
+        names = json.loads(more["data"])["variables"]["l"]
+        batches.append(len(names))
+        if len(batches) == 2:
+            raise live_status.StatusError("连不上（超时）")
+        return raw({"data": {"users": [{"login": name, "displayName": "示例", "stream": {"type": "live",
+                                                                                        "createdAt": "2026-11-25T14:20:13Z"}}
+                                       for name in names]}})
+
+    live_status._twitch_down[0] = 0.0
+    rooms = [f"user{n}" for n in range(101)]
+    direct = live_status.check_twitch(rooms, half)
+    out["Twitch 自己一次收到超过 100 个：前一批查到的留着，后一批连不上只标没查到的那些"] = (
+        batches == [100, 1] and direct["user0"]["state"] == "live" and direct["user99"]["state"] == "live"
+        and direct["user100"]["unreachable"] is True and sum(1 for r in direct.values() if r["unreachable"]) == 1)
+    live_status._twitch_down[0] = 0.0
+    other = live_status.parse_douyu(raw(DOUYU_LIVE))
+    out["别的平台的结果照旧没有 unreachable（一直是 False）"] = other["unreachable"] is False
+
+
+def twitch_data_checks(out):
+    """Twitch 的选手怎么写：platform twitch 直接认；旧版本兼容写法（platform none + stream）也认；写坏了照旧不直播。"""
+    direct = esports_data.clean(file([player("twitch-ImperialHal__", platform="twitch", room="ImperialHal__")]))
+    out["赛事文件：platform 直接写 twitch 认，登录名存成小写（id 不变）"] = (
+        [(p["id"], p["platform"], p["room"]) for p in direct["players"]] ==
+        [("twitch-ImperialHal__", "twitch", "imperialhal__")]
+        and esports_data.streaming(direct["players"]) == direct["players"])
+    compat_player = {"id": "none-0123456789ab", "name": "甲一", "team": "示例战队", "platform": "none", "room": "",
+                     "stream": {"platform": "twitch", "room": "Genburten"}, "liquipedia": ""}
+    compat = esports_data.clean(file([compat_player]))
+    out["赛事文件：旧版本兼容写法（platform none、房间号放在 stream 里）认得出这位选手在 Twitch 播，id 不变"] = (
+        [(p["id"], p["platform"], p["room"]) for p in compat["players"]] == [("none-0123456789ab", "twitch", "genburten")]
+        and esports_data.streaming(compat["players"]) == compat["players"])
+    broken = []
+    for stream in ({"platform": "kuaishou", "room": "x"}, {"platform": "twitch", "room": "a/b"},
+                   {"platform": "twitch", "room": "x" * 26}, {"platform": "none", "room": ""},
+                   {"platform": "twitch"}, "twitch", ["twitch"], 1):
+        cleaned = esports_data.clean(file([{**compat_player, "stream": stream}]))
+        broken.append(([(p["platform"], p["room"]) for p in cleaned["players"]], esports_data.streaming(cleaned["players"])))
+    out["赛事文件：stream 写得不对（平台不认识、房间号不对、不是对象）就忽略它，照旧\"不直播\"，选手还在队里"] = (
+        broken == [([("none", "")], [])] * 8)
+    bad = [esports_data.clean(file([player(f"twitch-{n}", platform="twitch", room=room)]))["players"]
+           for n, room in enumerate(("imperialhal__/x", "x" * 26, "", "a.b"))]
+    out["赛事文件：Twitch 的登录名带 / 或点、空着、超过 25 个字：那一条不收"] = all(players == [] for players in bad)
+    main = esports_data.clean(file(events=[event(main=[
+        {"id": "twitch-Genburten", "name": "官方直播", "platform": "twitch", "room": "Genburten"}])]))
+    streamers = esports_data.clean(file(streamers=[
+        {"id": "twitch-Shroud", "name": "某主播", "platform": "twitch", "room": "Shroud"}]))
+    out["赛事文件：主舞台、主播的 Twitch 登录名也存成小写（id 不变）"] = (
+        main["events"][0]["main"] == [{"id": "twitch-Genburten", "name": "官方直播", "platform": "twitch",
+                                       "room": "genburten"}]
+        and streamers["streamers"] == [{"id": "twitch-Shroud", "name": "某主播", "platform": "twitch", "room": "shroud"}])
+
+
 def sign_checks(out):
     out["SM3 对得上国密标准里的两个样例"] = (
         abogus.sm3(b"abc").hex() == "66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0"
@@ -487,6 +640,29 @@ def tool_checks(out):
     out["抖音大小写不同的同一个房间查得出来；带点的、别的平台写字母的照样不行"] = (
         code == 1 and data is None and "第 3 行：抖音 房间 xxfps 在第 2 行已经写过" in text
         and "第 4 行：房间号「a.b」只能是字母、数字、下划线" in text and "第 5 行：房间号「xxfps」只能是数字" in text)
+    seven = "名称,类型,阶段,开始,结束,队伍,主舞台"
+    with tempfile.TemporaryDirectory() as folder:
+        code, text, data = run_tool(folder, ["甲一,紫队,Twitch,ImperialHal__,", "甲二,紫队,斗鱼,11,"],
+                                    [f"训练赛,训练赛,,{day(0, '19:00')},{day(0, '23:00')},紫队,Twitch Genburten 二台"],
+                                    event_columns=seven)
+    out["发布脚本：Twitch 的房间号认登录名、转成小写；选手写成旧版本也认得的兼容写法（platform none + stream），"
+        "主舞台的 Twitch 直接写 twitch"] = (
+        code == 0 and data is not None
+        and data["players"][0] == {"id": "twitch-imperialhal__", "name": "甲一", "team": "紫队", "platform": "none",
+                                   "room": "", "liquipedia": "", "stream": {"platform": "twitch", "room": "imperialhal__"}}
+        and data["events"][0]["main"] == [
+            {"id": "twitch-genburten", "name": "二台", "platform": "twitch", "room": "genburten"}]
+        and esports_data.clean(data)["players"] == [
+            {"id": "twitch-imperialhal__", "name": "甲一", "team": "紫队", "platform": "twitch",
+             "room": "imperialhal__", "liquipedia": ""},
+            {"id": "douyu-11", "name": "甲二", "team": "紫队", "platform": "douyu", "room": "11", "liquipedia": ""}])
+    with tempfile.TemporaryDirectory() as folder:
+        code, text, data = run_tool(folder, ["甲一,紫队,Twitch,ImperialHal__/x,", "甲二,紫队,Twitch," + "a" * 26 + ","],
+                                    [f"训练赛,训练赛,,{day(0, '19:00')},{day(0, '23:00')},紫队"], event_columns=seven)
+    out["发布脚本：Twitch 的房间号只能是字母、数字、下划线（带 / 的、超过 25 个字的不收）"] = (
+        code == 1 and data is None
+        and "第 2 行：房间号「ImperialHal__/x」只能是字母、数字、下划线（直播间地址 twitch.tv/ 后面那一段）" in text
+        and "第 3 行：房间号「" + "a" * 26 + "」只能是字母、数字、下划线" in text)
     quiet_event = [f"训练赛,训练赛,,{day(0, '19:00')},{day(0, '23:00')},安静队"]
     with tempfile.TemporaryDirectory() as folder:
         code, text, data = run_tool(folder, ["甲一,安静队,斗鱼,11,", "甲二,安静队,不直播,,", "甲三,安静队,不直播,,Jia3"], quiet_event)
@@ -501,7 +677,7 @@ def tool_checks(out):
                                     [quiet_event[0] + ",不直播 1 某台"], event_columns="名称,类型,阶段,开始,结束,队伍,主舞台")
     out["不直播的选手写了房间号、开直播的没写房间号、主舞台写「不直播」：都指出来，不生成文件"] = (
         code == 1 and data is None and "第 3 行：不直播的选手「房间号」要空着（现在是「123」）" in text
-        and "第 4 行：「房间号」是空的" in text and "主舞台的平台「不直播」不认识，只能写 斗鱼 / 虎牙 / B站 / 抖音" in text
+        and "第 4 行：「房间号」是空的" in text and "主舞台的平台「不直播」不认识，只能写 斗鱼 / 虎牙 / B站 / 抖音 / Twitch" in text
         and "第 3 行：「房间号」是空的" not in text)
     seven = "名称,类型,阶段,开始,结束,队伍,主舞台"
     with tempfile.TemporaryDirectory() as folder:
@@ -649,7 +825,7 @@ def streamer_checks(out):
 
 
 def main():
-    print("赛事数据（赛事文件的格式和下载、查开播状态、抖音签名、发赛事数据的脚本）")
+    print("赛事数据（赛事文件的格式和下载、查开播状态、Twitch、抖音签名、发赛事数据的脚本）")
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     out = {}
@@ -659,6 +835,8 @@ def main():
         download_checks(out, server)
         parse_checks(out)
         query_checks(out)
+        twitch_checks(out)
+        twitch_data_checks(out)
         sign_checks(out)
         tool_checks(out)
         streamer_checks(out)

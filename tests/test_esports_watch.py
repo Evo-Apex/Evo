@@ -9,6 +9,8 @@
   名字里的尖括号不会变成网页的一部分
 - 开播状态接口：只查这场赛事名单里的人；50 秒内再问不重查；带上平台开关；头像只要 https 的；
   没有这场赛事回 404（页面据此回赛事页）
+- Twitch（2026-11-25）：名单里的那一行照样能点、带着问播放地址和弹幕的接口；页面有它的弹幕（IRC over WebSocket，
+  匿名只读）和"连不上"那一行说明（role=status）；开播状态带着 unreachable；连不上时那一格的话（用户定的）和"重试"：retry=1 马上重查
 - Apex 在不在运行的接口
 - 别的页面照旧有侧边栏（导航和主题按钮）
 
@@ -19,6 +21,7 @@ import html
 import json
 import re
 import tempfile
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -184,7 +187,7 @@ def main():
         and by_id["douyu-1"]["url"] == "https://www.douyu.com/101" and by_id["douyu-3"]["url"] == "https://www.huya.com/103"
         and by_id["bilibili-2"]["embed"] == "https://www.bilibili.com/blackboard/live/live-activity-player.html?cid=102&quality=1"
         and [p["id"] for p in by_id.values() if p["embed"]] == ["bilibili-1", "bilibili-2"]
-        and data["platforms"] == {"douyu": True, "huya": True, "bilibili": True, "douyin": False}
+        and data["platforms"] == {"douyu": True, "huya": True, "bilibili": True, "douyin": False, "twitch": True}
         and data["status_url"] == "/esports/live/status" and data["game_url"] == "/esports/game")
     picked = page_data(client.get("/esports/live/watch?p=bilibili-2").get_data(as_text=True))
     wrong = page_data(client.get("/esports/live/watch?p=nobody").get_data(as_text=True))
@@ -213,7 +216,8 @@ def main():
         players = got["players"]
         out["开播状态接口：只查这场赛事名单里的人，回每个人在不在播、标题、开播时刻；不把没查到的原因发给页面"] = (
             asked == [sorted(by_id)] and players["douyu-1"] == {"state": "live", "loop": False, "title": "比赛日",
-                                                              "since": 1794900000, "avatar": "https://apic.douyucdn.cn/a.jpg"}
+                                                              "since": 1794900000, "avatar": "https://apic.douyucdn.cn/a.jpg",
+                                                              "unreachable": False}
             and players["douyu-2"]["state"] == "error" and players["douyu-3"]["state"] == "offline"
             and "连不上" not in json.dumps(got, ensure_ascii=False))
         out["头像只要 https 的（http 的换成 https），别的不要"] = (
@@ -384,6 +388,79 @@ def main():
     serve(folder)
     home = client.get("/esports").get_data(as_text=True)
     out["别的页面照旧有侧边栏（导航和主题按钮）"] = '<nav class="nav"' in home and 'id="theme-toggle"' in home and 'id="side"' in home
+    # ---- Twitch（2026-11-25）----
+    now = datetime.now().astimezone()
+    twitch_players = [{"id": "twitch-imperialhal__", "name": "ImperialHal", "team": "甲队", "platform": "twitch",
+                       "room": "imperialhal__"},
+                      {"id": "douyu-101", "name": "Kite", "team": "甲队", "platform": "douyu", "room": "101"}]
+    twitch_event = {"id": "live", "name": "示例联赛", "type": "联赛", "stage": "",
+                    "start": (now - timedelta(hours=1)).isoformat(), "end": (now + timedelta(hours=2)).isoformat(),
+                    "teams": ["甲队"]}
+    (Path(folder) / "esports.json").write_text(
+        json.dumps({"version": 1, "updated": now.isoformat(), "players": twitch_players, "events": [twitch_event]}),
+        encoding="utf-8")
+    esports_data.URL = str(Path(folder) / "esports.json")
+    esports_data.CACHE_PATH.unlink(missing_ok=True)
+    panel_esports._status.update(at=0.0, found={})
+    twitch_page = client.get("/esports/live/watch").get_data(as_text=True)
+    twitch_data = page_data(twitch_page)
+    twitch = next(p for p in twitch_data["players"] if p["platform"] == "twitch")
+    out["Twitch：名单里的那一行能在页面里点（脚本按在播点亮），带着问播放地址和弹幕的接口；直播间地址按配置拼"] = (
+        twitch["play"] == "/esports/play/twitch-imperialhal__"
+        and twitch["danmaku"] == "/esports/danmaku/twitch-imperialhal__"
+        and twitch["url"] == "https://www.twitch.tv/imperialhal__" and twitch["embed"] is None
+        and 'data-player="twitch-imperialhal__"' in twitch_page and '<span class="es-dot pf-twitch"' in twitch_page)
+    out["页面上的 Twitch 弹幕（IRC over WebSocket，匿名只读）和\"连不上\"那一行说明、退路里的那句话"] = (
+        "function twitchRead(cell, chat, socket, text)" in twitch_page
+        and 'socket.send("CAP REQ :twitch.tv/tags");' in twitch_page
+        and 'socket.send("PASS SCHMOOPIIE");' in twitch_page
+        and 'socket.send("NICK justinfan" + (1000 + Math.floor(Math.random() * 99000)));' in twitch_page
+        and 'socket.send("JOIN #" + found.room);' in twitch_page
+        and 'found.platform === "twitch"' in twitch_page
+        and 'id="watch-unreachable" role="status" hidden>连不上 Twitch：在国内要能访问国外网站' in twitch_page
+        and 's && s.unreachable ? "连不上"' in twitch_page
+        and "Twitch 在国内要能访问国外网站" in twitch_page
+        and 'message("啊哦，看起来你不具备看Twitch的“环境”，重试一下吧", "你知道怎么做的，对吧")' in twitch_page
+        and "return twitchDown(" in twitch_page and 'el("button", "watch-primary", "重试")' in twitch_page
+        and '"retry=1"' in twitch_page)
+    asked = []
+
+    def twitch_query(players):
+        asked.extend(p["id"] for p in players)
+        return {p["id"]: live_status.result("error" if p["platform"] == "twitch" else "live",
+                                            unreachable=p["platform"] == "twitch") for p in players}
+
+    def twitch_live(players):
+        return {p["id"]: live_status.result("live", since=1794900000) for p in players}
+
+    real_query = live_status.query
+    try:
+        live_status.query = twitch_live
+        panel_esports._status.update(at=0.0, found={})
+        on_air = client.get("/esports/live/status").get_json()
+        live_status.query = twitch_query
+        panel_esports._status.update(at=0.0, found={})
+        status = client.get("/esports/live/status").get_json()
+        # 玩家点了"重试"（retry=1）：忘掉 Twitch 的"连不上"、不用 50 秒内查过的，马上重查
+        asked.clear()
+        client.get("/esports/live/status")  # 刚查过：用上次的，不重查
+        cached_asked = list(asked)
+        live_status._twitch_down[0] = time.time() + 999
+        client.get("/esports/live/status?retry=1")
+        retried = (sorted(asked) == ["douyu-101", "twitch-imperialhal__"] and live_status._twitch_down[0] == 0.0)
+    finally:
+        live_status.query = real_query
+        live_status._twitch_down[0] = 0.0
+        panel_esports._status.update(at=0.0, found={})
+    out["Twitch 连不上时点\"重试\"（retry=1）：忘掉刚才的连不上，不用 50 秒内查过的、马上重查；不带 retry 照旧用上次的"] = (
+        cached_asked == [] and retried)
+    out["Twitch 连不上时开播状态带着 unreachable（别的平台照旧 False），页面据此写\"连不上\"和那一行说明"] = (
+        status["players"]["twitch-imperialhal__"]["unreachable"] is True
+        and status["players"]["douyu-101"]["unreachable"] is False
+        and sorted(asked) == ["douyu-101", "twitch-imperialhal__"])
+    out["Twitch 在播时和别的平台一样（状态是 live、带开播时刻），页面据此把那一行点亮"] = (
+        on_air["players"]["twitch-imperialhal__"]["state"] == "live"
+        and on_air["players"]["twitch-imperialhal__"]["since"] == 1794900000)
     return report(out)
 
 

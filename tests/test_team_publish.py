@@ -9,6 +9,8 @@
 - 不直播的选手：平台写「不直播」、房间号空着，两边生成的编号一样（none- + 选手名 sha256 的前 12 位），两个不直播的不算重复，
   不直播还写了房间号、主舞台写不直播两边都不收
 - 平台名单（英文名、中文名、直播间地址、房间号的写法、顺序）和 config/watch.json 一样
+- Twitch（2026-11-25）：两边的平台名单都有它、房间号转小写；选手都写成旧版本也认得的兼容写法（platform none + stream），
+  Evo 读成 twitch；主舞台的 Twitch 直接写 platform twitch
 两边走的都是真实的流程：网页是"保存时的检查 → 生成"，Python 是 tools/esports.py 的 check_players → build
 要 Node.js（协作网页是 JavaScript）：电脑上没有 node 就跳过。
 运行：python tests/test_team_publish.py
@@ -55,7 +57,8 @@ def sample():
     for team, people in [("星火电竞", [("Kite", "douyu", "520013", "Kite_(player)"), ("Ace", "bilibili", "100", ""),
                                         (LONG, "huya", "200", "")]),
                          ("北辰", [("北一", "douyin", "XXFPS", ""), ("北二", "douyin", "NOVA_Tt1seven", ""), ("北三", "douyu", "303", "")]),
-                         ("没比赛的队", [("闲一", "douyu", "901", ""), ("闲二", "douyu", "902", ""), ("闲三", "douyu", "903", "")]),
+                         ("没比赛的队", [("闲一", "douyu", "901", ""), ("闲二", "douyu", "902", ""), ("闲三", "douyu", "903", ""),
+                                          ("闲四", "twitch", "ImperialHal__", "")]),
                          ("安静队", [("甲一", "douyu", "11", ""), ("甲二", "不直播", "", ""), ("甲三", "不直播", "", "Jia3")])]:
         for name, platform, room, liquipedia in people:
             players.append({"name": name, "team": team, "platform": platform, "room": room, "liquipedia": liquipedia})
@@ -107,12 +110,18 @@ def main():
                    ids == ["20261110-1700-cup", "20261117-1000-scrim", "20261117-1900-league", "20261118-1900-cup",
                            "20261118-1900-cup-2"], ids))
     checks.append(("选手放全部（没比赛的队也在）、40 个字的名字留着", {p["team"] for p in python["players"]} == {"星火电竞", "北辰", "没比赛的队", "安静队"}
-                   and len(python["players"]) == 12 and any(p["name"] == LONG for p in python["players"]), [p["name"] for p in python["players"]]))
+                   and len(python["players"]) == 13 and any(p["name"] == LONG for p in python["players"]), [p["name"] for p in python["players"]]))
     cleaned = esports_data.clean(web["data"])
-    checks.append(("Evo 读网页生成的文件一条都不去掉", len(cleaned["players"]) == 12 and len(cleaned["events"]) == 5,
+    checks.append(("Evo 读网页生成的文件一条都不去掉", len(cleaned["players"]) == 13 and len(cleaned["events"]) == 5,
                    (len(cleaned["players"]), len(cleaned["events"]))))
     checks.append(("平台开关照给的原样（没写的当作开）",
-                   python["platforms"] == {"douyu": False, "huya": True, "bilibili": True, "douyin": True}, python["platforms"]))
+                   python["platforms"] == {"douyu": False, "huya": True, "bilibili": True, "douyin": True, "twitch": True}, python["platforms"]))
+    twitch = next(p for p in web["data"]["players"] if p["name"] == "闲四")
+    checks.append(("Twitch 的选手两边都写成旧版本也认得的兼容写法（platform none + stream），Evo 读成 twitch 的小写登录名",
+                   twitch == {"id": "twitch-imperialhal__", "name": "闲四", "team": "没比赛的队", "platform": "none", "room": "",
+                              "liquipedia": "", "stream": {"platform": "twitch", "room": "imperialhal__"}}
+                   and next(p for p in cleaned["players"] if p["name"] == "闲四")["platform"] == "twitch"
+                   and next(p for p in cleaned["players"] if p["name"] == "闲四")["room"] == "imperialhal__", twitch))
     checks.append(("更新时间的写法一样", web["data"]["updated"] == "2026-11-17T20:00:05+08:00", web["data"]["updated"]))
     checks.append(("队徽：只放用到、写法对的队，只留 logo", python.get("teams") == {"北辰": {"logo": "3fa9c1d2e4b5a6f7.webp"}}
                    and list(web["data"]).index("teams") > list(web["data"]).index("events"), python.get("teams")))

@@ -18,6 +18,7 @@ import base64
 import json
 import re
 import tempfile
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -155,8 +156,10 @@ def renew_checks(out):
 
 def play_checks(out):
     calls, state = [], {"refuse": 0}
+    # 用现在的时间当基准：斗鱼登录"从存下起 7 天"，写死的时间过几天就过期了，_play_as_user 会先去续期（2026-11-25 修）
+    stamp = time.time()
     enc = {"error": 0, "data": {"key": "KEY", "rand_str": "RAND", "enc_time": 2, "enc_data": "ENC", "is_special": 0,
-                                "expire_at": 1794900000 + 600}}
+                                "expire_at": stamp + 600}}
 
     def play(rate):
         return {"error": 0, "data": {"rate": rate, "rtmp_url": "https://hw.douyucdn.cn/live", "rtmp_live": "a.flv?expire=0",
@@ -180,14 +183,14 @@ def play_checks(out):
     try:
         douyu_login.forget()
         watch_douyu._encryption.clear()
-        guest = watch_douyu.resolve("520013", None, get=get, now=1794900000)
+        guest = watch_douyu.resolve("520013", None, get=get, now=stamp)
         out["没登录：照旧用这次运行的设备号当游客要，斗鱼给蓝光4M"] = (
             guest["rate"] == "4" and guest["logged"] is False and f"did={watch_douyu.DEVICE_ID}" in calls[0][0]
             and calls[1][1]["did"] == watch_douyu.DEVICE_ID and "acf_auth" not in calls[1][2] and renewals == [])
 
-        douyu_login.save(COOKIE, now=1794900000.0)
+        douyu_login.save(COOKIE, now=stamp)
         calls.clear()
-        logged = watch_douyu.resolve("520013", None, get=get, now=1794900000)
+        logged = watch_douyu.resolve("520013", None, get=get, now=stamp)
         out["登录着：换了设备号所以重新要签名材料；签名材料、表单、Cookie 都用登录 Cookie 里的 dy_did，Cookie 里带着登录、不带 LTP0；给原画"] = (
             logged["rate"] == "0" and logged["logged"] is True and len(calls) == 2 and f"getEncryption?did={DID}" in calls[0][0]
             and calls[1][1]["did"] == DID and calls[1][2].startswith(f"dy_did={DID}; acf_did={DID}; acf_auth=AUTH-TOKEN-EXAMPLE")
@@ -196,7 +199,7 @@ def play_checks(out):
 
         calls.clear()
         state["refuse"] = 2  # 带着登录要了两次（一次里面换签名材料再试）都被拒绝
-        again = watch_douyu.resolve("520013", None, get=get, now=1794900000)
+        again = watch_douyu.resolve("520013", None, get=get, now=stamp)
         out["带着登录被拒绝了：强制续一次期，用新的登录再要，要到原画"] = (
             again["rate"] == "0" and again["logged"] is True and renewals == [f"dy_did={DID};LTP0=LONG-TERM-KEY-EXAMPLE"]
             and "acf_auth=RENEWED" in calls[-1][2])
@@ -204,7 +207,7 @@ def play_checks(out):
         calls.clear()
         renewals.clear()
         state["refuse"] = 99
-        fallback = watch_douyu.resolve("520013", None, get=get, now=1794900000)
+        fallback = watch_douyu.resolve("520013", None, get=get, now=stamp)
         out["续了期还是被拒绝：当游客再要一次，至少能看蓝光4M（登录出了问题不能连直播都看不了）"] = (
             fallback["rate"] == "4" and fallback["logged"] is False and len(renewals) == 1
             and "acf_auth" not in calls[-1][2] and calls[-1][1]["did"] == watch_douyu.DEVICE_ID)

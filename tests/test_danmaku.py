@@ -2,6 +2,7 @@
 
 - 斗鱼：从房间信息里拿真实房间号（外面包几层都认）；弹幕服务器的地址照配置给，必须是 wss://
 - B站：用游客身份要弹幕的口令（WBI 签名、游客的设备号，记 6 小时），不带玩家的登录；短号换成真实房间号；弹幕服务器只认 B站自己的
+- Twitch（2026-11-25）：不用联网，回官方聊天服务器的地址（照配置）和小写的登录名（匿名只读，页面自己连）
 - 没做的平台、房间号写得不对：不给
 - 面板的接口：只给能在窗口里用 Evo 自己的播放器播、弹幕做了的选手；平台那边没问到说明原因
 - 看直播页给脚本的数据里，只有这样的选手带着问弹幕的地址；页面上有弹幕的开关和连斗鱼的脚本
@@ -138,6 +139,10 @@ def main():
     out["B站没给口令（风控 -352：下次重新要设备号和 key）、连不上：说明原因"] = (
         len(reasons) == 2 and "-352" in reasons[0] and reasons[1] == "连不上 B站" and danmaku._bili["at"] == 0.0)
     danmaku._bili.update(at=0.0, key="", cookie="", buvid="")
+    out["Twitch：不用联网，回聊天服务器的地址（照配置）和小写的登录名；登录名写得不对不给"] = (
+        danmaku.supported("twitch") and danmaku.info("twitch", "ImperialHal__") == {
+            "platform": "twitch", "url": live_status.PLATFORMS["twitch"]["danmaku_url"], "room": "imperialhal__"}
+        and danmaku.info("twitch", "a/b") is None)
 
     # ---- 面板 ----
     folder = tempfile.mkdtemp(prefix="evo-danmaku-")
@@ -147,7 +152,8 @@ def main():
     client = panel_app.app.test_client()
     players = [{"id": "douyu-88", "name": "示例选手1", "team": "示例战队", "platform": "douyu", "room": "88"},
                {"id": "huya-89", "name": "示例选手2", "team": "示例战队", "platform": "huya", "room": "89"},
-               {"id": "bilibili-90", "name": "示例选手3", "team": "示例战队", "platform": "bilibili", "room": "90"}]
+               {"id": "bilibili-90", "name": "示例选手3", "team": "示例战队", "platform": "bilibili", "room": "90"},
+               {"id": "twitch-91", "name": "示例选手4", "team": "示例战队", "platform": "twitch", "room": "ImperialHal__"}]
     events = [{"id": "live", "name": "示例赛", "type": "联赛", "stage": "", "start": (NOW - timedelta(hours=1)).isoformat(),
                "end": (NOW + timedelta(hours=3)).isoformat(), "teams": ["示例战队"]}]
 
@@ -164,7 +170,12 @@ def main():
     data = json.loads(page[start:page.find("</script>", start)])
     urls = {p["id"]: p["danmaku"] for p in data["players"]}
     out["看直播页给脚本的数据：只有弹幕做了、能用 Evo 自己的播放器播的选手带着问弹幕的地址"] = (
-        urls == {"douyu-88": "/esports/danmaku/douyu-88", "huya-89": None, "bilibili-90": "/esports/danmaku/bilibili-90"})
+        urls == {"douyu-88": "/esports/danmaku/douyu-88", "huya-89": None, "bilibili-90": "/esports/danmaku/bilibili-90",
+                 "twitch-91": "/esports/danmaku/twitch-91"})
+    twitch_info = client.get("/esports/danmaku/twitch-91").get_json()
+    out["Twitch 的弹幕：面板把聊天服务器的地址和小写的登录名交给页面（不用联网，房间号存成小写）"] = (
+        twitch_info == {"ok": True, "platform": "twitch", "url": live_status.PLATFORMS["twitch"]["danmaku_url"],
+                        "room": "imperialhal__"})
     out["页面上有弹幕的开关和连斗鱼、B站的脚本：弹幕只当纯文字显示，那一层不挡点击、不让读屏软件念；B站用游客身份、要 zlib 不要 brotli"] = (
         "watch-danmaku-btn" in page and "function douyuPacket(text)" in page and "type@=joingroup/rid@=" in page
         and "function biliPacket(op, text)" in page and "uid: 0, roomid: found.room, protover: 2" in page

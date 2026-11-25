@@ -1,5 +1,5 @@
 {
-  "_说明": "赛事页、看直播（code/live_status.py、code/esports_data.py）：四个直播平台的名字、直播间地址、查房间的接口和请求头。和识别游戏画面无关。平台改了接口先改这里",
+  "_说明": "赛事页、看直播（code/live_status.py、code/esports_data.py）：五个直播平台的名字、直播间地址、查房间的接口和请求头。和识别游戏画面无关。平台改了接口先改这里",
   "logo_url": "https://dl.evotracker.cn/esports/logos/{file}",
   "_说明_logo_url": "队徽图片的地址。esports.json 里每支队只写文件名（如 3fa9c1d2e4b5a6f7.webp），Evo 自己拼成这个地址：赛程文件被人改了也只会去这里拿图",
   "timeout": 10,
@@ -74,6 +74,24 @@
       "referer": "https://live.douyin.com/",
       "blocked_text": ["verify_data", "验证码中间页"],
       "_说明": "两步：先开直播间网页（约 1 MB，内部房间号在最后；在播的房间记着这一场的内部房间号，下次不用再开网页；顺便收下游客 Cookie ttwid，只留在内存里），再用内部房间号问 info_url（参数后面接 room_id、msToken，带 a_bogus 签名，code/abogus.py）。room.status 2 = 在播、4 = 没开播。user_agent 参与签名，要和请求头一样。player = direct：用 Evo 自己的播放器播，页面直接连抖音的视频服务器、不经过本机中转（取地址 code/watch_douyin.py：各档的地址就在 info_url 的回包里，只要 H.264 的）。room_pattern：房间号可以怎么写（没写这一项的平台只能是数字）。抖音的直播间地址 live.douyin.com/ 后面除了数字房间号，也可以是主播的抖音号（字母、数字、下划线，不分大小写；2026-11-18 实测两种写法读出来的是同一场直播）；带点的抖音号没试过，不收。default_max_bitrate：玩家没选过清晰度时，要码率（比特每秒）不超过这个数的最好一档（9000000 = 一般是 1080p60 8 Mbps 那一档；原画有的房间 15–20 Mbps）；写 0 是不限、要最好的"
+    },
+    "twitch": {
+      "name": "Twitch",
+      "room_url": "https://www.twitch.tv/{room}",
+      "room_pattern": "[A-Za-z0-9_]{1,25}",
+      "player": "hls",
+      "gql_url": "https://gql.twitch.tv/gql",
+      "client_id": "kimne78kx3ncx6brgo4mv6wki5h1ko",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+      "origin": "https://www.twitch.tv",
+      "referer": "https://www.twitch.tv/",
+      "usher_url": "https://usher.ttvnw.net/api/channel/hls/{login}.m3u8",
+      "token_hash": "ed230aa1e33e07eebb8928504583da78a5173989fadfb1ac94be06a04f3cdbe9",
+      "danmaku_url": "wss://irc-ws.chat.twitch.tv:443",
+      "batch_size": 100,
+      "timeout": 5,
+      "unreachable_retry_seconds": 120,
+      "_说明": "不登录（匿名就有 1080p60 原画），照 PureLive（https://github.com/wzgrx/PureLive ，AGPL-3.0）的接口和请求头，2026-11-25 从瑞士实测过（全部能用）。中国大陆上不去 Twitch，玩家要自己开着能访问国外网站的工具（系统代理或 TUN）：Evo 不加任何代理设置，Python 的 urllib 和 WebView2 在 Windows 上本来就跟着系统代理走。room_pattern：登录名（直播间地址 twitch.tv/ 后面那一段，1–25 个字母、数字、下划线，不分大小写；查询和存都转小写）。gql_url 是 Twitch 网页版自己的 GraphQL 接口：查开播状态用一次查多个的 users(logins:)，每次最多 batch_size（100）个，回 data.users（null = 这个名字不存在；stream 是 null = 没开播，type live = 在播、rerun = 重播（当轮播，算没开播））；请求要带 client_id（Twitch 网页版自己的）、user_agent、origin、referer，还有一个每次启动随机生成的 Device-ID（只在内存里）。取视频地址分两步（code/watch_twitch.py）：先向 gql_url 要播放令牌（PlaybackAccessToken，用 token_hash 这个固定的查询编号），回 data.streamPlaybackAccessToken = {value, signature}（null = 没有这个频道；回包 errors 里有 PersistedQueryNotFound = Twitch 改了接口）；再问 usher_url（{login} 换成小写的登录名，后面接 allow_source=true&platform=web&player_backend=mediaplayer&playlist_include_framerate=true&fast_bread=true&supported_codecs=h264&p=随机整数&sig=…&token=…，只要 H.264），回的是各档的目录（GROUP-ID：chunked 是原画，还有 720p60、480p30、360p30、160p30，有时有 audio_only 不要），每一档的播放列表是 TS 段（2 秒一段），经本机中转接成一条 TS 流（hls_relay.py）给页面里的 mpegts.js。没开播回 404，403 的回包里写着原因（地区限制、订阅专属）。player = hls：和 B站登录以后一样走 Evo 自己的播放器、经本机中转。danmaku_url：Twitch 官方的聊天服务器（IRC over WebSocket），匿名只读，页面直接连，不登录。timeout：Twitch 单独用 5 秒（国内连不上时少等，其他平台还是上面那个 10 秒）。unreachable_retry_seconds：连不上（网络层失败，不是 HTTP 4xx/5xx）以后这么久以内再查 Twitch 不发请求、马上回“连不上”，只在内存里记着；这样没开代理的玩家每 2 分钟最多多等一次 5 秒（查开播是页面在后台问的，不卡页面），打开代理以后最慢 2 分钟恢复（2026-11-25 验收时从 600 秒改成 120 秒：原来打开代理要等 10 分钟）。广告照原样转，不识别、不跳过（Twitch 有时把广告插进视频：播放列表里的 #EXT-X-DATERANGE CLASS=\"twitch-stitched-ad\"、#EXT-X-DISCONTINUITY，中转当注释跳过、画面照放）"
     }
   }
 }

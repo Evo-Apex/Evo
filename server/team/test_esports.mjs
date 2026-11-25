@@ -199,8 +199,8 @@ const data = JSON.parse(testFile.body);
 check("写的是 JSON、不缓存", testFile.options.httpMetadata.contentType === "application/json; charset=utf-8"
   && testFile.options.httpMetadata.cacheControl === "no-cache");
 check("只写测试文件，正式文件没动", !env.PUBLIC.objects.has("esports.json") && env.PUBLIC.objects.size === 1);
-check("版本、更新时间、四个平台都开", data.version === 1 && data.updated === "2026-11-17T12:00:00+08:00"
-  && JSON.stringify(data.platforms) === '{"douyu":true,"huya":true,"bilibili":true,"douyin":true}');
+check("版本、更新时间、五个平台都开", data.version === 1 && data.updated === "2026-11-17T12:00:00+08:00"
+  && JSON.stringify(data.platforms) === '{"douyu":true,"huya":true,"bilibili":true,"douyin":true,"twitch":true}');
 check("赛事按开始时间排、id 是时间加类型、太早的不放", data.events.map((x) => x.id).join() === "20261116-1900-cup,20261117-1000-scrim,20261117-1930-league,20261120-1900-cup");
 check("选手的 id 是平台-房间号、只放用到的队", data.players.length === 9 && data.players.find((x) => x.name === "Kite").id === "douyu-520015");
 check("记下谁发的", env.DATA.json(PUBLISHED).test.by === "能发布的编辑" && logTexts()[0].startsWith("发布测试文件：4 场赛事、3 支队、9 位选手"));
