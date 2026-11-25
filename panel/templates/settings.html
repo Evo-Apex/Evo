@@ -36,6 +36,19 @@
           <option value="light">白天</option>
         </select>
       </div>
+      <form method="post" action="{{ url_for('sidebar_setting') }}" class="setting">
+        <input type="hidden" name="token" value="{{ token }}">
+        <div class="setting-text">
+          <label class="setting-name" for="sidebar-auto-seconds">侧边栏自动收起</label>
+          <div class="setting-desc" id="sidebar-auto-desc">鼠标离开侧边栏后开始计时，键盘操作时暂停。0 表示关闭。</div>
+        </div>
+        <div class="setting-actions inline sidebar-auto-actions">
+          <input id="sidebar-auto-seconds" name="seconds" type="number" min="0" max="600" step="1"
+                 value="{{ sidebar_auto_seconds }}" aria-describedby="sidebar-auto-desc" required style="width: 80px">
+          <span>秒</span>
+          <button type="submit" class="btn">保存</button>
+        </div>
+      </form>
       {# 开机自动启动（autostart.py）：开关显示 Windows 里实际的状态（任务管理器里关掉了也显示关）；没开成写在开关下面 #}
       <div class="setting">
         <div class="setting-text">
@@ -705,9 +718,8 @@
       return { link: a, title: document.getElementById(a.dataset.target) };
     }).filter(function (it) { return it.title; });
     if (!items.length) return;
-    var inApp = document.documentElement.classList.contains("in-app");
-    var scroller = inApp ? document.body : document.scrollingElement;
-    var scrollTarget = inApp ? scroller : window;
+    var scroller = document.documentElement.classList.contains("in-app") ? document.body : document.scrollingElement;
+    var scrollTarget = scroller === document.body ? scroller : window;
     var held = null, queued = false;
     function mark(item) {
       items.forEach(function (it) {
@@ -718,14 +730,16 @@
     function spy() {
       queued = false;
       if (held) return;
-      var height = scroller.clientHeight;
-      var top = inApp ? scroller.getBoundingClientRect().top : 0;
-      var line = top + height / 3, pick = items[0];
+      var top = scroller === document.body ? scroller.getBoundingClientRect().top : 0;
+      var line = top + scroller.clientHeight / 3, pick = items[0];
       items.forEach(function (it) { if (it.title.getBoundingClientRect().top <= line) pick = it; });
-      if (scroller.scrollTop > 0 && scroller.scrollTop + height >= scroller.scrollHeight - 2) pick = items[items.length - 1];
+      if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2 && scroller.scrollTop > 0) pick = items[items.length - 1];
       mark(pick);
     }
-    scrollTarget.addEventListener("scroll", function () { if (!queued) { queued = true; requestAnimationFrame(spy); } }, { passive: true });
+    function scheduleSpy() { if (!queued) { queued = true; requestAnimationFrame(spy); } }
+    scrollTarget.addEventListener("scroll", scheduleSpy, { passive: true });
+    window.addEventListener("resize", scheduleSpy);
+    if (window.ResizeObserver) new ResizeObserver(scheduleSpy).observe(document.querySelector(".settings-main"));
     // 自己滚（滚轮、拖滚动条、键盘翻页）时放开"停在点的那一栏"
     ["wheel", "touchstart", "pointerdown", "keydown"].forEach(function (type) {
       window.addEventListener(type, function (e) {

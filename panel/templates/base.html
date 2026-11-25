@@ -389,7 +389,11 @@
       root.classList.add("side-moving");  // 只在这时给侧边栏和内容起名字（style.css），切换主题时还是整页淡入淡出
       return document.startViewTransition(apply).finished.finally(function () { root.classList.remove("side-moving"); });
     }
-    toggle.addEventListener("click", function () { setCollapsed(!collapsed()); });
+    toggle.addEventListener("click", function () {
+      // 鼠标点展开按钮后的焦点不阻止计时；键盘操作留下的焦点会暂停计时。
+      if (!keyboardFocus) toggle.blur();
+      setCollapsed(!collapsed()).then(armAutoCollapse);
+    });
     // 设置页点分类时调用：展开着就收起（记作自动收起的）；已经收起的不动，也不改成"自动"
     window.evoAutoCollapseSide = function () {
       return collapsed() ? Promise.resolve() : setCollapsed(true, null, true);
@@ -398,6 +402,25 @@
     // 只有图标的地方（收起时的每一项，和展开时标志右边的主题按钮）：鼠标指上去、用键盘移过去时在右边显示名字。
     // 一块 fixed 的提示放到那一项右边（挂在每一项上会被会滚动的侧边栏裁掉）；点了、移开、滚动时收起
     var side = document.getElementById("side"), tip = document.getElementById("side-tip");
+    // 只设一个定时器；鼠标在侧边栏里、键盘正在操作、占用弹层打开时不打断操作。
+    var autoSeconds = {{ sidebar_auto_seconds|tojson }}, autoTimer = null, keyboardFocus = false;
+    function clearAutoCollapse() { clearTimeout(autoTimer); autoTimer = null; }
+    function armAutoCollapse() {
+      clearAutoCollapse();
+      if (!autoSeconds || collapsed() || document.hidden || side.matches(":hover") ||
+          (keyboardFocus && side.contains(document.activeElement)) ||
+          document.getElementById("usage-open").getAttribute("aria-expanded") === "true") return;
+      autoTimer = setTimeout(function () { hideTip(); setCollapsed(true); }, autoSeconds * 1000);
+    }
+    side.addEventListener("pointerenter", clearAutoCollapse);
+    side.addEventListener("pointerleave", armAutoCollapse);
+    document.addEventListener("keydown", function () { keyboardFocus = true; armAutoCollapse(); });
+    document.addEventListener("pointerdown", function () { keyboardFocus = false; armAutoCollapse(); }, true);
+    side.addEventListener("focusin", armAutoCollapse);
+    side.addEventListener("focusout", function () { setTimeout(armAutoCollapse, 0); });
+    document.addEventListener("visibilitychange", armAutoCollapse);
+    new MutationObserver(armAutoCollapse).observe(document.getElementById("usage-open"), { attributes: true, attributeFilter: ["aria-expanded"] });
+    armAutoCollapse();
     function hideTip() { tip.hidden = true; }
     function showTip(el) {
       if (!el || !(collapsed() || el.hasAttribute("data-tip-always"))) { hideTip(); return; }

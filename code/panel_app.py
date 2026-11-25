@@ -278,6 +278,7 @@ def template_globals():
         # 在 Evo 自己的窗口里打开（app_window.py 会在 User-Agent 里带上 EvoApp）：显示自定义标题栏
         "in_app": "EvoApp/" in request.headers.get("User-Agent", ""),
         "token": app.config["TOKEN"],
+        "sidebar_auto_seconds": sidebar_auto_seconds(),
         "is_demo": Path(app.config["DB"]).name != storage.DB_PATH.name,
         "db_name": Path(app.config["DB"]).name,
         "nav": nav_items(),
@@ -1527,6 +1528,23 @@ def size_text(n):
 
 def db_path():
     return Path(app.config["DB"]).resolve()
+
+
+def sidebar_auto_seconds():
+    value = app_settings.get("sidebar_auto_seconds", 0)
+    return value if type(value) is int and 0 <= value <= 600 else 0
+
+
+@app.post("/settings/sidebar")
+def sidebar_setting():
+    try:
+        seconds = int(request.form.get("seconds", ""))
+    except ValueError:
+        abort(400)
+    if not 0 <= seconds <= 600:
+        abort(400)
+    app_settings.set_value("sidebar_auto_seconds", seconds)
+    return redirect(url_for("settings"))
 
 
 @app.route("/settings")
