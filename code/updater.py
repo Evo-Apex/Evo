@@ -4,8 +4,10 @@
 "安装并重新启动"，再点一次才安装。从不在用户不知道时下载或安装。只有打包好的 Evo.exe 能用；用源码运行时只能去官网下载。
 
 流程：
-1. 下载（托盘程序里的后台线程，面板每半秒问一次进度）：地址来自 latest.json（只接受 dl.evotracker.cn，见
-   update_check.safe_download），边下边写进程序文件夹里的 _update/，边算 SHA-256，和 latest.json 写的对不上就删掉、报错。
+1. 下载（托盘程序里的后台线程，面板每半秒问一次进度）：点了"立即更新"先重新查一次最新版本（不再用上次查到的、可能已经过时的
+   版本信息），查到的比点的那个新就改下新的；正在下旧版本时又点了"立即更新"，会停掉旧的、改下新的。
+   地址来自 latest.json（只接受 dl.evotracker.cn，见 update_check.safe_download），边下边写进程序文件夹里的 _update/，
+   边算 SHA-256，和 latest.json 写的对不上就删掉、报错。
    补丁包（0.4.0 起，2026-10-24 用户决定，见 update_patch.py）：latest.json 里有从现在这个版本升上来的补丁包，就先下它
    （只有变了的文件，一般十几 MB）；补丁包用不了（本机的文件对不上、服务器上没有）才改下完整的安装包。
    国内线路（0.4.0 起，2026-10-24 用户决定）：latest.json 里还写着腾讯云 COS（上海）上同一个文件的地址（mirrors）。
@@ -100,9 +102,25 @@ class _TooSlow(Exception):
 
 
 _lock = threading.Lock()
-_job = {}  # 正在进行的下载 / 安装：{"phase", "version", "done", "total", "mirror", "error"}；空 = 没有
-_cancel = threading.Event()
+_job = {}  # 正在进行的下载 / 安装：{"phase", "version", "done", "total", "mirror", "channel", "checking", "error"}；空 = 没有
+_task = None  # 现在这个任务（_Task）：每个任务有自己的取消开关；旧的下载线程收尾时不是这个任务，就不能改 _job
+_task_number = 0
 _hooks = None  # 托盘程序接上（connect）：{"game_running", "quit", "log"}；单独运行面板时没有，不能安装
+
+
+class _Task:
+    """一次下载（或安装）：自己的取消开关和编号。新旧两个下载线程各用各的，不会互相取消、改状态。"""
+
+    def __init__(self, number):
+        self.number = number
+        self.cancel = threading.Event()
+
+
+def _next_task():
+    """开一个新任务（调用前要拿着 _lock）。"""
+    global _task_number
+    _task_number += 1
+    return _Task(_task_number)
 
 
 def connect(game_running, quit_app, log=None):
@@ -152,21 +170,22 @@ def install_blocker():
 def state(latest):
     """面板显示什么。latest 是 update_check.known_newer() 的结果，没有新版本时返回 None。返回字典，phase 是：
     manual（只能去官网下载）/ need_cdk（选了国内渠道、还没填 CDK）/ available（可以点"立即更新"）/
-    downloading（asking：正在问 Mirror酱 要下载地址）/ extracting / failed / ready（下载好了，blocked 是现在不能安装的原因）/
-    installing。channel 是这次用的渠道（"cn" / "global"），global_ok 是能不能改用国际渠道一键更新。"""
+    downloading（checking：正在重新查最新版本；asking：正在问 Mirror酱 要下载地址）/ extracting / failed /
+    ready（下载好了，blocked 是现在不能安装的原因）/ installing。channel 是这次用的渠道（"cn" / "global"），
+    global_ok 是能不能改用国际渠道一键更新。"""
+    with _lock:
+        job = dict(_job)
+    # 正在重新查最新版本：check() 可能已经写入了比 _job 新的版本，这一瞬间也照样返回这个任务，
+    # 免得面板闪一下"立即更新"、进度条没了（后台线程查完马上会把 _job 的版本改过来）
+    if job.get("checking") and job.get("phase") == "downloading":
+        return _shown_job(job)
     if not latest:
         return None
     version = latest["version"]
+    if job.get("version") == version and job.get("phase"):
+        return _shown_job(job)
     if not supported(latest):
         return {"phase": "manual", "version": version}
-    with _lock:
-        job = dict(_job)
-    if job.get("version") == version and job.get("phase"):
-        if job["phase"] == "downloading":
-            job["percent"] = min(100, int(job["done"] * 100 / job["total"])) if job["total"] else 0
-            job["done_mb"], job["total_mb"] = round(job["done"] / 2**20), round(job["total"] / 2**20)
-            job["asking"] = not job["total"]  # 国内渠道还在问 Mirror酱 要地址，还不知道多大
-        return job
     if staged(version):
         return {"phase": "ready", "version": version, "blocked": install_blocker()}
     if mirrorchyan.channel() == "cn":
@@ -175,6 +194,16 @@ def state(latest):
     info = update_check.safe_download(latest["download"])
     return {"phase": "available", "version": version, "size_mb": max(1, round((_patch_for(info) or info)["size"] / 2**20)),
             "channel": "global", "global_ok": True}
+
+
+def _shown_job(job):
+    """下载进度要显示的字段（百分比、MB、asking）。"""
+    if job["phase"] == "downloading":
+        done, total = job.get("done", 0), job.get("total", 0)
+        job["percent"] = min(100, int(done * 100 / total)) if total else 0
+        job["done_mb"], job["total_mb"] = round(done / 2**20), round(total / 2**20)
+        job["asking"] = job.get("channel") == "cn" and not total and not job.get("checking")  # 国内渠道还在问 Mirror酱 要地址
+    return job
 
 
 def _patch_for(info):
@@ -194,7 +223,10 @@ def take_result():
 
 def start_download(latest, channel=None):
     """点了"立即更新"：在后台开始下载（已经在下载、已经下载好了就什么也不做）。不能下载时抛出 UpdateError。
-    channel：这次用哪个渠道，默认是玩家在设置页选的；国内渠道没下成、玩家点了"这次改用国际渠道下载"时是 "global"。"""
+    channel：这次用哪个渠道，默认是玩家在设置页选的；国内渠道没下成、玩家点了"这次改用国际渠道下载"时是 "global"。
+    后台线程第一步先重新查一次最新版本（update_check.check）：查到更新的就改下新的。正在下旧版本时点这里，
+    会停掉旧的、改下新的。"""
+    global _task
     if not (FROZEN and _hooks is not None and latest):
         raise UpdateError("这个版本不能在 Evo 里更新，请去官网下载")
     channel = channel if channel in ("cn", "global") else mirrorchyan.channel()
@@ -205,80 +237,178 @@ def start_download(latest, channel=None):
         key = mirrorchyan.cdk()
         if not key:
             raise UpdateError("国内渠道要先在设置页填 Mirror酱 CDK")
-        work, args, total = _mirror_download, (version, key), 0
     else:
-        info = update_check.safe_download(latest.get("download"))
-        if info is None:
+        key = None
+        if update_check.safe_download(latest.get("download")) is None:
             raise UpdateError("这个版本不能从国际渠道一键更新，请去官网下载")
-        work, args, total = _download, (version, info), (_patch_for(info) or info)["size"]
+    switched_from = None
     with _lock:
-        if _job.get("phase") in ("downloading", "extracting", "installing") or staged(version):
+        phase, current = _job.get("phase"), _job.get("version")
+        if phase == "installing":
             return
+        # 正在下 / 解压的是一个比这次点的旧的版本：停掉旧的、改下新的；一样或更新就什么也不做
+        older = bool(phase in ("downloading", "extracting") and current
+                     and version_tuple(version) > version_tuple(current))
+        if phase in ("downloading", "extracting") and not older:
+            return
+        if staged(version):
+            if older:  # 新版本早就下载好了：旧的不用再下
+                if _task is not None:
+                    _task.cancel.set()
+                _task = None
+                _job.clear()
+            return
+        if older:
+            switched_from = current
+            if _task is not None:
+                _task.cancel.set()  # 旧线程下一块数据到了就停；它收尾时不会动下面的新任务
+        task = _next_task()
+        _task = task
         _job.clear()
-        _job.update(phase="downloading", version=version, done=0, total=total, mirror=False, channel=channel,
-                    global_ok=global_ok(latest))
-        _cancel.clear()
-    threading.Thread(target=work, args=args, name="update-download", daemon=True).start()
+        # total 先写 0：后台线程还要先查一次最新版本，查完才知道下哪个、多大（checking=True 时页面显示"正在查最新版本…"）
+        _job.update(phase="downloading", version=version, done=0, total=0, mirror=False, channel=channel,
+                    global_ok=global_ok(latest), checking=True)
+    if switched_from:
+        _log(f"正在下 {switched_from}，改成下 {version}")
+    threading.Thread(target=_run, args=(task, version, latest, channel, key),
+                     name=f"update-download-{version}-{task.number}", daemon=True).start()
+
+
+def _run(task, version, latest, channel, key):
+    """下载的后台线程：先重新查一次最新版本，再按渠道下载。"""
+    try:
+        picked = _recheck(version)
+        with _lock:
+            stale = _task is not task or task.cancel.is_set()
+        if stale:  # 查的时候点了取消，或者已经被更新的版本顶掉
+            raise _Cancelled
+        if picked is None:  # 最新版本不比现在装的新（比如新版被撤回了）：不下载
+            _end_job(task)
+            return
+        new_version, fresh = picked["version"], picked["latest"] or latest
+        _set_job(task, version=new_version, checking=False, global_ok=global_ok(fresh))
+        if channel == "cn":
+            _mirror_download(new_version, key, task)
+            return
+        info = update_check.safe_download(fresh.get("download"))
+        if info is None:  # 比如 latest.json 读不到、只拿到了 Mirror酱 的版本号
+            raise UpdateError("这个版本不能从国际渠道一键更新，请去官网下载")
+        _set_job(task, done=0, total=(_patch_for(info) or info)["size"], mirror=False)
+        _download(new_version, info, task)
+    except _Cancelled:
+        _log("下载取消了")
+        _end_job(task)
+    except UpdateError as e:
+        _log(f"没下载好：{e}")
+        _end_job(task, str(e))
+    except (OSError, http.client.HTTPException, zipfile.BadZipFile) as e:
+        _log(f"没下载好：{_short(e)}")
+        _end_job(task, _describe(e))
+    except Exception as e:  # noqa: BLE001 下载线程不能带着"正在下载"的状态死掉，面板会一直转圈
+        _log(f"没下载好：{_short(e)}")
+        _end_job(task, f"下载出错了（{_short(e)}），请重试")
+
+
+def _recheck(version):
+    """重新查一次最新版本。返回 {"version": 要下的版本, "latest": 刚查到的版本信息（没查到时 None）}；
+    查到的最新版本不比现在装的新（比如新版被撤回了）返回 None。没查到（网络不通等）就按玩家点的那个版本下。"""
+    result = update_check.check(attempts=1)
+    if not result["ok"]:
+        _log(f"没查到最新版本（{result['error']}），按上次查到的 {version} 下载")
+        return {"version": version, "latest": None}
+    latest = result["latest"]
+    newest = latest["version"]
+    if version_tuple(newest) <= version_tuple(APP_VERSION):
+        _log(f"重新查了一下，最新版本是 {newest}，不比现在装的 {APP_VERSION} 新，不下载了")
+        return None
+    if newest != version:
+        _log(f"先查了一下，最新版本是 {newest}（上次查到的是 {version}），改下 {newest}")
+    return {"version": newest, "latest": latest}
 
 
 def cancel_download():
-    """下载中点了"取消"：下一块数据到了就停下，删掉没下完的文件。"""
-    _cancel.set()
-
-
-def _set_job(**fields):
+    """下载中点了"取消"：取消现在这个任务，下一块数据到了就停下，删掉没下完的文件。"""
     with _lock:
-        _job.update(fields)
+        task = _task
+    if task is not None:
+        task.cancel.set()
 
 
-def _end_job(error=None):
-    """下载结束：成功或取消就清掉（面板看 ready.json 显示"已下载好"），失败就留着原因。"""
+def _set_job(task, **fields):
+    """更新这个任务的进度。只有 _job 还是这个任务的时候才改：旧版本的下载线程收尾时不能动新任务的。"""
     with _lock:
+        if _task is task and _job:
+            _job.update(fields)
+
+
+def _end_job(task, error=None):
+    """下载结束：成功或取消就清掉（面板看 ready.json 显示"已下载好"），失败就留着原因。
+    不是现在这个任务了（已经被新版本顶掉）就什么也不做。"""
+    global _task
+    with _lock:
+        if _task is not task:
+            return
+        _task = None
         if error:
             _job.update(phase="failed", error=error)
         else:
             _job.clear()
 
 
-def _download(version, info):
-    part, patch_part = UPDATE_DIR / f"Evo-{version}.zip.part", UPDATE_DIR / f"Evo-{version}-patch.zip.part"
+def _clear_parts():
+    """下载开始前删掉以前留下的 .part（玩家下载途中退出 Evo 时，daemon 线程的 finally 不会执行）。
+    删不掉的跳过：Windows 上别的下载线程还开着的文件删不掉，那个线程收尾时自己会删。"""
+    if not UPDATE_DIR.is_dir():
+        return
+    for path in UPDATE_DIR.glob("*.part"):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _download(version, info, task):
+    # 文件名带上任务编号：同一个进程里编号不会重复，旧线程收尾时不会删到新任务的 .part
+    _clear_parts()
+    part = UPDATE_DIR / f"Evo-{version}-{task.number}.zip.part"
+    patch_part = UPDATE_DIR / f"Evo-{version}-{task.number}-patch.zip.part"
     try:
         check_folder(info["size"])
         UPDATE_DIR.mkdir(exist_ok=True)
         patch = _patch_for(info)
         if patch:
             try:
-                _patch_update(version, patch, patch_part, info["size"])
-                _end_job()
+                _patch_update(version, patch, patch_part, info["size"], task)
+                _end_job(task)
                 return
             except update_patch.Unusable as e:
                 _log(f"补丁包用不了（{e}），改下完整的安装包")
-                _set_job(phase="downloading", done=0, total=info["size"], mirror=False)
-        _get(info, part, f"{version} 的安装包")
-        _set_job(phase="extracting")
+                _set_job(task, phase="downloading", done=0, total=info["size"], mirror=False)
+        _get(info, part, f"{version} 的安装包", task)
+        _set_job(task, phase="extracting")
         extract(part, UPDATE_DIR / version, version)
-        _end_job()
+        _end_job(task)
     except _Cancelled:
         _log("下载取消了")
-        _end_job()
+        _end_job(task)
     except UpdateError as e:
         _log(f"没下载好：{e}")
-        _end_job(str(e))
+        _end_job(task, str(e))
     except (OSError, http.client.HTTPException, zipfile.BadZipFile) as e:
         _log(f"没下载好：{_short(e)}")
-        _end_job(_describe(e))
+        _end_job(task, _describe(e))
     finally:
         part.unlink(missing_ok=True)
         patch_part.unlink(missing_ok=True)
 
 
-def _get(info, path, what):
+def _get(info, path, what, task):
     """用各条线路（info 的 mirrors 和 url）把这个文件下载到 path，核对大小和 SHA-256。"""
     started = time.monotonic()
     urls = [*info.get("mirrors", []), info["url"]]  # 先国内线路（COS），再 dl.evotracker.cn
     _log(f"开始下载 {what}（{_size_text(info['size'])}），线路：{'、'.join(map(_host, urls))}")
     with open(path, "wb") as f:
-        progress = _Part(f, info["size"])
+        progress = _Part(f, info["size"], task)
         _fetch(urls, progress)
     if progress.done != info["size"] or progress.digest.hexdigest() != info["sha256"]:
         raise UpdateError("下载的文件不完整或被改动过（SHA-256 对不上），请重试")
@@ -286,17 +416,17 @@ def _get(info, path, what):
     _log(f"{what}下载好了，用时 {seconds:.0f} 秒（平均 {_speed_text(info['size'] / seconds)}）")
 
 
-def _patch_update(version, patch, path, full_size):
+def _patch_update(version, patch, path, full_size, task):
     """用补丁包更新：下载、核对，照补丁包里的清单拼出完整的新版本（_update/<版本号>/Evo/），写 ready.json。
     补丁包用不了（服务器上没有、本机的文件对不上……）时抛出 update_patch.Unusable，什么也不留。"""
     _log(f"有从 {APP_VERSION} 升上来的补丁包，只下载变了的文件（完整的安装包是 {_size_text(full_size)}）")
     try:
-        _get(patch, path, f"{version} 的补丁包")
+        _get(patch, path, f"{version} 的补丁包", task)
     except urllib.error.HTTPError as e:
         if 400 <= e.code < 500:
             raise update_patch.Unusable(f"服务器上没有（HTTP {e.code}）") from e
         raise
-    _set_job(phase="extracting")
+    _set_job(task, phase="extracting")
     took, copied = _stage(version, lambda tmp: update_patch.apply(path, EXE_DIR, tmp, APP_VERSION, version))
     _log(f"用补丁包拼好了 {version}：补丁包里的 {took} 个文件，加上现在的程序里没变的 {copied} 个，都核对过")
 
@@ -322,43 +452,44 @@ def _stage(version, build):
 
 # ---------- 国内渠道（Mirror酱） ----------
 
-def _mirror_download(version, key):
+def _mirror_download(version, key, task):
     """国内渠道：带上 CDK 问 Mirror酱 要下载地址，下载、按它给的 SHA-256 核对；增量包照包里的文件清单拼出新版本
     （update_patch.compose），完整包照常解压。出错写明原因停下，不自动改用国际渠道（用户决定：让玩家自己选）。
     CDK 和下载地址都不写进日志。"""
-    part = UPDATE_DIR / f"Evo-{version}-mirrorchyan.zip.part"
+    _clear_parts()
+    part = UPDATE_DIR / f"Evo-{version}-{task.number}-mirrorchyan.zip.part"
     try:
         UPDATE_DIR.mkdir(exist_ok=True)
         package = _mirror_package(version, key)
         check_folder(max(package["size"], FULL_SIZE_GUESS))
         try:
-            _mirror_get(package, part, version)
+            _mirror_get(package, part, version, task)
         except urllib.error.HTTPError as e:  # 下载地址有时效：过期了再问一次，从头下
             if not 400 <= e.code < 500:
                 raise
             _log(f"Mirror酱 的下载地址用不了（HTTP {e.code}，可能过期了），重新要一次")
             package = _mirror_package(version, key)
-            _mirror_get(package, part, version)
-        _set_job(phase="extracting")
+            _mirror_get(package, part, version, task)
+        _set_job(task, phase="extracting")
         if package["update_type"] == "incremental":
             took, copied = _stage(version, lambda tmp: update_patch.compose(part, EXE_DIR, tmp, version))
             _log(f"用 Mirror酱 的增量包拼好了 {version}：增量包里的 {took} 个文件，加上现在的程序里没变的 {copied} 个，"
                  "都照文件清单核对过")
         else:
             extract(part, UPDATE_DIR / version, version)
-        _end_job()
+        _end_job(task)
     except _Cancelled:
         _log("下载取消了")
-        _end_job()
+        _end_job(task)
     except update_patch.Unusable as e:
         _log(f"Mirror酱 的增量包用不了：{e}")
-        _end_job(f"Mirror酱 的增量包和现在装着的 Evo 对不上（{e}），没有安装。可以重试，或者这次改用国际渠道下载")
+        _end_job(task, f"Mirror酱 的增量包和现在装着的 Evo 对不上（{e}），没有安装。可以重试，或者这次改用国际渠道下载")
     except UpdateError as e:
         _log(f"没下载好：{e}")
-        _end_job(str(e))
+        _end_job(task, str(e))
     except (OSError, http.client.HTTPException, zipfile.BadZipFile) as e:
         _log(f"没下载好：{_short(e)}")
-        _end_job(_describe(e))
+        _end_job(task, _describe(e))
     finally:
         part.unlink(missing_ok=True)
 
@@ -380,17 +511,18 @@ def _mirror_package(version, key):
     return package
 
 
-def _mirror_get(package, part, version):
-    _set_job(done=0, total=package["size"])
+def _mirror_get(package, part, version, task):
+    _set_job(task, done=0, total=package["size"])
     kind = "增量包" if package["update_type"] == "incremental" else "安装包"
-    _get({**package, "mirrors": []}, part, f"{version} 的{kind}（Mirror酱）")
+    _get({**package, "mirrors": []}, part, f"{version} 的{kind}（Mirror酱）", task)
 
 
 class _Part:
     """正在下载的文件：下到哪里了，边写边算 SHA-256。"""
 
-    def __init__(self, f, size):
-        self.f, self.size = f, size
+    def __init__(self, f, size, task):
+        self.f, self.size, self.task = f, size, task
+        self.cancel = task.cancel
         self.restart()
 
     def restart(self):
@@ -398,7 +530,7 @@ class _Part:
         self.f.seek(0)
         self.f.truncate()
         self.digest, self.done = hashlib.sha256(), 0
-        _set_job(done=0)
+        _set_job(self.task, done=0)
 
     def write(self, block):
         if self.done + len(block) > self.size:
@@ -406,7 +538,7 @@ class _Part:
         self.f.write(block)
         self.digest.update(block)
         self.done += len(block)
-        _set_job(done=self.done)
+        _set_job(self.task, done=self.done)
 
 
 def _fetch(urls, part):
@@ -422,11 +554,11 @@ def _fetch(urls, part):
             why = f"太慢（{_speed_text(error.speed)}）" if isinstance(error, _TooSlow) else f"出错（{_short(error)}）"
             where = "等一下再试，接着下" if following is line else f"换到 {following['host']} 接着下"
             _log(f"{line['host']} {why}，已下 {part.done / 2**20:.0f} / {part.size / 2**20:.0f} MB，{where}")
-            if following is line and _cancel.wait(RETRY_PAUSE):
+            if following is line and part.cancel.wait(RETRY_PAUSE):
                 raise _Cancelled
         line = following
         line["turns"] += 1
-        _set_job(mirror=not line["main"])
+        _set_job(part.task, mirror=not line["main"])
         try:
             _pull(line, part, lambda: any(other is not line and other["turns"] < MAX_TURNS for other in lines))
         except urllib.error.HTTPError as e:
@@ -459,7 +591,7 @@ def _pull(line, part, can_switch):
         _check_response(line, response, part)
         window, got = time.monotonic(), 0
         while block := response.read(CHUNK):
-            if _cancel.is_set():
+            if part.cancel.is_set():
                 raise _Cancelled
             part.write(block)
             got += len(block)
@@ -528,7 +660,8 @@ def check_folder(size, folder=None):
     """下载前确认程序文件夹能写入、硬盘空间够。不够时抛出 UpdateError。
     空间按压缩包的 5 倍算：压缩包 + 解压出来约 2.2 倍 + 换的时候再复制一份进程序文件夹。"""
     folder = folder or EXE_DIR
-    probe = folder / f".evo-write-test-{os.getpid()}"
+    # 带上线程编号：正在下旧版本的线程和改下新版本的线程可能同时来检查，不能用同一个探测文件
+    probe = folder / f".evo-write-test-{os.getpid()}-{threading.get_ident()}"
     try:
         probe.write_bytes(b"")
         probe.unlink()
@@ -566,6 +699,7 @@ def extract(zip_path, target, version):
 def start_install(version):
     """点了"安装并重新启动"：打开新版本的 Evo.exe 帮忙安装，确认它跑起来了，1 秒后让托盘程序退出。
     出问题抛出 UpdateError（旧的 Evo 照常运行）。"""
+    global _task
     if not FROZEN or _hooks is None:
         raise UpdateError("只有打包好的 Evo 能在 Evo 里更新")
     reason = install_blocker()
@@ -576,14 +710,15 @@ def start_install(version):
     with _lock:
         if _job.get("phase") in ("downloading", "extracting", "installing"):
             raise UpdateError("正在下载或安装，请稍等")
+        task = _next_task()
+        _task = task
         _job.clear()
         _job.update(phase="installing", version=version)
     try:
         check_folder(0)
         _launch_installer(version)
     except BaseException:
-        with _lock:
-            _job.clear()
+        _end_job(task)  # 只清掉这次安装的；别的线程要是已经开了新任务，不动它
         raise
     threading.Timer(QUIT_DELAY, _hooks["quit"]).start()
 

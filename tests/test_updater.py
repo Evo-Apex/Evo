@@ -5,6 +5,8 @@
 - latest.json 从 dl.evotracker.cn 读不到（或格式不对）时改读 COS 上的
 - 下载：下载好、核对、解压后显示"已下载好"；SHA-256 对不上、服务器上没有（404）、压缩包里的路径往外跑、
   没有 Evo.exe 都报错并删掉下了一半的文件；下载中可以取消；不是打包版、没接上托盘、没有安装包信息时只能去官网
+- 点"立即更新"先重新查一次最新版本：查到更新的就改下新的，没查到就照旧下点的那个，最新不比现在装的新就不下；
+  查的这一步可以取消；正在下旧版本时点"立即更新"会停掉旧的、改下新的（新旧两个下载线程互不影响）
 - 备用线路：主线路 404、中途断了、太慢都换到备用线路，从断的地方接着下（那边不支持接着下就从头下）；
   只有主线路时断了等一下再接着下；都不行才报错；下载的经过写进日志
 - 补丁包：有自己这个版本的就只下补丁包，拼出来的和完整安装包一样；本机的文件对不上、服务器上没有、补丁包是别的
@@ -36,6 +38,7 @@ from unittest import mock
 from fake_game import report  # 要在项目代码之前导入（设置临时数据文件夹）
 
 import app_settings
+import mirrorchyan
 import panel_app
 import storage
 import update_check
@@ -45,6 +48,7 @@ import updater
 FOLDER = Path(tempfile.mkdtemp(prefix="evo-updater-", dir=storage.DB_PATH.parent.parent))  # 在测试的临时数据文件夹里
 os.environ["no_proxy"] = "127.0.0.1,localhost"  # 电脑上设了代理时，本机的测试服务器也直接连
 GOOD_SHA = "a" * 64
+REAL_MIRROR_LATEST = mirrorchyan.latest  # App 里换成不联网的（带 CDK 时还是用它问本机假的 Mirror酱）
 
 
 # ---------- 本机的测试服务器 ----------
@@ -128,8 +132,17 @@ def wait_done(latest, timeout=30):
     return updater.state(latest)
 
 
+def _offline_mirror_latest(key=None, *args, **kwargs):
+    """检查更新（不带 CDK）时直接说问不到，测试不联网；国内渠道下载（带 CDK）照常问测试换成本机的假 Mirror酱。"""
+    if not key:
+        raise mirrorchyan.MirrorError("测试不联网")
+    return REAL_MIRROR_LATEST(key, *args, **kwargs)
+
+
 class App:
-    """假装是打包好的 Evo：程序文件夹在临时文件夹里，托盘程序接上了（Apex 在不在运行可以改）。"""
+    """假装是打包好的 Evo：程序文件夹在临时文件夹里，托盘程序接上了（Apex 在不在运行可以改）。
+    默认不联网：latest.json 指向本机一个不存在的文件（连不上），检查更新（不带 CDK）问 Mirror酱 也直接失败；
+    要点"重新查"的测试自己把 LATEST_URLS 换成本机服务器上的 latest.json。"""
 
     def __init__(self, name):
         self.dir = FOLDER / name
@@ -137,8 +150,11 @@ class App:
         self.game = False
         self.quit_called = threading.Event()
         self.logs = []
+        no_latest = (FOLDER / "no-latest.json").as_uri()  # 不放在测试服务器上：免得混进 Handler.requests
         self.patches = [mock.patch.multiple(updater, FROZEN=True, EXE_DIR=self.dir, UPDATE_DIR=self.dir / "_update"),
-                        mock.patch.object(update_check, "TEST_HOST", "127.0.0.1")]
+                        mock.patch.object(update_check, "TEST_HOST", "127.0.0.1"),
+                        mock.patch.object(update_check, "LATEST_URLS", [no_latest]),
+                        mock.patch.object(mirrorchyan, "latest", _offline_mirror_latest)]
 
     def __enter__(self):
         for p in self.patches:
@@ -152,6 +168,7 @@ class App:
         updater._hooks = None
         with updater._lock:
             updater._job.clear()
+            updater._task = None
 
 
 # ---------- 各项检查 ----------
@@ -254,12 +271,16 @@ def download_checks(base):
     with App("dl") as app:
         good = latest_for(base, "/good.zip", package(GOOD_FILES), "9.9.9")
         out['有安装包信息：显示"立即更新"'] = updater.state(good)["phase"] == "available"
+        (app.dir / "_update").mkdir(exist_ok=True)
+        leftover = app.dir / "_update" / "Evo-9.9.0-3.zip.part"  # 以前下载途中退出 Evo 留下的
+        leftover.write_bytes(b"old partial")
         updater.start_download(good)
         state = wait_done(good)
         out['下载、核对、解压后显示"已下载好"，没下完的文件删掉了'] = (
             state["phase"] == "ready" and updater.staged("9.9.9")
             and (app.dir / "_update" / "9.9.9" / "Evo" / "_internal" / "new.txt").read_bytes() == b"new"
             and not list((app.dir / "_update").glob("*.part")))
+        out["下载开始前清掉以前留下的 .part：下载完以后它没了"] = not leftover.exists()
         updater.start_download(good)  # 已经下载好了：再点一次什么也不做
         out["已经下载好了再点一次：不重新下载"] = updater.state(good)["phase"] == "ready"
 
@@ -656,6 +677,13 @@ def panel_checks(base):
             "正在安装 9.9.9" in text and app.quit_called.wait(3)
             and client.get("/update/progress").get_json()["phase"] == "installing")
 
+        with updater._lock:
+            install_task = updater._task
+        updater.start_download(good, "global")
+        with updater._lock:
+            installing_untouched = updater._task is install_task and updater._job.get("phase") == "installing"
+        out["正在安装时点立即更新：什么也不做"] = installing_untouched
+
         out["没有口令不能下载、安装"] = (client.post("/update/download", data={"next": "/"}).status_code == 403
                                  and client.post("/update/install", data={"next": "/"}).status_code == 403)
 
@@ -671,6 +699,255 @@ def panel_checks(base):
     return out
 
 
+def start_guard_checks(base):
+    """点"立即更新"时原来的同步检查照旧：不能更新的当场报错，不建任务。"""
+    out = {}
+    latest = latest_for(base, "/guard.zip", package(GOOD_FILES), "9.9.9")
+    with App("guard") as app:
+        updater._hooks = None
+        out["没接上托盘程序时点立即更新：报错，不能下"] = raises(
+            lambda: updater.start_download(latest), "不能在 Evo 里更新")
+        updater.connect(game_running=lambda: False, quit_app=lambda: None, log=app.logs.append)
+        with mock.patch.object(updater, "FROZEN", False):
+            out["用源码运行时点立即更新：报错，不能下"] = raises(
+                lambda: updater.start_download(latest), "不能在 Evo 里更新")
+        old = {**latest, "version": storage.APP_VERSION}
+        out["点的版本不比现在装的新：报错，不能下"] = raises(
+            lambda: updater.start_download(old), "不用更新")
+        out["国际渠道没有安装包信息：点立即更新报错，不能下"] = raises(
+            lambda: updater.start_download({**latest, "download": None}), "不能从国际渠道一键更新")
+        app_settings.set_value(mirrorchyan.CDK_KEY, None)
+        out["国内渠道没填 CDK：点立即更新报错，不能下"] = raises(
+            lambda: updater.start_download(latest, "cn"), "CDK")
+    return out
+
+
+def recheck_checks(base):
+    """点"立即更新"以后先重新查一次最新版本（updater._recheck）：查到新的就改下新的，没查到就照旧下点的那个。"""
+    out = {}
+    with App("recheck-new") as app:
+        clicked = latest_for(base, "/recheck-9.9.1.zip", package(GOOD_FILES), "9.9.1")
+        fresh = latest_for(base, "/recheck-9.9.2.zip", package({**GOOD_FILES, "Evo/Evo.exe": b"newer exe"}), "9.9.2")
+        Handler.files["/latest-recheck-9.9.2.json"] = json.dumps(fresh).encode("utf-8")
+        Handler.requests.clear()
+        app_settings.set_value("update_latest", clicked)
+        with mock.patch.object(update_check, "LATEST_URLS", [base + "/latest-recheck-9.9.2.json"]):
+            updater.start_download(clicked)
+            end = time.monotonic() + 20
+            while time.monotonic() < end and updater.state(fresh)["phase"] in ("downloading", "extracting"):
+                time.sleep(0.05)
+            state = updater.state(fresh)
+        reqs = [path for path, _ in Handler.requests]
+        out["点了立即更新先重新查：查到比上次新的版本，就改下新的（下好 9.9.2，没下 9.9.1）"] = (
+            state["phase"] == "ready" and state["version"] == "9.9.2"
+            and updater.staged("9.9.2") and not updater.staged("9.9.1")
+            and "/recheck-9.9.2.zip" in reqs and "/recheck-9.9.1.zip" not in reqs)
+        out["改下新的：日志里写着最新版本和上次查到的"] = any(
+            "最新版本是 9.9.2" in m and "上次查到的是 9.9.1" in m and "改下 9.9.2" in m for m in app.logs)
+        out["改下新的以后：面板（known_newer）最后显示 9.9.2 已下载好"] = (
+            update_check.known_newer()["version"] == "9.9.2"
+            and updater.state(update_check.known_newer())["phase"] == "ready")
+        out["改下新的以后：/update/progress 返回的 version 是新版本 9.9.2"] = (
+            panel_app.app.test_client().get("/update/progress").get_json().get("version") == "9.9.2")
+    app_settings.set_value("update_latest", None)
+
+    with App("recheck-same") as app:
+        clicked = latest_for(base, "/recheck-same-clicked.zip", package(GOOD_FILES), "9.9.1")
+        fresh_same = latest_for(base, "/recheck-same-fresh.zip",
+                                package({**GOOD_FILES, "Evo/Evo.exe": b"fresh exe"}), "9.9.1")
+        Handler.files["/latest-recheck-same.json"] = json.dumps(fresh_same).encode("utf-8")
+        Handler.requests.clear()
+        app_settings.set_value("update_latest", clicked)
+        with mock.patch.object(update_check, "LATEST_URLS", [base + "/latest-recheck-same.json"]):
+            updater.start_download(clicked)
+            state = wait_done(clicked)
+        reqs = [path for path, _ in Handler.requests]
+        out["重新查到的版本和点的一样：用刚查到的安装包信息下（不下上次那份）"] = (
+            state["phase"] == "ready" and state["version"] == "9.9.1"
+            and "/recheck-same-fresh.zip" in reqs and "/recheck-same-clicked.zip" not in reqs
+            and (app.dir / "_update" / "9.9.1" / "Evo" / "Evo.exe").read_bytes() == b"fresh exe")
+    app_settings.set_value("update_latest", None)
+
+    with App("recheck-noinfo") as app:
+        clicked = latest_for(base, "/recheck-noinfo-clicked.zip", package(GOOD_FILES), "9.9.1")
+        newer = {"version": "9.9.2", "date": "", "page": "", "notes": [], "download": None}
+        Handler.files["/latest-recheck-noinfo.json"] = json.dumps(newer).encode("utf-8")
+        Handler.requests.clear()
+        app_settings.set_value("update_latest", clicked)
+        with mock.patch.object(update_check, "LATEST_URLS", [base + "/latest-recheck-noinfo.json"]):
+            updater.start_download(clicked)
+            state = wait_done(newer)
+        out["重新查到的新版本没有国际渠道的安装包信息：报错停下，没下任何安装包"] = (
+            state["phase"] == "failed" and "不能从国际渠道一键更新" in state["error"]
+            and not any(path.endswith(".zip") for path, _ in Handler.requests)
+            and not list((app.dir / "_update").glob("*.part")))
+    app_settings.set_value("update_latest", None)
+
+    with App("recheck-fail") as app:
+        clicked = latest_for(base, "/recheck-9.9.1b.zip", package(GOOD_FILES), "9.9.1")
+        Handler.requests.clear()
+        with mock.patch.object(update_check, "LATEST_URLS", [base + "/no-latest.json"]):  # 404
+            updater.start_download(clicked)
+            state = wait_done(clicked)
+        reqs = [path for path, _ in Handler.requests]
+        out["重新查没查到（latest.json 404、Mirror酱 也不通）：照旧下点的那个版本，日志里写着没查到"] = (
+            state["phase"] == "ready" and state["version"] == "9.9.1" and updater.staged("9.9.1")
+            and "/recheck-9.9.1b.zip" in reqs
+            and any("没查到最新版本" in m and "按上次查到的 9.9.1" in m for m in app.logs))
+
+    with App("recheck-old") as app:
+        Handler.files["/latest-recheck-old.json"] = json.dumps({"version": "0.7.1", "notes": []}).encode("utf-8")
+        clicked = latest_for(base, "/recheck-9.9.1c.zip", package(GOOD_FILES), "9.9.1")
+        Handler.requests.clear()
+        with mock.patch.object(update_check, "LATEST_URLS", [base + "/latest-recheck-old.json"]):
+            updater.start_download(clicked)
+            state = wait_done(clicked)
+        with updater._lock:
+            no_job = not updater._job
+        out["重新查到的最新版本不比现在装的新：什么也没下，任务清掉了，没有 .part"] = (
+            state["phase"] == "available" and no_job
+            and not list((app.dir / "_update").glob("*.part"))
+            and not any(path == "/recheck-9.9.1c.zip" for path, _ in Handler.requests)
+            and any("不比现在装的" in m for m in app.logs))
+    app_settings.set_value("update_latest", None)
+
+    client = panel_app.app.test_client()
+    started, release = threading.Event(), threading.Event()
+
+    def slow_check(*_args, **_kwargs):
+        started.set()
+        release.wait(10)
+        return {"ok": False, "error": "测试：没查到", "checked_at": ""}
+
+    with App("recheck-checking") as app:
+        clicked = latest_for(base, "/recheck-9.9.1d.zip", package(GOOD_FILES), "9.9.1")
+        other = latest_for(base, "/recheck-9.9.2d.zip", package(GOOD_FILES), "9.9.2")
+        app_settings.set_value("update_latest", clicked)
+        app_settings.set_value("update_auto", True)
+        app_settings.set_value("update_dismissed", None)
+        with mock.patch.object(update_check, "check", slow_check):
+            updater.start_download(clicked)
+            started.wait(5)
+            app_settings.set_value("update_latest", other)  # 查的时候已经写入了另一个版本
+            job = updater.state(update_check.known_newer())
+            page = client.get("/").get_data(as_text=True)
+            settings = client.get("/settings").get_data(as_text=True)
+            out["查的这一步：任务还是 downloading、带 checking、total 是 0，版本对不上也照样返回它"] = (
+                job is not None and job.get("phase") == "downloading" and job.get("checking") is True
+                and job.get("total") == 0 and job.get("done") == 0
+                and job.get("version") == "9.9.1" and update_check.known_newer()["version"] == "9.9.2")
+            out['查的这一步：提示条和设置页都写着"正在查最新版本…"'] = (
+                "正在查最新版本…" in page and "正在查最新版本…" in settings)
+            out['查的这一步：提示条和设置页的 data-update-version 是任务现在的版本 9.9.1'] = (
+                'data-update-poll="downloading" data-update-version="9.9.1"' in page
+                and '<div class="update-status" data-update-poll="downloading" data-update-version="9.9.1">' in settings)
+            updater.cancel_download()
+            release.set()
+            wait_done(clicked)
+
+    started, release = threading.Event(), threading.Event()
+
+    def slow_check_cancel(*_args, **_kwargs):
+        started.set()
+        release.wait(10)
+        return {"ok": False, "error": "测试：没查到", "checked_at": ""}
+
+    with App("recheck-cancel") as app:
+        clicked = latest_for(base, "/recheck-9.9.1e.zip", package(GOOD_FILES), "9.9.1")
+        Handler.requests.clear()
+        with mock.patch.object(update_check, "check", slow_check_cancel):
+            updater.start_download(clicked)
+            started.wait(5)
+            during = updater.state(clicked)
+            updater.cancel_download()
+            release.set()
+            after = wait_done(clicked)
+        out["查的这一步里点取消：查完就停，没有下载，回到立即更新"] = (
+            during.get("phase") == "downloading" and during.get("checking") is True
+            and after["phase"] == "available"
+            and not any(path == "/recheck-9.9.1e.zip" for path, _ in Handler.requests)
+            and any("下载取消了" in m for m in app.logs))
+    for key in ("update_latest", "update_auto", "update_dismissed"):
+        app_settings.set_value(key, None)
+    return out
+
+
+def switch_checks(base):
+    """正在下旧版本时又点了更新的版本：停掉旧的、改下新的；新旧两个下载线程不能互相影响。"""
+    out = {}
+    Handler.slow.add("/switch-9.9.6.zip")
+    old = latest_for(base, "/switch-9.9.6.zip",
+                     package({**GOOD_FILES, "Evo/big.bin": os.urandom(2 * 2**20)}, stored=True), "9.9.6")
+    new = latest_for(base, "/switch-9.9.7.zip", package({**GOOD_FILES, "Evo/Evo.exe": b"newest exe"}), "9.9.7")
+    with App("switch") as app:
+        Handler.requests.clear()
+        updater.start_download(old)
+        end = time.monotonic() + 10
+        while updater.state(old).get("done", 0) == 0 and time.monotonic() < end:
+            time.sleep(0.02)
+        old_thread = next((t for t in threading.enumerate() if t.name.startswith("update-download-9.9.6")), None)
+        updater.start_download(new)
+        state = wait_done(new)
+        if old_thread is not None:
+            old_thread.join(15)  # 等旧线程真的收尾，再判断它有没有改掉新任务的状态
+        after = updater.state(new)
+        with updater._lock:
+            no_job = not updater._job
+        out["正在下旧版本时点了更新的版本：停掉旧的、改下新的，新的下好了"] = (
+            state["phase"] == "ready" and state["version"] == "9.9.7"
+            and updater.staged("9.9.7") and not updater.staged("9.9.6"))
+        out["改下新的以后：两个版本的 .part 都没留下"] = not list((app.dir / "_update").glob("*.part"))
+        out["旧线程收尾以后：任务和面板还是新版本的（没被旧的覆盖）"] = (
+            old_thread is not None and not old_thread.is_alive()
+            and after.get("phase") == "ready" and after.get("version") == "9.9.7" and no_job)
+
+    Handler.slow.add("/switch-same-9.9.6.zip")
+    same = latest_for(base, "/switch-same-9.9.6.zip",
+                      package({**GOOD_FILES, "Evo/big.bin": os.urandom(2 * 2**20)}, stored=True), "9.9.6")
+    with App("switch-same"):
+        Handler.requests.clear()
+        updater.start_download(same)
+        end = time.monotonic() + 10
+        while updater.state(same).get("done", 0) == 0 and time.monotonic() < end:
+            time.sleep(0.02)
+        before = sum(1 for path, _ in Handler.requests if path == "/switch-same-9.9.6.zip")
+        updater.start_download(same)
+        time.sleep(0.2)
+        after = sum(1 for path, _ in Handler.requests if path == "/switch-same-9.9.6.zip")
+        out["正在下同一个版本时再点一次：不重新开始（服务器没收到第二次请求）"] = before >= 1 and after == before
+        updater.cancel_download()
+        wait_done(same)
+
+    real_extract = updater.extract
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_extract(zip_path, target, version):
+        if version == "9.9.6":
+            entered.set()
+            release.wait(10)
+        return real_extract(zip_path, target, version)
+
+    old = latest_for(base, "/switch-extract-9.9.6.zip", package(GOOD_FILES), "9.9.6")
+    new = latest_for(base, "/switch-extract-9.9.7.zip", package({**GOOD_FILES, "Evo/Evo.exe": b"newest exe"}), "9.9.7")
+    with App("switch-extract") as app, mock.patch.object(updater, "extract", slow_extract):
+        updater.start_download(old)
+        entered.wait(5)
+        old_thread = next((t for t in threading.enumerate() if t.name.startswith("update-download-9.9.6")), None)
+        updater.start_download(new)
+        state = wait_done(new)
+        release.set()
+        if old_thread is not None:
+            old_thread.join(15)
+        after = updater.state(new)
+        with updater._lock:
+            no_job = not updater._job
+        out["旧任务正在解压时点了新的：新的照常下好，旧的后台做完也不覆盖新的状态"] = (
+            state["phase"] == "ready" and updater.staged("9.9.7")
+            and after.get("phase") == "ready" and after.get("version") == "9.9.7"
+            and old_thread is not None and not old_thread.is_alive() and no_job)
+    return out
+
+
 def main():
     print("一键更新：下载、核对、安装、恢复、面板")
     server, base = start_server()
@@ -679,6 +956,9 @@ def main():
         checks.update(version_checks())
         checks.update(latest_checks(base))
         checks.update(download_checks(base))
+        checks.update(start_guard_checks(base))
+        checks.update(recheck_checks(base))
+        checks.update(switch_checks(base))
         checks.update(mirror_checks(base))
         checks.update(patch_checks(base))
         checks.update(replace_checks())

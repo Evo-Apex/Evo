@@ -6,7 +6,8 @@
   连不上、不是 JSON 也不出错；出错信息里没有 CDK 和请求地址；核对 CDK 记进设置
 - 检查更新：latest.json 读不到时用 Mirror酱 查到的版本（没有国际渠道的安装包信息）；读得到时用 latest.json 的
 - 一键更新（国内渠道）：没填 CDK 时不能下；完整包下好、核对、解压；增量包（路径带不带 Evo/ 都行）照文件清单拼出
-  新版本，删掉的旧文件没了；本机的文件对不上、changes.json 有越界路径、没有文件清单、SHA-256 对不上、CDK 过期、
+  新版本，删掉的旧文件没了；点了立即更新先重新查一次最新版本，查到更新的就照新的问 Mirror酱 要地址；
+  本机的文件对不上、changes.json 有越界路径、没有文件清单、SHA-256 对不上、CDK 过期、
   Mirror酱 上还没有这个版本：都停下写明原因，不自动改用国际渠道；下载地址过期了再要一次；
   "这次改用国际渠道下载"从 dl.evotracker.cn 下；日志里没有 CDK 和下载地址
 - 设置页：更新渠道两个选项、点国内渠道时的说明（用户的原文）、"不再提示"、CDK 输入框（页面里没有 CDK 本身）、
@@ -170,6 +171,7 @@ def fresh(app):
     make_tree(app.dir, OLD_FILES)
     with updater._lock:
         updater._job.clear()
+        updater._task = None
     Mirror.asked.clear()
     Mirror.downloads.clear()
 
@@ -323,6 +325,8 @@ def download_checks(base):
             Mirror.answer = answer
             if expire:
                 Mirror.expire_once.add("/full.zip")
+            (app.dir / "_update").mkdir(exist_ok=True)
+            (app.dir / "_update" / "Evo-9.9.0-3.zip.part").write_bytes(b"old partial")
             updater.start_download(latest)
             return settle(latest)
 
@@ -331,6 +335,8 @@ def download_checks(base):
         out["完整包：带 CDK 和现在的版本问地址、下载、核对、解压，下好了；没去下国际渠道的安装包"] = (
             full["phase"] == "ready" and tree(staged) == NEW_TREE and Mirror.asked[-1]["cdk"] == CDK
             and Mirror.asked[-1]["current_version"] == f"v{APP_VERSION}" and "/intl.zip" not in Mirror.downloads)
+        out["国内渠道下载也开始前清掉以前留下的 .part：下载完以后它没了"] = (
+            full["phase"] == "ready" and not (app.dir / "_update" / "Evo-9.9.0-3.zip.part").exists())
 
         bare = run(ok_answer(download=offer(base, "/inc.zip", incremental(), "incremental")))
         out["增量包（路径不带 Evo/）：照清单拼出新版本，和完整包一模一样，删掉的旧文件没了"] = (
@@ -377,6 +383,19 @@ def download_checks(base):
         again = run(ok_answer(download=offer(base, "/full.zip", zipped(NEW_TREE))), expire=True)
         out["下载地址过期（403）：再问一次地址，从头下好"] = (
             again["phase"] == "ready" and len(Mirror.asked) == 2 and Mirror.downloads.count("/full.zip") == 2)
+
+        # 一键更新先重新查一次最新版本：上次查到 9.9.1，重新查到 9.9.2，就问 Mirror酱 要 9.9.2 的（不是 9.9.1 的）
+        fresh(app)
+        cn()
+        clicked = {"version": "9.9.1", "date": "", "page": "", "notes": [], "download": None}
+        Mirror.files["/latest-9.9.2.json"] = json.dumps({"version": "9.9.2", "notes": []}).encode("utf-8")
+        Mirror.answer = ok_answer(version="v9.9.2", download=offer(base, "/full-9.9.2.zip", zipped(NEW_TREE)))
+        with mock.patch.object(update_check, "LATEST_URLS", [f"{base}/latest-9.9.2.json"]):
+            updater.start_download(clicked)
+            bumped = settle({"version": "9.9.2", "download": None})
+        out["国内渠道：上次查到 9.9.1、重新查到 9.9.2：照 9.9.2 问 Mirror酱 下好，不会报还没有 9.9.1"] = (
+            bumped["phase"] == "ready" and tree(app.dir / "_update" / "9.9.2" / "Evo") == NEW_TREE
+            and "还没有 9.9.1" not in (bumped.get("error") or ""))
 
         fresh(app)
         updater.start_download(latest, "global")

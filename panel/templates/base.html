@@ -495,19 +495,20 @@
     var box = document.querySelector("[data-update-poll]");
     if (!box) return;
     var phase = box.dataset.updatePoll;
+    var version = box.dataset.updateVersion;  // 点了立即更新后可能改下更新的版本：版本变了也重新打开页面
     function tick() {
       fetch("{{ url_for('update_progress') }}", { cache: "no-store" })
         .then(function (r) { return r.json(); })
         .then(function (s) {
-          if (s.phase !== phase) { location.reload(); return; }
+          if (s.phase !== phase || s.version !== version) { location.reload(); return; }
           if (s.phase === "downloading") {
             document.querySelectorAll("[data-progress]").forEach(function (bar) {
               bar.setAttribute("aria-valuenow", s.percent);
               bar.firstElementChild.style.width = s.percent + "%";
             });
             document.querySelectorAll("[data-progress-text]").forEach(function (el) {
-              // 国内渠道刚开始时还在问 Mirror酱 要下载地址（还不知道多大）
-              el.textContent = s.asking ? "正在向 Mirror酱 要下载地址…" : s.percent + "% · " + s.done_mb + " / " + s.total_mb + " MB";
+              // 刚开始先重新查最新版本；国内渠道接着问 Mirror酱 要下载地址（还不知道多大）
+              el.textContent = s.checking ? "正在查最新版本…" : (s.asking ? "正在向 Mirror酱 要下载地址…" : s.percent + "% · " + s.done_mb + " / " + s.total_mb + " MB");
             });
             document.querySelectorAll("[data-progress-line]").forEach(function (el) {
               var line = s.mirror ? "备用线路" : "";  // 换了线路才改，读屏软件只念一次
