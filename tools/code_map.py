@@ -86,7 +86,7 @@ SECTIONS = [
                      "（evotracker.cn 连不上时经派圈助手的云环境取公开文件）"),
     ("开发用的脚本（tools/）", "打包、安装、发布", [
         "tools/build.py", "tools/evo.spec", "tools/build_ffmpeg.py", "tools/install.py", "tools/release.py", "tools/publish.py",
-        "tools/cos.py", "tools/notice.py", "tools/esports.py", "tools/team.py", "tools/team_logos.py", "tools/build_tester.py", "tools/tester.spec", "tools/code_path.py",
+        "tools/cos.py", "tools/notice.py", "tools/esports.py", "tools/team.py", "tools/team_logos.py", "tools/build_tester.py", "tools/tester.spec", "tools/code_path.py", "tools/mpegts_patch.py",
         (".github/workflows/", "GitHub Actions（Mirror酱 提的 PR #4）：发 GitHub Release 时把压缩包和更新日志传给 Mirror酱"
                                "（国内渠道）；读的是 tag 指向的那个提交里的这两个文件")]),
     ("开发用的脚本（tools/）", "做素材", [

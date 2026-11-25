@@ -11,6 +11,7 @@
   没有这场赛事回 404（页面据此回赛事页）
 - Twitch（2026-11-25）：名单里的那一行照样能点、带着问播放地址和弹幕的接口；页面有它的弹幕（IRC over WebSocket，
   匿名只读）和"连不上"那一行说明（role=status）；开播状态带着 unreachable；连不上时那一格的话（用户定的）和"重试"：retry=1 马上重查
+- 页面播放器 mpegts.js 带着 Evo 的补丁（tools/mpegts_patch.py：Twitch 的视频 PES 没对齐到帧开头时把开头那截接回上一帧），补丁工具找不到地方就报错
 - Apex 在不在运行的接口
 - 别的页面照旧有侧边栏（导航和主题按钮）
 
@@ -20,6 +21,7 @@
 import html
 import json
 import re
+import sys
 import tempfile
 import time
 from datetime import datetime, timedelta
@@ -461,6 +463,30 @@ def main():
     out["Twitch 在播时和别的平台一样（状态是 live、带开播时刻），页面据此把那一行点亮"] = (
         on_air["players"]["twitch-imperialhal__"]["state"] == "live"
         and on_air["players"]["twitch-imperialhal__"]["since"] == 1794900000)
+
+    # 2026-11-26：页面播放器 mpegts.js 打了 Evo 的补丁（Twitch 的视频 PES 约两成没对齐到帧开头，不打会拖影、重影）
+    root = Path(__file__).resolve().parent.parent
+    vendor = (root / "panel" / "static" / "vendor" / "mpegts.js").read_text(encoding="utf-8")
+    sys.path.insert(0, str(root / "tools"))
+    import mpegts_patch  # tools/mpegts_patch.py
+    try:
+        mpegts_patch.patch(vendor)
+        again = None
+    except mpegts_patch.PatchError as e:
+        again = str(e)
+    fake = "var x=1;" + mpegts_patch.OLD + "BODY" + mpegts_patch.OLD2 + "=function(){}"
+    patched = mpegts_patch.patch(fake)
+    try:
+        mpegts_patch.patch("var x=1;")
+        unknown = None
+    except mpegts_patch.PatchError as e:
+        unknown = str(e)
+    out["播放器 mpegts.js 带着 Evo 的补丁（没对齐的 H.264 PES 把开头那截接回上一帧），开头写明改过；再打一次不会重复打"] = (
+        vendor.startswith("/* mpegts.js 1.8.0") and "EVO-PATCH" in vendor[:200] and vendor.count("evo_h264_held_") == 3
+        and mpegts_patch.NEW in vendor and mpegts_patch.NEW2 in vendor and mpegts_patch.OLD not in vendor and again == "已经打过补丁了")
+    out["补丁工具：原版的两处都换掉、加上说明；mpegts.js 版本变了找不到要改的地方 → 报错、一处都不改"] = (
+        patched.startswith(mpegts_patch.HEADER) and mpegts_patch.NEW in patched and mpegts_patch.NEW2 in patched
+        and mpegts_patch.OLD not in patched and unknown is not None and "版本变了" in unknown)
     return report(out)
 
 
