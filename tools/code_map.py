@@ -95,7 +95,7 @@ SECTIONS = [
     ("开发用的脚本（tools/）", "查问题、看数据", [
         "tools/ocr_probe.py", "tools/frame_capture.py", "tools/legend_capture.py", "tools/log_speed.py",
         "tools/diag_report.py", "tools/tester_preview.py", "tools/stats_report.py", "tools/summary_check.py", "tools/demo_data.py", "tools/demo_seasons.py",
-        "tools/rec_probe.py",
+        "tools/rec_probe.py", "tools/replay_recordings.py",
         "tools/code_map.py"]),
     ("开发用的脚本（tools/）", "训练小模型", [
         "tools/train_data.py", "tools/train_digits.py", "tools/train_web.py"]),
