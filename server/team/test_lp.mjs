@@ -1,11 +1,13 @@
 // Liquipedia 定时抓取的测试（第 3 步）。由 test.mjs 运行。用假的 Liquipedia 接口（不联网），把一整轮走一遍：
-// 没配 Key 不发请求、每次最多一个请求、两次至少隔 2.5 分钟、一小时最多 20 次、一轮的步骤和数据、给满了拆成两半重查、
-// 失败重试和 3 次跳过（含"发请求以后被掐断"）、24 小时一轮和"现在更新"、收录比赛、待确认（是他 / 不是）、页面、权限。
+// 没配 Key 不发请求、每次最多一个请求、两次至少隔 50 秒、一小时最多 50 次（2026-11-25 换成专用的 Key 以前是 2.5 分钟、20 次）、
+// 一轮的步骤和数据、给满了拆成两半重查、
+// 失败重试和 3 次跳过（含"发请求以后被掐断"）、24 小时一轮和"现在更新"、收录比赛、待确认（是他 / 不是）、页面、权限；
+// 2026-11-25：历届成绩第一次和每周抓全部、平时只问最近 30 天（合并：换掉最近那一段、之前的照留），网址太长（414）、经历给满了拆小重查。
 
 import { hash, newToken, update } from "./auth.js";
 import { PLAYERS } from "./data.js";
 import { eventRoster, pageFromInput } from "./liquipedia.js";
-import { HOURLY_CAP, INDEX, SQUADS, STATE, eventKey, resultsKey, tick } from "./lpsync.js";
+import { FULL_STALE_MAX, HOURLY_CAP, INDEX, MIN_GAP, SQUADS, STATE, TRACKED, eventKey, resultPlan, resultsKey, tick } from "./lpsync.js";
 import { FakeBucket, check, makeBrowser } from "./testkit.mjs";
 
 const MINUTE = 60 * 1000;
@@ -31,12 +33,19 @@ const EVENT = "ALGS/2026/Split_2/Playoffs";
 const calls = [];
 let failType = null;
 let failStatus = 500;
+let tooLongType = null;  // 这种请求一次问不止一页就回 414（网址太长）
+let squadFlood = false;  // 经历一次问不止一页就给满 1000 行
 function api(url, options) {
   const u = new URL(url);
   const type = u.pathname.split("/").pop();
   const cond = u.searchParams.get("conditions") ?? "";
   calls.push({ type, cond, url, headers: options.headers });
   if (failType === type) return Promise.resolve(new Response("down", { status: failStatus }));
+  if (tooLongType === type && (cond.match(/::/g) ?? []).length > 1) return Promise.resolve(new Response("too long", { status: 414 }));
+  if (type === "squadplayer" && squadFlood && (cond.match(/::/g) ?? []).length > 1) {
+    const rows = Array.from({ length: 1000 }, (_, i) => ({ pagename: `T${i}`, link: "Alpha", joindate: "2024-01-01", status: "former" }));
+    return Promise.resolve(new Response(JSON.stringify({ result: rows }), { status: 200 }));
+  }
   const has = (page) => cond.includes(`::${page}]]`);
   let result = [];
   if (type === "tournament") {
@@ -124,7 +133,10 @@ check("第一步：问比赛资料", r === "done" && calls.length === 1 && calls
 check("请求带 Key、写明是谁在用、问的是 Apex 维基", calls[0].headers.Authorization === "Apikey test-key"
   && calls[0].headers["User-Agent"].startsWith("EvoTeam/") && calls[0].url.includes("wiki=apexlegends"));
 r = await run();
-check("马上再叫一次 → 等着（两次至少隔 2.5 分钟）", r === "wait" && calls.length === 1);
+check("马上再叫一次 → 等着（两次至少隔 50 秒）", r === "wait" && calls.length === 1);
+now += 40 * 1000;
+check("隔 40 秒 → 还等着", (await run()) === "wait" && calls.length === 1);
+now -= 40 * 1000;
 const outcomes = [];
 for (let i = 0; i < 40 && doc(STATE).queue?.length !== 0; i++) {
   now += 3 * MINUTE;
@@ -164,7 +176,7 @@ st.recent = Array.from({ length: HOURLY_CAP }, (_, i) => now - i * MINUTE);
 st.lastRequestAt = now - 10 * MINUTE;
 await env.DATA.put(STATE, JSON.stringify(st));
 now += 3 * MINUTE;
-check("这一小时用满 20 次 → 等着", (await run()) === "wait" && calls.length === 12);
+check(`这一小时用满 ${HOURLY_CAP} 次 → 等着`, (await run()) === "wait" && calls.length === 12);
 st.recent = [];
 await env.DATA.put(STATE, JSON.stringify(st));
 failType = "placement";
@@ -245,3 +257,72 @@ now += 3 * MINUTE;
 check("这一轮的最后一步照常抓完、排上的还在", (await run()) === "done" && doc(STATE).queue.length === 0 && doc(STATE).refresh === true);
 now += 3 * MINUTE;
 check("抓完马上开始新的一轮", (await run()) === "done" && doc(STATE).refresh === false && doc(STATE).round.started === now);
+
+// ---------- 2026-11-25：专用 Key、历届成绩只抓新的、拆小重查 ----------
+const DAY = 24 * 60 * MINUTE;
+check("额度：一小时最多 50 次、两次至少隔 50 秒（定时任务每分钟一次）", HOURLY_CAP === 50 && MIN_GAP === 50 * 1000);
+const plan = resultPlan(["New", "Fresh", "Old1", "Old2", "Gone"], { players: {
+  Fresh: { results: 3, resultsFullAt: now - DAY },
+  Old1: { results: 3, resultsFullAt: now - 9 * DAY },
+  Old2: { results: 3 },  // 2026-11-25 以前抓的：没记哪次抓的全部 → 当作到期
+  Gone: { missing: true, results: 0, resultsFullAt: now - DAY },
+} }, now);
+check("成绩怎么抓：没抓过的、全部成绩超过 7 天的（最久没抓的先）抓全部，别的只问最近的", JSON.stringify(plan)
+  === JSON.stringify({ full: ["New", "Old2", "Old1"], recent: ["Fresh", "Gone"] }));
+const many = Array.from({ length: FULL_STALE_MAX + 3 }, (_, i) => `S${i}`);
+const capped = resultPlan(many, { players: Object.fromEntries(many.map((p, i) => [p, { results: 1, resultsFullAt: i }])) }, now);
+check(`到期的一轮最多重抓 ${FULL_STALE_MAX} 人（最久的先），剩下的这一轮先只问最近的`, capped.full.length === FULL_STALE_MAX
+  && capped.recent.length === 3 && capped.full[0] === "S0" && capped.recent[0] === `S${FULL_STALE_MAX}`);
+
+// 新的一份存储桶：选手库里只有 Alpha（填了页面名），没有收录的比赛；上次抓过他的全部成绩（1 天前）
+async function freshEnv(manual, index, results = {}) {
+  const e = { DATA: new FakeBucket(), PUBLIC: new FakeBucket(), LIQUIPEDIA_API_KEY: "test-key" };
+  const stamp = { created: now, createdBy: "黄指导", updated: now, updatedBy: "黄指导", rev: 1 };
+  await e.DATA.put(PLAYERS, JSON.stringify({ version: 1, items: manual.map(([name, page], i) => ({ id: `c000000${i}`, name, team: "猎鹰",
+    platform: "douyu", room: String(9000 + i), liquipedia: page, ...stamp })) }));
+  await e.DATA.put(TRACKED, JSON.stringify({ items: [] }));
+  await e.DATA.put(INDEX, JSON.stringify({ events: {}, teams: {}, players: index }));
+  for (const [page, body] of Object.entries(results)) await e.DATA.put(resultsKey(page), JSON.stringify(body));
+  await e.DATA.put(STATE, JSON.stringify({ queue: [], round: null, recent: [], attempts: {}, errors: [], lastRequestAt: 0, lastRoundDone: now, refresh: true }));
+  return e;
+}
+async function runRound(e) {
+  const from = calls.length;
+  for (let i = 0; i < 40; i++) {
+    now += MINUTE;
+    await tick(e, now, api);
+    if (!e.DATA.json(STATE, "{}").queue.length) break;
+  }
+  return calls.slice(from);
+}
+const fullAt = now - DAY;
+const env2 = await freshEnv([["Alpha", "Alpha"]], { Alpha: { page: "Alpha", id: "Alpha", results: 2, resultsFullAt: fullAt } }, {
+  Alpha: { page: "Alpha", full: false, fetchedAt: fullAt, fullAt, rows: [
+    { date: "2026-11-20", event: "Gone_Event", tournament: "已经删掉的", tier: "", tierType: "", place: "5", prize: 0, team: "X" },
+    { date: "2025-01-01", event: "Old_Event", tournament: "老比赛", tier: "2", tierType: "", place: "1", prize: 100, team: "Team Falcons" }] } });
+const sent = await runRound(env2);
+const since = new Date(env2.DATA.json(STATE, "{}").round.started - 30 * DAY).toISOString().slice(0, 10);
+check("上次抓过全部成绩的人：这一轮只问最近 30 天的（选手、经历、最近的成绩、战队，各一个请求）",
+  sent.map((c) => c.type).join() === "player,squadplayer,placement,team" && sent[2].cond.startsWith(`[[date::>${since}]] AND (`)
+  && sent[2].cond.includes("[[opponentplayers_p4::Alpha]]"));
+const alphaRows = env2.DATA.json(resultsKey("Alpha"), "{}").rows;
+check("合并：换掉存着的最近那一段（Liquipedia 上删掉的那条也没了）、之前的照留、按日期新的在前",
+  JSON.stringify(alphaRows.map((x) => x.event)) === JSON.stringify([EVENT, "Old_Event"]));
+const alphaIdx = env2.DATA.json(INDEX, "{}").players.Alpha;
+check("条数跟着变；哪次抓的全部成绩照留（抓选手资料那一步也没冲掉它）", alphaIdx.results === 2 && alphaIdx.resultsFullAt === fullAt
+  && alphaIdx.id === "Alpha" && env2.DATA.json(resultsKey("Alpha"), "{}").fullAt === fullAt);
+
+// 网址太长（414）：拆成两半重查，不算失败；经历给满了 1000 行：也拆成两半
+tooLongType = "player";
+squadFlood = true;
+const env3 = await freshEnv([["Alpha", "Alpha"], ["Gamma", "Gamma"], ["Kite", "Kite_(player)"]], {});
+const sent3 = await runRound(env3);
+tooLongType = null;
+squadFlood = false;
+const pagesAsked = (type) => sent3.filter((c) => c.type === type).map((c) => (c.cond.match(/::/g) ?? []).length);
+check("选手资料一次问 3 页回 414 → 拆成 2 + 1、再拆成 1 + 1，都抓到了", JSON.stringify(pagesAsked("player")) === "[3,2,1,1,1]"
+  && ["Alpha", "Gamma", "Kite_(player)"].every((p) => env3.DATA.json(INDEX, "{}").players[p]?.id));
+check("经历一次给满了 1000 行 → 拆成两半重查到一页一问", JSON.stringify(pagesAsked("squadplayer")) === "[3,2,1,1,1]");
+check("414 和给满了都不算失败、不记错误", !env3.DATA.json(STATE, "{}").errors.length);
+check("第一次抓的人：抓全部成绩（不带日期条件），记下哪次抓的", sent3.filter((c) => c.type === "placement").every((c) => !c.cond.includes("[[date::"))
+  && typeof env3.DATA.json(INDEX, "{}").players.Alpha.resultsFullAt === "number");

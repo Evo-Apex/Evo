@@ -1,8 +1,13 @@
-// 定时从 Liquipedia 抓数据（2026-11-18 第 3 步）。Worker 的定时任务每 3 分钟叫一次 tick()，每次最多发 1 个请求。
+// 定时从 Liquipedia 抓数据（2026-11-18 第 3 步）。Worker 的定时任务每分钟叫一次 tick()，每次最多发 1 个请求。
 //
 // 抓什么：网页上"收录的比赛"（Liquipedia 比赛页面名）的资料和参赛名单 → 名单里的人加上选手库里填了 Liquipedia 页面名的人，
 // 抓他们的资料、队伍经历、历届成绩 → 他们现在的队和参赛队伍的战队资料。一轮排成一串步骤（queue），一步一个请求。
-// 额度：两次请求至少隔 2.5 分钟、一小时最多 20 次（用户的 Key 一小时 60 次，派圈的定时器最多用 12 次）。
+// 额度：两次请求至少隔 50 秒、一小时最多 50 次。2026-11-25 用户给协作网页换了一个专用的 Key（额度单独算，一小时 60 次；
+// 原来和派圈的定时器共用一个 Key，那时是隔 2.5 分钟、一小时最多 20 次，一轮 361 人要抓五六个小时），留 10 次给本机调试、出错重试。
+// 历届成绩（2026-11-25）：一个人第一次抓全部成绩，之后每轮只问最近 RECENT_DAYS 天的（一次 RECENT_BATCH 人），
+// 全部成绩隔 FULL_EVERY 重抓一次（一轮最多 FULL_STALE_MAX 人，摊开来抓）。原来每轮把每个人的全部成绩（3 万多条，一次 5 人）
+// 重抓一遍，占一轮请求的七成，条款也要求"不要反复要同样的数据"。
+// 一批太大：Liquipedia 回 414（网址太长）、或者一次给满了 1000 行，就拆成两半重查（不算失败）。
 // 一轮抓完歇 24 小时；页面上"现在更新"只是让下一轮马上开始，不会多发请求。
 // 失败：一步连着 3 次不成就跳过（旧数据留着，宁可旧、不可编），记在错误里。发请求之前先把"试了几次"写下来：
 // 万一这一次 Worker 被掐断（免费版每次运行的计算时间很短），下次也知道试过，不会一直重试同一步、白白用掉额度。
@@ -22,7 +27,7 @@ import { players as manualPlayers, writeLog } from "./data.js";
 import { squash } from "./esports.js";
 import { conflicts, merged, reconcile } from "./overrides.js";
 import {
-  fetchPlayers, fetchResults, fetchRoster, fetchSquads, fetchTeams, fetchTournaments, pageFromInput, teamPage,
+  fetchPlayers, fetchResults, fetchRoster, fetchSquads, fetchTeams, fetchTournaments, pageFromInput, resultKey, teamPage,
 } from "./liquipedia.js";
 
 export const TRACKED = "lp/tracked.json";
@@ -35,13 +40,17 @@ export const resultsKey = (page) => `lp/results/${encodeURIComponent(page)}.json
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
-export const MIN_GAP = 2.5 * MINUTE;
-export const HOURLY_CAP = 20;
+export const MIN_GAP = 50 * 1000;  // 定时任务每分钟一次，留几秒误差（隔 60 秒整的两次可能差一点点）
+export const HOURLY_CAP = 50;
 export const CYCLE = 24 * HOUR;
 export const MAX_ATTEMPTS = 3;
 export const PAUSE_429 = 15 * MINUTE;  // Liquipedia 说请求太频繁（429）：歇这么久再来，这一次不算"试过"
-const BATCH = 40;
-const RESULT_BATCH = 5;
+const BATCH = 100;          // 比赛、选手资料、队伍经历、战队：一次问这么多页（原来 40；经历 100 人约 530 行，最多给 1000 行）
+const RESULT_BATCH = 5;     // 一个人的全部成绩：一次 5 人（一人最多 300 多条）
+const RECENT_BATCH = 25;    // 只问最近的成绩：一次 25 人（每人 4 个条件，再多网址太长；30 天里一人不过十几条）
+export const RECENT_DAYS = 30;
+export const FULL_EVERY = 7 * 24 * HOUR;  // 一个人的全部成绩隔这么久重抓一次（补上老比赛后来改的名次、奖金）
+export const FULL_STALE_MAX = 60;          // 一轮里最多给这么多"到期了"的人重抓全部成绩（第一次抓的人不算在内）
 const MAX_TRACKED = 20;
 const KEEP_ERRORS = 20;
 
@@ -122,16 +131,37 @@ function firstSteps(pages) {
           { kind: "plan-players" }];
 }
 
+// 历届成绩这一轮怎么抓（2026-11-25）：还没抓过全部成绩的 → 全部；全部成绩抓了超过 FULL_EVERY 的 → 全部（最久没抓的先，
+// 一轮最多 FULL_STALE_MAX 人）；别的 → 只问最近 RECENT_DAYS 天的。idx：lp/index.json（results 是抓过的条数，resultsFullAt 是哪次抓的全部）
+export function resultPlan(pages, idx, now) {
+  const full = [];
+  const stale = [];
+  const recent = [];
+  for (const page of pages) {
+    const p = idx.players?.[page];
+    if (typeof p?.results !== "number") full.push(page);
+    else if (now - (p.resultsFullAt ?? 0) >= FULL_EVERY) stale.push(page);
+    else recent.push(page);
+  }
+  stale.sort((a, b) => (idx.players[a].resultsFullAt ?? 0) - (idx.players[b].resultsFullAt ?? 0));
+  return { full: [...full, ...stale.slice(0, FULL_STALE_MAX)], recent: [...recent, ...stale.slice(FULL_STALE_MAX)] };
+}
+
+const isoDay = (ms) => new Date(ms).toISOString().slice(0, 10);
+
 // 名单里的人 + 选手库里填了页面名的人 → 资料、经历、成绩；最后"排战队"
-async function planPlayers(bucket, trackedPages) {
+async function planPlayers(bucket, trackedPages, now) {
   const pages = new Set((await manualPlayers(bucket)).map((p) => p.liquipedia).filter(Boolean));
   for (const page of trackedPages) {
     const event = (await readDoc(bucket, eventKey(page), emptyMap)).data;
     for (const team of event.teams ?? []) for (const p of team.players) pages.add(p.page);
   }
   const list = [...pages];
+  const plan = resultPlan(list, await index(bucket), now);
+  const since = isoDay(now - RECENT_DAYS * 24 * HOUR);  // 只问这一天以后的成绩（不含这一天）
   return [...chunks(list, BATCH).map((p) => ({ kind: "players", pages: p })), ...chunks(list, BATCH).map((p) => ({ kind: "squads", pages: p })),
-          ...chunks(list, RESULT_BATCH).map((p) => ({ kind: "results", pages: p })), { kind: "plan-teams" }];
+          ...chunks(plan.full, RESULT_BATCH).map((p) => ({ kind: "results", pages: p })),
+          ...chunks(plan.recent, RECENT_BATCH).map((p) => ({ kind: "recent", pages: p, since })), { kind: "plan-teams" }];
 }
 
 // 参赛的队 + 选手现在的队 → 战队资料
@@ -143,6 +173,12 @@ async function planTeams(bucket, idx, trackedPages) {
   }
   for (const p of Object.values(idx.players)) if (p.teamPage) pages.add(p.teamPage);
   return chunks([...pages], BATCH).map((p) => ({ kind: "teams", pages: p }));
+}
+
+// 一批拆成两半（给满了、网址太长）
+function halves(step) {
+  const half = Math.ceil(step.pages.length / 2);
+  return [{ ...step, pages: step.pages.slice(0, half) }, { ...step, pages: step.pages.slice(half) }];
 }
 
 // 发一个请求做一步 → {ok, error, replace（换掉这一步的新步骤）}；数据写进存储桶
@@ -174,8 +210,10 @@ async function runStep(bucket, step, deps, now) {
     const field = step.kind === "players" ? "players" : "teams";
     const fresh = await updateDoc(bucket, INDEX, emptyIndex, (idx) => {
       for (const page of step.pages) {
-        idx[field][page] = r.found[page] ? { ...r.found[page], results: idx[field][page]?.results, fetchedAt: now }
-          : { page, missing: true, fetchedAt: now };
+        // 成绩是另外几步抓的：条数和哪次抓的全部成绩照留着
+        const old = idx[field][page];
+        idx[field][page] = r.found[page] ? { ...r.found[page], results: old?.results, resultsFullAt: old?.resultsFullAt, fetchedAt: now }
+          : { page, missing: true, results: old?.results, resultsFullAt: old?.resultsFullAt, fetchedAt: now };
       }
       return idx;
     });
@@ -185,21 +223,44 @@ async function runStep(bucket, step, deps, now) {
   if (step.kind === "squads") {
     const r = await fetchSquads(step.pages, deps);
     if (!r.ok) return r;
+    if (r.full && step.pages.length > 1) return { ok: true, replace: halves(step) };  // 给满了：可能截掉了，拆成两半重查
     await updateDoc(bucket, SQUADS, emptyMap, (all) => Object.assign(all, r.squads));
     return { ok: true };
   }
   if (step.kind === "results") {
     const r = await fetchResults(step.pages, deps);
     if (!r.ok) return r;
-    if (r.full && step.pages.length > 1) {  // 给满了：可能截掉了老比赛，拆成两半重查
-      const half = Math.ceil(step.pages.length / 2);
-      return { ok: true, replace: [{ kind: "results", pages: step.pages.slice(0, half) }, { kind: "results", pages: step.pages.slice(half) }] };
-    }
+    if (r.full && step.pages.length > 1) return { ok: true, replace: halves(step) };  // 给满了：可能截掉了老比赛，拆成两半重查
     for (const page of step.pages) {
-      await bucket.put(resultsKey(page), JSON.stringify({ page, rows: r.results[page], full: r.full, fetchedAt: now }));
+      await bucket.put(resultsKey(page), JSON.stringify({ page, rows: r.results[page], full: r.full, fetchedAt: now, fullAt: now }));
     }
     await updateDoc(bucket, INDEX, emptyIndex, (idx) => {
-      for (const page of step.pages) if (idx.players[page]) idx.players[page].results = r.results[page].length;
+      for (const page of step.pages) {
+        if (!idx.players[page]) continue;
+        idx.players[page].results = r.results[page].length;
+        idx.players[page].resultsFullAt = now;
+      }
+    });
+    return { ok: true };
+  }
+  if (step.kind === "recent") {  // 只问 since 以后的成绩：换掉存着的 since 以后那一段，之前的照留（2026-11-25）
+    const r = await fetchResults(step.pages, deps, step.since);
+    if (!r.ok) return r;
+    if (r.full) {  // 给满了：拆成两半；一个人 30 天里给满了 1000 条不可能，真遇到就重抓他的全部成绩
+      return { ok: true, replace: step.pages.length > 1 ? halves(step) : [{ kind: "results", pages: step.pages }] };
+    }
+    const counts = {};
+    for (const page of step.pages) {
+      const old = (await readDoc(bucket, resultsKey(page), emptyMap)).data;
+      const fresh = r.results[page];
+      const keys = new Set(fresh.map(resultKey));
+      const kept = (old.rows ?? []).filter((x) => !(String(x.date ?? "") > step.since) && !keys.has(resultKey(x)));
+      const rows = [...fresh, ...kept].sort((a, b) => String(b.date ?? "").localeCompare(String(a.date ?? "")));
+      counts[page] = rows.length;
+      await bucket.put(resultsKey(page), JSON.stringify({ page, rows, full: Boolean(old.full), fetchedAt: now, fullAt: old.fullAt ?? old.fetchedAt ?? null }));
+    }
+    await updateDoc(bucket, INDEX, emptyIndex, (idx) => {
+      for (const page of step.pages) if (idx.players[page]) idx.players[page].results = counts[page];
     });
     return { ok: true };
   }
@@ -248,7 +309,7 @@ export async function tick(env, now, fetchImpl = fetch) {
   while (s.queue.length && s.queue[0].kind.startsWith("plan-")) {
     const step = s.queue.shift();
     const trackedPages = (await tracked(bucket)).map((x) => x.page);
-    const more = step.kind === "plan-players" ? await planPlayers(bucket, trackedPages) : await planTeams(bucket, await index(bucket), trackedPages);
+    const more = step.kind === "plan-players" ? await planPlayers(bucket, trackedPages, now) : await planTeams(bucket, await index(bucket), trackedPages);
     s.queue.unshift(...more);
     s.round.total += more.length - 1;
     s.round.done += 1;
@@ -275,7 +336,8 @@ export async function tick(env, now, fetchImpl = fetch) {
   s.recent.push(now);
   await save();  // 先记下"试过了"再发请求
 
-  const result = await runStep(bucket, step, { apiKey: env.LIQUIPEDIA_API_KEY, fetchImpl }, now);
+  let result = await runStep(bucket, step, { apiKey: env.LIQUIPEDIA_API_KEY, fetchImpl }, now);
+  if (!result.ok && result.status === 414 && step.pages?.length > 1) result = { ok: true, replace: halves(step) };  // 网址太长：拆小重查
   if (!result.ok) {
     addError(s, now, step, result.error);
     if (result.status === 429) {

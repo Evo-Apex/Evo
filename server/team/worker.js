@@ -116,7 +116,7 @@ const OK = {
   forgot: "忘掉了：主舞台的下拉里不再有它们（赛程里已经填着的不动）", nochange: "没有改动",
   test: "测试文件发好了（写进去以后读回来核对过，一字不差）", official: "正式文件发好了：玩家下次打开 Evo 的赛事页就能看到",
   platform: "平台开关改好了",
-  tracked: "收录了：几分钟内开始抓（每 3 分钟抓一步）", untracked: "不再收录了", refresh: "排上了：几分钟内开始新的一轮",
+  tracked: "收录了：几分钟内开始抓（每分钟抓一步）", untracked: "不再收录了", refresh: "排上了：几分钟内开始新的一轮",
   matched: "填好了：选手库里记上了 Liquipedia 页面名", rejected: "记下了：以后不再这样建议",
   fixed: "修正好了：页面上用你们改的", unfixed: "撤掉了：改回用 Liquipedia 的", resolved: "处理好了",
   logo: "队徽换好了：下次发布 Evo 就能看到", unlogo: "队徽去掉了",
@@ -711,11 +711,14 @@ export async function handle(request, env, now = Date.now()) {
 }
 
 export default {
-  // 定时任务（wrangler.toml 的 crons，每 3 分钟）：从 Liquipedia 抓一步（lpsync.js）；「数据」页的数离上次超过 3 小时就增量算一次
-  // （statsroll.js）。两件事互不影响：一件出错另一件照做
+  // 定时任务（wrangler.toml 的 crons，每分钟；2026-11-25 以前是每 3 分钟）：从 Liquipedia 抓一步（lpsync.js）；
+  // 「数据」页的数照旧每 3 分钟看一次（整分钟数是 3 的倍数时），离上次超过 3 小时就增量算一次（statsroll.js：
+  // 补算没完时每次都读统计数据库，D1 的额度整个账号共用，不跟着变勤）。两件事互不影响：一件出错另一件照做
   async scheduled(controller, env, ctx) {
     const now = Date.now();
-    ctx.waitUntil(Promise.allSettled([tick(env, now), rollup(env, now)]));
+    const jobs = [tick(env, now)];
+    if (new Date(now).getUTCMinutes() % 3 === 0) jobs.push(rollup(env, now));
+    ctx.waitUntil(Promise.allSettled(jobs));
   },
   async fetch(request, env) {
     try {

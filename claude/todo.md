@@ -128,7 +128,7 @@
 
 - [ ] **看直播加 Twitch**（2026-11-25 用户要的，定了用 Evo 自己的播放器、不用 Twitch 官方嵌入播放器；照 PureLive。做法见 `docs/面板.md`、`docs/底座.md` 的 Twitch 一节）：
   - 第 1 步 Evo 这边做完、提交了（查开播、播放、弹幕、连不上时的提示和"重试"、旧版本兼容写法，`server/team/esports.js` 生成和读取也跟着改了）。连不上时那一格的话是用户定的（"啊哦，看起来你不具备看Twitch的“环境”，重试一下吧" / "你知道怎么做的，对吧"）。**还要用户自己看一眼**：在看直播页播一路 Twitch，画面有没有花屏（Claude 的浏览器面板截到过马赛克，查下来中转的数据完好、浏览器报 0 帧解坏，像是面板在后台时截图截到半解码的帧，没在真的 Evo 窗口里看过）
-  - 第 2 步做完、提交了，**还没部署**（用户要 Claude 自己做的）：协作网页认 Liquipedia 上的 Twitch 链接（排在国内平台后面），选手库加"从 Liquipedia 补直播间"（`/players/fill-streams`）。部署以后：在 Liquipedia 页点"现在更新"、等这一轮抓完（几个小时），再打开"从 Liquipedia 补直播间"勾选补上，然后发布
+  - 第 2 步做完、提交了，**还没部署**（用户要 Claude 自己做的）：协作网页认 Liquipedia 上的 Twitch 链接（排在国内平台后面），选手库加"从 Liquipedia 补直播间"（`/players/fill-streams`）。同一批还有抓取提速（2026-11-25，用户另建了协作网页专用的 Liquipedia Key，额度单独算）：每分钟一步、一小时最多 50 次，历届成绩平时只问最近 30 天。部署前用户先把新 Key 放进 Worker（`cd server/team; npx wrangler secret put LIQUIPEDIA_API_KEY`，用户自己粘贴）；部署以后：在 Liquipedia 页点"现在更新"、等这一轮抓完（一小时以内），再打开"从 Liquipedia 补直播间"勾选补上，然后发布
   - 发版前：协作网页先部署（它生成的 `esports.json` 才会写 Twitch 的兼容写法），官网隐私页随下一版上传；主舞台可以加 ALGS 官方的 Twitch（`playapex`）
 
 ## 一、先做

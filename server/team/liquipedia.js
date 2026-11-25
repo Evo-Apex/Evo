@@ -2,8 +2,9 @@
 // 整理的规则照搬派圈的 cloudfunctions/apex/liquipedia.js（同一个作者写的，2026-11 实测过 Apex 维基的字段）。
 //
 // 条款里决定做法的几条（https://liquipedia.net/api-terms-of-use）：
-//   - 每小时的请求有上限（用户的 Key 是 60 次，派圈的定时器也用同一个 Key）→ 这里每小时最多 20 次（lpsync.js），
-//     打开页面时不现查，只读抓好存下来的
+//   - 每小时的请求有上限：2026-11-25 起协作网页用自己专用的 Key（一小时 60 次，和派圈定时器的 Key 额度分开；
+//     原来两边共用一个 Key，这里每小时最多 20 次）→ 这里每小时最多 50 次（lpsync.js），打开页面时不现查，只读抓好存下来的
+//   - 尽量用存下来的、不反复要同样的数据：历届成绩只在第一次和每周抓全部，平时只问最近 30 天的（lpsync.js）
 //   - 数据是 CC BY-SA 3.0，页面上写明"数据来自 Liquipedia"
 //   - Key 不给第三方：只放在 Worker 的机密变量 LIQUIPEDIA_API_KEY 里（wrangler secret put，用户自己粘贴），不进 git、不下发到网页
 //   - 只走 API，不抓网页
@@ -259,12 +260,17 @@ export async function fetchSquads(pages, deps) {
     out[page].push(s);
   }
   for (const list of Object.values(out)) list.sort((a, b) => (b.join || "").localeCompare(a.join || ""));
-  return { ok: true, squads: out };
+  return { ok: true, squads: out, full: r.rows.length >= RESULT_LIMIT };  // full：给满了 1000 行，可能截掉了（调用方拆小重查）
 }
 
-// full：一次给满了上限，可能截掉了老比赛（调用方把这一批拆小重查）
-export async function fetchResults(pages, deps) {
-  const conditions = pages.flatMap((p) => [1, 2, 3, 4].map((i) => `[[opponentplayers_p${i}::${p}]]`)).join(" OR ");
+// 一个人的一条成绩算不算同一条：同一场比赛、同一支队、同一个名次
+export const resultKey = (res) => `${res.event}|${res.team}|${res.place}`;
+
+// full：一次给满了上限，可能截掉了老比赛（调用方把这一批拆小重查）。
+// since（2026-11-25）：只要这一天以后的成绩（"YYYY-MM-DD"，不含这一天），平时只问最近的、不重抓全部
+export async function fetchResults(pages, deps, since = "") {
+  const players = pages.flatMap((p) => [1, 2, 3, 4].map((i) => `[[opponentplayers_p${i}::${p}]]`)).join(" OR ");
+  const conditions = since ? `[[date::>${since}]] AND (${players})` : players;
   const r = await query("placement", { conditions, query: RESULT_COLS, limit: RESULT_LIMIT, order: "date DESC" }, deps);
   if (!r.ok) return r;
   const out = Object.fromEntries(pages.map((p) => [p, []]));
@@ -274,7 +280,7 @@ export async function fetchResults(pages, deps) {
     if (!res) continue;
     for (const pl of playersOf(row)) {
       if (!out[pl.page]) continue;
-      const key = `${pl.page}|${res.event}|${res.team}|${res.place}`;
+      const key = `${pl.page}|${resultKey(res)}`;
       if (seen.has(key)) continue;
       seen.add(key);
       out[pl.page].push(res);
