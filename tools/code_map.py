@@ -106,16 +106,17 @@ SECTIONS = [
         ("assets/", "素材原图：icon/ 图标、legends/ 传奇头像（各自的许可在 LICENSE.txt）、ranks/ 段位、sounds/ 提示音、"
                     "splash/ 窗口启动画面那行字的字体（只含用到的几个字，tools/splash_fonts.py 取）"),
         ("release/", "发版用：更新内容.txt、使用说明.txt（随安装包）、做图流程.md + 宣传图.json（新功能配图）"),
-        ("docs/", "说明文档（什么时候读哪一份见 CLAUDE.md），images/ 是 README 的截图"),
+        ("docs/", "说明文档（什么时候读哪一份见 AGENTS.md），images/ 是 README 的截图"),
         ("claude/", "进度和待办：progress.md、todo.md、progress_archive.md"),
         ("README.md", "GitHub 上的介绍"), ("PRIVACY.md", "隐私说明"), ("LICENSE", "AGPL-3.0 许可证"),
         (".github/CODEOWNERS", "代码负责人：所有 PR 要 AugustHuangMX 批准才能合并进 main"),
-        ("CLAUDE.md", "项目说明（给 Claude 的）"), (".gitignore", "不进 git 的文件（每一项为什么不进写在旁边）")]),
+        ("AGENTS.md", "项目说明（给 Claude、Antigravity 等 AI 编程助手的）"),
+        ("CLAUDE.md", "Claude 的入口：引用 AGENTS.md，再加几条只有 Claude 用得上的"), (".gitignore", "不进 git 的文件（每一项为什么不进写在旁边）")]),
 ]
 
 HEADER = """# 代码地图
 
-每个文件是干什么的，一行一个，按分工分组（模型、引擎、页面、底座……见 CLAUDE.md"用词和分工"）。找某个功能的代码在哪时先看这里。
+每个文件是干什么的，一行一个，按分工分组（模型、引擎、页面、底座……见 AGENTS.md"用词和分工"）。找某个功能的代码在哪时先看这里。
 
 这个文件是 `python tools/code_map.py` 生成的，**不要手改**：每行取自那个文件开头的说明（第一句），说明写得不好就改文件开头。
 加、删、改名文件，或者改了文件开头说明的第一句以后，重新运行一次；`python tests/run_all.py` 会检查它是不是最新的。

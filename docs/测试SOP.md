@@ -6,7 +6,7 @@
 
 ### 不跑
 
-- 只改文档、注释、待办：`docs/`、`claude/`、CLAUDE.md、`release/` 里的文字，代码里的说明和注释
+- 只改文档、注释、待办：`docs/`、`claude/`、AGENTS.md、CLAUDE.md、`release/` 里的文字，代码里的说明和注释
 - 改官网（`site/`）、宣传图：这些不在测试里，打开看效果
 - 例外：加、删、改名了文件，或者改了文件开头说明的第一句，要重新生成代码地图（`python tools/code_map.py`），再跑 `python tests/test_code_map.py`（几秒）
 

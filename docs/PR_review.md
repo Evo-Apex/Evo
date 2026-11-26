@@ -22,7 +22,7 @@
 
 ## 3. 逐条对照
 
-**项目原则（CLAUDE.md）**
+**项目原则（AGENTS.md）**
 - 只看不动：在 diff 里搜有没有模拟键盘鼠标输入、全局钩子、读写内存、游戏上的浮层（`SendInput`、`pynput`、`keyboard`、`pyautogui`、`SetWindowsHookEx`、`ReadProcessMemory`、置顶窗口……）。有就是红线，不能合
 - 轻量：新依赖（`tools/evo.spec`、requirements）要问理由，看对体积和内存的影响；对局中（每 0.3 秒一张）不能加 OCR 或别的重活，拿不准时实测内存和 CPU
 - 开源：不是从别的项目抄来的代码；图片、声音这类素材要写清来源和许可（PR #8 的地图图片版权归 EA）
