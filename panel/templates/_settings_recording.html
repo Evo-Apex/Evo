@@ -56,7 +56,10 @@
       <p class="setting-desc rec-hl-lang" id="rec-hl-lang">击倒、助攻击倒等事件还在适配多语种中……欢迎加入<a href="{{ feedback_url }}" target="_blank" rel="noopener noreferrer">反馈群</a>帮助适配！</p>
     </div>
     <details class="move-data rec-hl-more" id="rec-hl-more">
-      <summary>高级选项：每种事件前后录几秒</summary>
+      <summary class="btn rec-hl-more-btn">
+        <span>高级选项</span>
+        <svg class="rec-hl-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+      </summary>
       <div class="rec-hl-rows">
         {% for e in rec.hl_events %}
         <div class="rec-hl-row {{ e.css }}{{ ' off' if not e.on }}" data-hl-row="{{ e.kind }}">
@@ -75,9 +78,10 @@
       </div>
       <button type="submit" class="btn-text rec-hl-reset" name="reset" value="1">恢复默认的秒数</button>
     </details>
-    <div class="setting">
-      <div class="setting-text">{{ note(rec, "highlights") }}</div>
-      <button type="submit" class="btn">保存</button>
+    <div class="rec-hl-foot">
+      <div class="setting-desc rec-note-line" id="rec-hl-status" role="status" aria-live="polite"></div>
+      {{ note(rec, "highlights") }}
+      <noscript><div class="setting"><div class="setting-text"></div><button type="submit" class="btn">保存</button></div></noscript>
     </div>
   </form>
 
@@ -109,7 +113,7 @@
     <div class="setting">
       <div class="setting-text">
         <label class="setting-name" for="rec-codec">编码格式</label>
-        <div class="setting-desc">H.264 哪里都能放；AV1 同样画质文件小约四成，Evo 里能放，有的播放器要另装插件</div>
+        <div class="setting-desc">RTX 40系/RX 7000 系及以后的电脑推荐使用AV1，存储空间更省</div>
         {# 不能选的原因写在这里，不写进选项：选项一长下拉框就被撑宽，左边这几行挤成一窄条（2026-11-26） #}
         <div class="setting-desc" id="rec-codec-why">{% for one in rec.codecs if not one.ready %}{{ one.why }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
       </div>
@@ -230,22 +234,71 @@
     {% endif %}
   </details>
   <script>
-    // 剪高光：滑块一动，旁边的"前 N 秒 / 后 N 秒"、填色的那一段（--fill）跟着变（读屏软件念"N 秒"）；没勾的事件那一行变淡（照样能调）
+    // 剪高光：滑块一动，旁边的"前 N 秒 / 后 N 秒"、填色的那一段（--fill）跟着变（读屏软件念"N 秒"）；没勾的事件那一行变淡（照样能调）；
+    // 录制模式、高光包括、高级选项秒数和"恢复默认的秒数"全部自动保存（不刷新页面，2026-11-26 用户要求）
     (function () {
       var form = document.getElementById("rec-highlights");
       if (!form) return;
-      form.querySelectorAll(".rec-hl-row input[type=range]").forEach(function (r) {
+      var status = document.getElementById("rec-hl-status");
+      var timer = null, seq = 0, fade = null;
+      function syncRange(r) {
         var out = document.getElementById(r.id + "-v");
-        r.addEventListener("input", function () {
-          out.textContent = r.dataset.hlSide + " " + r.value + " 秒";
-          r.setAttribute("aria-valuetext", r.value + " 秒");
-          r.style.setProperty("--fill", (r.value / r.max * 100) + "%");
+        if (out) out.textContent = r.dataset.hlSide + " " + r.value + " 秒";
+        r.setAttribute("aria-valuetext", r.value + " 秒");
+        r.style.setProperty("--fill", (r.value / r.max * 100) + "%");
+      }
+      function say(text, isError) {
+        if (!status) return;
+        clearTimeout(fade);
+        status.textContent = text;
+        status.className = "setting-desc rec-note-line " + (isError ? "update-error" : "rec-saved");
+        status.setAttribute("role", isError ? "alert" : "status");
+        if (!isError && text) {
+          fade = setTimeout(function () { status.textContent = ""; }, 2600);
+        }
+      }
+      function save(reset) {
+        clearTimeout(timer);
+        var id = ++seq;
+        var body = new FormData(form);
+        if (reset) body.set("reset", "1");
+        else body.delete("reset");
+        fetch(form.action, { method: "POST", body: body, headers: { "X-Evo-Fetch": "1" } })
+          .then(function (r) { return r.json().then(function (d) { return { ok: r.ok && d.ok, data: d }; }); })
+          .then(function (res) {
+            if (id !== seq) return;
+            if (!res.ok) { say(res.data.error || "没保存", true); return; }
+            if (reset && res.data.picked) {
+              Object.keys(res.data.picked).forEach(function (kind) {
+                var item = res.data.picked[kind];
+                ["before", "after"].forEach(function (side) {
+                  var r = document.getElementById("hl-" + side + "-" + kind);
+                  if (r && item[side] !== undefined) { r.value = String(item[side]); syncRange(r); }
+                });
+              });
+            }
+            say(res.data.text || "已保存", false);
+          })
+          .catch(function () { if (id === seq) say("没保存：Evo 没有回答", true); });
+      }
+      form.querySelectorAll(".rec-hl-row input[type=range]").forEach(function (r) {
+        r.addEventListener("input", function () { syncRange(r); });
+        r.addEventListener("change", function () {
+          clearTimeout(timer);
+          timer = setTimeout(function () { save(false); }, 250);
         });
       });
       form.querySelectorAll("[data-hl-on]").forEach(function (box) {
         var row = form.querySelector('[data-hl-row="' + box.dataset.hlOn + '"]');
-        box.addEventListener("change", function () { if (row) row.classList.toggle("off", !box.checked); });
+        box.addEventListener("change", function () {
+          if (row) row.classList.toggle("off", !box.checked);
+          save(false);
+        });
       });
+      var modeSel = document.getElementById("rec-mode");
+      if (modeSel) modeSel.addEventListener("change", function () { save(false); });
+      var resetBtn = form.querySelector(".rec-hl-reset");
+      if (resetBtn) resetBtn.addEventListener("click", function (e) { e.preventDefault(); save(true); });
     })();
     // 画质那几项一改，下面那一行跟着换（每种组合的估算在 data-estimates 里，panel_recordings.estimate）
     (function () {

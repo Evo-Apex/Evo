@@ -184,11 +184,67 @@ def panel_checks():
     return out
 
 
+def countdown_checks():
+    """总览页"赛季倒计时"（seasons.countdown_card、panel/templates/_season_countdown.html）：
+    Split 1 / Split 2 切换、最后 24 小时精确到秒、已结束不出现负数、缺省配置隐藏、总览页有/无对局均渲染在当前地图上方。"""
+    out = {}
+    meta = seasons.load_meta()
+    out["配置：第 31 赛季带有 split2_start、end、end_estimated，第 30 赛季没有"] = (
+        31 in meta and meta[31]["split2_start"] is not None and meta[31]["end"] is not None
+        and meta[31]["end_estimated"] is True and meta[30]["end"] is None)
+
+    # Split 1 进行中（2026-11-26 20:45 UTC = 柏林 21:45）：距 Split 1 约 18 天 21 小时，距赛季结束约 74 天 21 小时
+    t_s1 = datetime(2026, 11, 26, 20, 45, tzinfo=timezone.utc)
+    c1 = seasons.countdown_card(t_s1, seasons=SEASONS, meta=meta)
+    out["Split 1 进行中：同时显示排位 Split 1 和第 31 赛季结束（带预计标记），进度在 0–100 之间"] = (
+        c1 is not None and len(c1["slots"]) == 2
+        and c1["slots"][0]["name"] == "排位 · Split 1" and c1["slots"][0]["left"] == "18 天 21 小时"
+        and not c1["slots"][0]["estimated"] and c1["slots"][0]["next_end"] == int(meta[31]["end"])
+        and c1["slots"][1]["name"] == "第 31 赛季结束" and c1["slots"][1]["left"] == "74 天 21 小时"
+        and c1["slots"][1]["estimated"] is True and c1["slots"][1]["badge"] == "预计"
+        and 0 < c1["slots"][0]["pct"] < 100 and 0 < c1["slots"][1]["pct"] < 100)
+
+    # Split 1 最后 24 小时以内：精确到 HH:MM:SS 且标 urgent
+    t_last_day = datetime(2026, 12, 15, 9, 28, 55, tzinfo=timezone.utc)
+    c_urg = seasons.countdown_card(t_last_day, seasons=SEASONS, meta=meta)
+    out["最后 24 小时内：显示 HH:MM:SS 且标记 urgent"] = (
+        c_urg["slots"][0]["left"] == "08:31:05" and c_urg["slots"][0]["urgent"] is True
+        and c_urg["slots"][1]["urgent"] is False)
+
+    # Split 2 进行中（2026-12-20 18:00 UTC）：排位格自动切到 Split 2，进度从 Split 2 开赛算起（不同于赛季全程进度）
+    t_s2 = datetime(2026, 12, 20, 18, 0, tzinfo=timezone.utc)
+    c2 = seasons.countdown_card(t_s2, seasons=SEASONS, meta=meta)
+    out["过了 Split 1 切换时刻：排位自动切为 Split 2，进度与赛季全程进度分开算"] = (
+        c2["slots"][0]["name"] == "排位 · Split 2" and not c2["slots"][0]["ended"]
+        and c2["slots"][0]["pct"] < c2["slots"][1]["pct"])
+
+    # 赛季已结束（2027-02-10 00:00 UTC）：两格都写"已结束"，进度 100%，不出现负数
+    t_after = datetime(2027, 2, 10, 0, 0, tzinfo=timezone.utc)
+    c_end = seasons.countdown_card(t_after, seasons=SEASONS, meta=meta)
+    out["赛季结束后：两格均显示已结束、进度 100%，不出现负数"] = (
+        all(s["ended"] and s["left"] == "已结束" and s["pct"] == 100 and "-" not in s["left"] for s in c_end["slots"]))
+
+    # 没配结束时间的赛季（如第 30 赛季）：返回 None，页面不显示卡片
+    t_s30 = datetime(2026, 10, 20, 18, 0, tzinfo=timezone.utc)
+    out["未配置结束时间的赛季不显示倒计时卡片"] = seasons.countdown_card(t_s30, seasons=SEASONS, meta=meta) is None
+
+    # 侧边栏渲染：每一页（总览 / 战绩 / 赛季等）都在侧边栏「Evo 占用」正上方显示赛季倒计时按钮与右侧详情浮层
+    client = make_db()
+    home = client.get("/").get_data(as_text=True)
+    matches = client.get("/matches").get_data(as_text=True)
+    out["侧边栏（每一页）：显示赛季倒计时卡片和右侧详情浮层，位于「Evo 占用」上方"] = (
+        all('id="season-cd-top"' in p and 'id="season-cd-open"' in p and 'id="season-cd-panel"' in p
+            and "排位 · Split 1" in p and "第 31 赛季结束" in p
+            and p.index('id="season-cd-top"') < p.index('id="usage-top"')
+            for p in (home, matches)))
+    return out
+
+
 def main():
     print("按赛季看（本赛季 / 上赛季，总览页、数据页、战绩页）")
     seasons.SEASONS[:] = SEASONS
     try:
-        checks = {**module_checks(), **calibration_checks(), **panel_checks()}
+        checks = {**module_checks(), **calibration_checks(), **panel_checks(), **countdown_checks()}
     finally:
         seasons.SEASONS[:] = TEST_SEASONS
     return report(checks)

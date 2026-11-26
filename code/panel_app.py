@@ -302,8 +302,9 @@ def template_globals():
         # 多账号：认出了新的玩家名 → 弹窗问"是不是同一个人"；有 2 个以上账号时，右上角切换账号
         "name_question": name_question(),
         "account_view": account_view(),
-        # 右上角的「Evo 占用」（_usage.html，每一页都有）：用到时才量（一次约 5 毫秒），局部重画的片段不量
+        # 侧边栏下面的「Evo 占用」（_usage.html）和「赛季倒计时」（_season_countdown.html），每一页都有：用到时才算
         "usage_card": usage_card,
+        "season_countdown": seasons.countdown_card,
         # "Evo 官方合作小程序：派圈助手"（总览页"关注我"那一栏、设置页鸣谢卡片）：没有小程序码图片时是 None，不显示
         "partner": partner_qr(),
         "partner_icon": PARTNER_ICON,

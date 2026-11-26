@@ -230,6 +230,116 @@
     setTimeout(update, 1000);
     setInterval(update, 2000);
   })();
+
+  // 侧边栏下面的「赛季倒计时」（_season_countdown.html）：点了在侧边栏右边展开详情浮层（再点、点外面、Esc 收起）；
+  // 纯本地时钟每秒更新（不联网），Split 1 到点自动切到 Split 2，过了结束时刻写"已结束"
+  (function () {
+    var box = document.getElementById("season-cd-top");
+    if (!box) return;
+    var btn = document.getElementById("season-cd-open"), panel = document.getElementById("season-cd-panel");
+    function setOpen(open) {
+      panel.hidden = !open;
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    btn.addEventListener("click", function () { setOpen(panel.hidden); });
+    document.addEventListener("click", function (e) { if (!panel.hidden && !box.contains(e.target)) setOpen(false); });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && !panel.hidden) { setOpen(false); btn.focus(); }
+    });
+
+    function pad(n) { return (n < 10 ? "0" : "") + n; }
+    function leftText(sec) {
+      var s = Math.floor(sec);
+      if (s <= 0) return "已结束";
+      if (s >= 86400) return Math.floor(s / 86400) + " 天 " + Math.floor((s % 86400) / 3600) + " 小时";
+      return pad(Math.floor(s / 3600)) + ":" + pad(Math.floor((s % 3600) / 60)) + ":" + pad(s % 60);
+    }
+    function shortText(sec) {
+      var s = Math.floor(sec);
+      if (s <= 0) return "已结束";
+      if (s >= 86400) return Math.floor(s / 86400) + "天 " + Math.floor((s % 86400) / 3600) + "时";
+      return pad(Math.floor(s / 3600)) + ":" + pad(Math.floor((s % 3600) / 60));
+    }
+    function tinyText(sec) {
+      var s = Math.floor(sec);
+      if (s <= 0) return "结束";
+      if (s >= 86400) return Math.floor(s / 86400) + "天";
+      if (s >= 3600) return Math.floor(s / 3600) + "时";
+      return "<1时";
+    }
+    function atText(ts, now) {
+      var d = new Date(ts * 1000);
+      var md = pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+      return d.getFullYear() === now.getFullYear() ? md : d.getFullYear() + "-" + md;
+    }
+    function tick() {
+      var now = new Date(), nowSec = now.getTime() / 1000;
+      panel.querySelectorAll(".season-cd-slot").forEach(function (slot) {
+        var key = slot.dataset.key;
+        var mini = btn.querySelector('[data-cd-mini="' + key + '"]');
+        var start = Number(slot.dataset.start), end = Number(slot.dataset.end);
+        var est = slot.dataset.estimated === "1";
+        if (end <= nowSec && slot.dataset.nextEnd) {
+          start = Number(slot.dataset.nextStart);
+          end = Number(slot.dataset.nextEnd);
+          est = slot.dataset.nextEstimated === "1";
+          slot.dataset.start = String(start);
+          slot.dataset.end = String(end);
+          slot.dataset.estimated = est ? "1" : "0";
+          delete slot.dataset.nextStart;
+          delete slot.dataset.nextEnd;
+          var name = slot.querySelector("[data-cd-name]");
+          if (name) name.textContent = "排位 · Split 2";
+          if (mini) {
+            var sn = mini.querySelector("[data-cd-short-name]");
+            if (sn) sn.textContent = "Split 2";
+          }
+          var barEl = slot.querySelector("[data-cd-bar]");
+          if (barEl) barEl.setAttribute("aria-label", "排位 · Split 2进度");
+          var badge = slot.querySelector("[data-cd-badge]");
+          if (badge) {
+            badge.textContent = est ? "预计" : "第 2 赛段";
+            badge.className = "season-cd-badge " + (est ? "is-warn" : "is-info");
+          }
+        }
+        var left = end - nowSec, ended = left <= 0, urgent = !ended && left <= 3 * 86400;
+        var span = end - start;
+        var pct = span <= 0 ? 100 : Math.round(Math.max(0, Math.min(1, (nowSec - start) / span)) * 100);
+        slot.classList.toggle("is-ended", ended);
+        slot.classList.toggle("is-urgent", urgent);
+        var prefix = slot.querySelector(".season-cd-prefix");
+        if (prefix) prefix.hidden = ended;
+        var leftEl = slot.querySelector("[data-cd-left]");
+        if (leftEl) leftEl.textContent = leftText(left);
+        var fill = slot.querySelector("[data-cd-fill]");
+        if (fill) fill.style.width = pct + "%";
+        var bar = slot.querySelector("[data-cd-bar]");
+        if (bar) bar.setAttribute("aria-valuenow", String(pct));
+        var pctEl = slot.querySelector("[data-cd-pct]");
+        if (pctEl) pctEl.textContent = pct + "%";
+        var atEl = slot.querySelector("[data-cd-at]");
+        if (atEl) atEl.textContent = (est && !ended ? "预计 " : "") + atText(end, now) + (ended ? " 已结束" : " 结束");
+        if (ended) {
+          var badgeEl = slot.querySelector("[data-cd-badge]");
+          if (badgeEl) { badgeEl.textContent = "已结束"; badgeEl.className = "season-cd-badge is-muted"; badgeEl.removeAttribute("title"); }
+          var noteEl = slot.querySelector("[data-cd-note]");
+          if (noteEl) noteEl.remove();
+        }
+        if (mini) {
+          mini.classList.toggle("is-ended", ended);
+          mini.classList.toggle("is-urgent", urgent);
+          var sv = mini.querySelector("[data-cd-short]");
+          if (sv) sv.textContent = shortText(left);
+          var tv = mini.querySelector("[data-cd-tiny]");
+          if (tv) tv.textContent = tinyText(left);
+          var mf = mini.querySelector("[data-cd-mini-fill]");
+          if (mf) mf.style.width = pct + "%";
+        }
+      });
+    }
+    tick();
+    setInterval(tick, 1000);
+  })();
 </script>
 {% if partner %}
 {# 派圈助手的小程序码：总览页"关注我"那一栏、设置页鸣谢卡片里的"派圈助手"按钮（data-partner-open）打开。
@@ -407,9 +517,11 @@
     function clearAutoCollapse() { clearTimeout(autoTimer); autoTimer = null; }
     function armAutoCollapse() {
       clearAutoCollapse();
+      var seasonOpen = document.getElementById("season-cd-open");
       if (!autoSeconds || collapsed() || document.hidden || side.matches(":hover") ||
           (keyboardFocus && side.contains(document.activeElement)) ||
-          document.getElementById("usage-open").getAttribute("aria-expanded") === "true") return;
+          document.getElementById("usage-open").getAttribute("aria-expanded") === "true" ||
+          (seasonOpen && seasonOpen.getAttribute("aria-expanded") === "true")) return;
       autoTimer = setTimeout(function () { hideTip(); setCollapsed(true); }, autoSeconds * 1000);
     }
     side.addEventListener("pointerenter", clearAutoCollapse);
@@ -420,6 +532,8 @@
     side.addEventListener("focusout", function () { setTimeout(armAutoCollapse, 0); });
     document.addEventListener("visibilitychange", armAutoCollapse);
     new MutationObserver(armAutoCollapse).observe(document.getElementById("usage-open"), { attributes: true, attributeFilter: ["aria-expanded"] });
+    var seasonBtn = document.getElementById("season-cd-open");
+    if (seasonBtn) new MutationObserver(armAutoCollapse).observe(seasonBtn, { attributes: true, attributeFilter: ["aria-expanded"] });
     armAutoCollapse();
     function hideTip() { tip.hidden = true; }
     function showTip(el) {

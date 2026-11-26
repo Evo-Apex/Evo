@@ -1,0 +1,58 @@
+{# 侧边栏下面的「赛季倒计时」（seasons.countdown_card，2026-11-26 用户要求放到侧边栏，和「Evo 占用」一样每一页都有）：
+   - 按钮：一张小卡片，显示当前赛季名 + Split 1/2 和本赛季两个紧凑倒计时与细进度条；侧边栏收起时只剩图标和上下两个短数字（"18天""74天"，文字留给读屏软件，悬停弹出 #side-tip）。
+   - 点了在侧边栏右边展开详情浮层（position: fixed，再点、点外面、Esc 收起）：完整的排位 Split 与赛季结束倒计时、进度条、本地截止时间及误差/关闭匹配提示。
+   纯离线读 config/seasons.json，不联网；当前赛季没配结束时间时不渲染；不设 aria-live 免得打扰读屏软件 #}
+{% set season_cd = season_countdown() %}
+{% if season_cd %}
+<div class="season-cd-top" id="season-cd-top">
+  <button type="button" class="season-cd-btn" id="season-cd-open" aria-expanded="false" aria-controls="season-cd-panel" data-tip="{{ season_cd.label }}倒计时">
+    <span class="season-cd-btn-head">
+      <svg class="season-cd-btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>
+      <span class="season-cd-btn-label">{{ season_cd.label }}</span>
+    </span>
+    <span class="season-cd-btn-rows">
+      {% for s in season_cd.slots %}
+      <span class="season-cd-btn-item season-cd-{{ s.key }}{{ ' is-ended' if s.ended }}{{ ' is-urgent' if s.urgent }}" data-cd-mini="{{ s.key }}">
+        <span class="season-cd-btn-line">
+          <span class="season-cd-btn-key" data-cd-short-name>{{ s.short_name }}</span>
+          <span class="season-cd-btn-val num" data-cd-short>{{ s.short_left }}</span>
+          <span class="season-cd-btn-tiny num" data-cd-tiny aria-hidden="true">{{ s.tiny_left }}</span>
+        </span>
+        <span class="season-cd-mini-track" aria-hidden="true"><span class="season-cd-mini-fill" style="width: {{ s.pct }}%" data-cd-mini-fill></span></span>
+      </span>
+      {% endfor %}
+    </span>
+  </button>
+  <div class="season-cd-panel" id="season-cd-panel" role="region" aria-labelledby="h-season-cd" hidden>
+    <div class="season-cd-panel-head">
+      <h2 id="h-season-cd">赛季倒计时</h2>
+      <span class="muted small">{{ season_cd.label }} · <span class="num">{{ season_cd.start_text }}</span> 开赛</span>
+    </div>
+    {% for s in season_cd.slots %}
+    <div class="season-cd-slot season-cd-{{ s.key }}{{ ' is-ended' if s.ended }}{{ ' is-urgent' if s.urgent }}"
+         data-key="{{ s.key }}" data-start="{{ s.start }}" data-end="{{ s.end }}"
+         data-estimated="{{ '1' if s.estimated else '0' }}"
+         {% if s.next_end %}data-next-start="{{ s.next_start }}" data-next-end="{{ s.next_end }}" data-next-estimated="{{ '1' if s.next_estimated else '0' }}"{% endif %}>
+      <div class="season-cd-row-top">
+        <span class="label" data-cd-name>{{ s.name }}</span>
+        <span class="season-cd-badge is-{{ s.badge_kind }}" data-cd-badge{% if s.badge_tip %} title="{{ s.badge_tip }}"{% endif %}>{{ s.badge }}</span>
+      </div>
+      <div class="season-cd-left">
+        <span class="season-cd-prefix"{% if s.ended %} hidden{% endif %}>还剩</span>
+        <span class="season-cd-value num" data-cd-left>{{ s.left }}</span>
+      </div>
+      <div class="season-cd-prog">
+        <div class="season-cd-track" role="progressbar" aria-label="{{ s.name }}进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ s.pct }}" data-cd-bar>
+          <span class="season-cd-fill" style="width: {{ s.pct }}%" data-cd-fill></span>
+        </div>
+        <span class="season-cd-pct num" data-cd-pct>{{ s.pct }}%</span>
+      </div>
+      <div class="season-cd-meta">
+        <time data-cd-at>{{ '预计 ' if s.estimated and not s.ended else '' }}{{ s.end_text }}{{ ' 已结束' if s.ended else ' 结束' }}</time>
+        {% if s.note %}<div class="season-cd-note" data-cd-note>{{ s.note }}</div>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}

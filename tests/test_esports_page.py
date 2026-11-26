@@ -57,7 +57,7 @@ def text(html):
 
 
 def section(html, heading):
-    found = re.findall(rf'<section class="es-section"[^>]*>\s*<h2[^>]*>{heading}</h2>.*?</section>', html, re.S)
+    found = re.findall(rf'<section class="es-section"[^>]*>\s*(?:<div class="es-section-head">\s*)?<h2[^>]*>{heading}</h2>.*?</section>', html, re.S)
     return found[0] if found else ""
 
 
@@ -105,9 +105,9 @@ def main():
     out["最近结束：灰色，写\"已结束\"；结束超过 7 天的不显示"] = (
         len(ended) == 1 and "昨天的联赛" in ended[0] and "已结束" in ended[0] and "es-ended" in recent
         and "上上周" not in raw)
-    out["最下面一行小字；赛程里的字只当纯文字显示"] = (
-        "赛事、队伍和每位选手的直播间由 Evo 统一维护。" in text(raw) and "<b>两小时后</b>" not in raw
-        and "&lt;b&gt;两小时后&lt;/b&gt;" in raw)
+    out["最下面一行小字、顶部写着赛事管理员；赛程里的字只当纯文字显示"] = (
+        "赛事、队伍和每位选手的直播间由 Evo 统一维护。" in text(raw) and "赛事管理员：毛毛" in text(live)
+        and "<b>两小时后</b>" not in raw and "&lt;b&gt;两小时后&lt;/b&gt;" in raw)
 
     asked = []
 

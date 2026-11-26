@@ -723,13 +723,21 @@ def save_quality():
 @bp.post("/settings/recording/highlights")
 def save_highlights():
     """录制模式、高光包括哪些事件、每种事件前后录几秒，一起保存（玩家改的存 settings.json，默认在 config/recording.json）。
-    reset=1（高级选项里的"恢复默认"）：秒数改回默认，勾的照表单上的。只录高光时至少要勾一种。"""
+    页面上改动时自动以 X-Evo-Fetch: 1 异步保存（不刷新页面）；reset=1（高级选项里的"恢复默认"）：秒数改回默认，勾的照表单上的。
+    只录高光时至少要勾一种。"""
+    is_fetch = request.headers.get("X-Evo-Fetch") == "1"
+
+    def fail(msg):
+        if is_fetch:
+            return jsonify({"ok": False, "error": msg}), 400
+        return _done("highlights", msg, error=True)
+
     rules = recorder.load_rules()
     cfg = highlights.config(rules)
     form, top = request.form, cfg.get("max_seconds", 60)
     mode = form.get("mode")
     if mode not in highlights.MODES:
-        return _done("highlights", "没保存：选项不对，刷新一下页面再试", error=True)
+        return fail("没保存：选项不对，刷新一下页面再试")
     reset = bool(form.get("reset"))
     picked = {}
     for kind, default in cfg["events"].items():
@@ -737,16 +745,17 @@ def save_highlights():
         for key in ("before", "after"):
             value = default[key] if reset else form.get(f"{key}_{kind}", type=float)
             if value is None or not 0 <= value <= top:
-                return _done("highlights", f"没保存：前后几秒要在 0 到 {top} 之间", error=True)
+                return fail(f"没保存：前后几秒要在 0 到 {top} 之间")
             seconds[key] = int(value) if value == int(value) else value
         picked[kind] = {"on": form.get(f"on_{kind}") == "1", **seconds}
     if mode == "highlights" and not any(c["on"] for c in picked.values()):
-        return _done("highlights", "没保存：只录高光时至少要勾一种事件", error=True)
+        return fail("没保存：只录高光时至少要勾一种事件")
     app_settings.set_value(highlights.MODE_KEY, mode)
     app_settings.set_value(highlights.CHOICES_KEY, picked)
-    if reset:
-        return _done("highlights", "每种事件前后录几秒改回默认了")
-    return _done("highlights", "保存了：从下一局开始只录高光" if mode == "highlights" else "保存了")
+    text = "每种事件前后录几秒改回默认了" if reset else ("保存了：从下一局开始只录高光" if mode == "highlights" else "保存了")
+    if is_fetch:
+        return jsonify({"ok": True, "text": text, "picked": picked})
+    return _done("highlights", text)
 
 
 @bp.post("/settings/recording/mic")

@@ -116,9 +116,11 @@ def edit_page_checks(client, token, base):
         raw = client.get("/recordings/watch", query_string={"v": fid}).get_data(as_text=True)
         panel = (re.findall(r'<section class="rec-edit" id="rec-edit".*?</section>', raw, re.S) or [""])[0]
         suggested = json.loads(html.unescape((re.findall(r'data-suggested="([^"]*)"', panel) or ["null"])[0]))
-        out[f"整局的播放页：有'快速剪辑'（没有脚本时按钮藏着），起点 / 终点（I / O）、预览、导出；"
+        out[f"整局的播放页：有'快速剪辑'（没有脚本时按钮藏着）、剪辑轨、局部放大微调条和左右把手、起点 / 终点（I / O）、预览、导出；"
             f"'把这局的高光加进来'按设置页勾的事件算好了（{suggested}）"] = (
             'id="rec-edit-toggle" aria-expanded="false" aria-controls="rec-edit" hidden' in raw and "hidden" in panel[:400]
+            and 'id="rec-lane"' in raw and 'id="rec-zoom"' in panel
+            and 'id="rec-handle-start"' in panel and 'id="rec-handle-end"' in panel and 'id="rec-edit-add"' in panel
             and 'aria-keyshortcuts="I"' in panel and 'aria-keyshortcuts="O"' in panel and 'id="rec-edit-export"' in panel
             and 'id="rec-edit-preview"' in panel and f'data-v="{fid}"' in panel and f'data-token="{token}"' in panel
             and suggested == [[10.0, 50.0], [100.0, 130.0]] and "把这局的高光加进来（<span class=\"num\">2</span> 段）" in panel)
@@ -148,7 +150,7 @@ def edit_page_checks(client, token, base):
         out["新剪辑的播放页：写着剪好了、不会被自动删；标题'剪辑 1'、'整局的 2 段'；删除写'删除这个剪辑'；片段上没有快速剪辑"] = (
             'role="status">剪好了：2 段接成一个视频' in raw and "不会因为硬盘超过上限被自动删掉" in raw and "· 剪辑 1" in raw
             and "整局的 <span class=\"num\">2 段</span>" in raw and "删除这个剪辑" in raw and "确定删除这个剪辑吗" in raw
-            and 'id="rec-edit"' not in raw)
+            and 'id="rec-edit"' not in raw and 'id="rec-lane"' not in raw)
         make_clip(full, "击杀1", 1, 1, 28.0, 50.0, started=started)
         raw = client.get("/recordings/watch", query_string={"v": fid}).get_data(as_text=True)
         strip = (re.findall(r'<section class="rec-clips".*?</section>', raw, re.S) or [""])[0]
@@ -438,8 +440,10 @@ def highlight_settings_checks(client, token):
         mode == "full" and list(on) == kinds and [k for k, v in on.items() if v] == ["kill", "knock", "assist_knock", "champion",
                                                                                      "knocked", "dead"]
         and form.count('class="ev-icon"') == 18 and "自己倒地" in form and "只录高光" in form)
-    out[f"高级选项折叠着，每种事件两个滑块（0–60 秒），默认照 Outplayed（击杀 {seconds.get('kill')}、被复活 {seconds.get('respawned')}）"] = (
+    out[f"高级选项折叠着（按钮样式，只写“高级选项”），无显式保存按钮（自动保存），每种事件两个滑块（0–60 秒），默认照 Outplayed（击杀 {seconds.get('kill')}、被复活 {seconds.get('respawned')}）"] = (
         '<details class="move-data rec-hl-more" id="rec-hl-more">' in form and form.count('type="range"') == 18
+        and 'class="btn rec-hl-more-btn"' in form and ">高级选项<" in form and "每种事件前后录几秒" not in form
+        and '<noscript><div class="setting"><div class="setting-text"></div><button type="submit" class="btn">保存</button></div></noscript>' in form
         and seconds.get("kill") == (30, 10) and seconds.get("respawned") == (9, 20) and seconds.get("assist_knock") == (20, 10)
         and 'aria-label="击杀：事件前录几秒"' in form and "前 30 秒" in form and "后 10 秒" in form)
     out["写着击倒、助攻击倒还在适配多语种，反馈群能点（用系统浏览器开）"] = (
@@ -472,6 +476,17 @@ def highlight_settings_checks(client, token):
         and [k for k, v in on.items() if v] == ["kill", "knock", "champion"])
     r = client.post("/settings/recording/highlights", data=fields)
     out["剪高光的设置：没有口令不让改"] = r.status_code != 302
+    # 异步自动保存（X-Evo-Fetch: 1，不刷新页面）
+    hdr = {"X-Evo-Fetch": "1"}
+    r_ok = client.post("/settings/recording/highlights", data={**fields, "token": token}, headers=hdr)
+    r_err = client.post("/settings/recording/highlights", data={**nothing, "token": token}, headers=hdr)
+    r_rst = client.post("/settings/recording/highlights", data={**fields, "token": token, "reset": "1"}, headers=hdr)
+    j_ok, j_err, j_rst = r_ok.get_json() or {}, r_err.get_json() or {}, r_rst.get_json() or {}
+    out["自动保存接口（X-Evo-Fetch）：成功返回 JSON、不合法返回 400、恢复默认返回默认秒数"] = (
+        r_ok.status_code == 200 and j_ok.get("ok") is True and "只录高光" in j_ok.get("text", "")
+        and r_err.status_code == 400 and j_err.get("ok") is False and "至少要勾一种" in j_err.get("error", "")
+        and r_rst.status_code == 200 and j_rst.get("ok") is True
+        and (j_rst.get("picked") or {}).get("kill", {}).get("before") == 30)
     for key in ("recording_mode", "recording_highlights"):
         app_settings.set_value(key, None)
     return out
