@@ -89,7 +89,7 @@ COS = update_check.COS_BASE  # 国内线路：腾讯云 COS 的存储桶（还�
 COS_PAUSED = release.COS_PAUSED  # COS 停用中：不传 COS、不改官网的国内下载链接（见上面）
 MIRROR_URL = f"{COS}/{ZIP_NAME}"
 # 官网的国内下载（首屏的下载按钮和下载区的"国内下载"）：<a … data-mirror href="COS 上的压缩包">，发版时换成新版本的
-MIRROR_LINKS = 2
+MIRROR_LINKS = 1
 MIRROR_LINK = re.compile(r'(<a\s[^>]*\bdata-mirror\b[^>]*\bhref=")([^"]*)(")')
 PAUSED_HREF = "#cn-mirror"  # COS 停用期间国内下载链接打开的 Mirror酱 说明窗口（site/index.html 最下面，2026-11-04 起；之前是
 #   "国内下载暂时不可用"的 #cn-paused）；窗口里还有一个海外下载链接

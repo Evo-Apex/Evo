@@ -1,6 +1,6 @@
 # Evo（项目说明）
 
-给 AI 编程助手（Claude Code、Antigravity 等）读的项目说明，规矩都写在这里（2026-11-26 从 CLAUDE.md 挪过来）。CLAUDE.md 只引用这个文件，再加几条只有 Claude 用得上的。
+给 AI 编程助手（Claude Code、Antigravity 等）读的项目说明，规矩都写在这里。CLAUDE.md 只引用这个文件，再加几条只有 Claude 用得上的。
 
 Evo：一个轻量、开源的 Apex Legends 战绩记录器，面向 PC 玩家（Steam / EA App）。通过屏幕截图 + OCR 自动记录每局的名次、击杀、伤害和排位分（RP）变化。绑定微信小程序以后，战绩同步到云端（微信云开发），手机上也能看。
 
