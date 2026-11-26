@@ -10,8 +10,9 @@
 - 录像文件支持拖动（Range 请求回 206）；缩略图；网址不能指到录像文件夹以外、分段文件夹里的文件
 - 删除：MP4、.json、.jpg 一起删；没有口令不让删
 - 战绩页：有录像的局多一个"看录像"按钮，指到那个录像；没录像的局没有
-- 设置页"录像"一栏（假的 ffmpeg 和编码器检测）：没有 ffmpeg 时整栏不显示、打不开（正式版）；只有 H.264 时不显示编码格式；
-  配置里有几种编码格式时（以后加回 AV1，假装这台电脑"编不了 AV1"）：编不了的不能选、不保存；
+- 设置页"录像"一栏（假的 ffmpeg 和编码器检测）：没有 ffmpeg 时整栏不显示、打不开（正式版）；配置里只有一种格式时不显示编码格式；
+  H.264、AV1 两种（2026-11-26 加回 AV1）：显卡编不了的 AV1 不能选、不保存，编得了的能选、保存；页面脚本问 WebView2 放不放得了 AV1；
+  加回 AV1 以前检测的结果里没有 AV1：重新检测；
   打开时检测编码器、记住；画质四项一起保存，选了编不了的 AV1、乱填的不保存；声音两档（默认只录 Apex）；麦克风开关（默认关）、
   音量滑块（松手保存、范围）、测试麦克风（假的麦克风：录的时候有音量、录完取得回 WAV、正在录时不能再点、麦克风用不了时说原因）；
   估一局多大；硬盘上限的范围；
@@ -418,17 +419,24 @@ def settings_checks(client, token, base):
         check = app_settings.get(panel_recordings.CHECK_KEY) or {}
         out[f"有 ffmpeg 时显示这一栏，标着\"实验\"；打开：检测了编码器、记住了；写着用 NVIDIA 显卡；显示画质、上限、位置（{said}）"] = (
             app_settings.get("recording_enabled") is True and said.startswith("status:打开了") and ">实验<" in box
-            and check == {"ffmpeg": "ffmpeg.exe", "h264": "h264_nvenc"}
+            and check == {"ffmpeg": "ffmpeg.exe", "h264": "h264_nvenc", "av1": None}
             and "NVIDIA 显卡" in box and 'aria-checked="true"' in box and 'id="rec-size"' in box
             and "硬盘上限" in box and "保存位置" in box)
         tried.clear()
         client.get("/settings")
         out["记住了就不再检测（打开设置页不跑 ffmpeg）"] = tried == []
-        out["只有 H.264（AV1 先拿掉了）：不显示编码格式那一项，提交时带着 h264"] = (
-            'id="rec-codec"' not in box and '<input type="hidden" name="codec" value="h264">' in box)
+        codec = re.findall(r'<option value="av1"[^>]*>[^<]*</option>', box)
+        why = re.findall(r'id="rec-codec-why">([^<]*)<', box)
+        out[f"H.264、AV1 两种（AV1 2026-11-26 加回来）：显示编码格式那一项，这台电脑的显卡编不了的 AV1 不能选（{codec}），"
+            f"原因写在说明下面、不写进选项（{why}）"] = (
+            'id="rec-codec"' in box and len(codec) == 1 and "disabled" in codec[0] and "不能选" in codec[0]
+            and why and why[0].startswith("这台电脑的显卡编不了 AV1（要 RTX 40"))
+        page = client.get("/settings").get_data(as_text=True)
+        out["页面脚本问 Evo 窗口（WebView2）放不放得了 AV1：放不了也变灰、写原因"] = (
+            "canPlayType('video/mp4; codecs=\"av01" in page and "AV1 视频扩展" in page)
         out["默认：1080p、60 帧、标准、H.264；画质四档按很高、高、标准、省空间排"] = all(re.search(p, box) for p in (
             r'<option value="1080p" selected>1080p（推荐）', r'<option value="60" selected>',
-            r'<option value="standard" selected>标准（推荐）')) and (
+            r'<option value="standard" selected>标准（推荐）', r'<option value="h264" selected>H.264')) and (
             re.findall(r'<option value="(best|high|standard|small)"', box) == ["best", "high", "standard", "small"])
 
         rules = recorder.load_rules()
@@ -477,20 +485,39 @@ def settings_checks(client, token, base):
         note(client, "/settings/recording/mic", {"on": "0"}, token)
         note(client, "/settings/recording/quality", good, token)  # 改回默认，后面的检查照旧
         _, said = note(client, "/settings/recording/quality", {**good, "codec": "av1"}, token)
-        out[f"配置里没有的 AV1：不保存（{said}）"] = (
+        out[f"显卡编不了 AV1：提交了也不保存（{said}）"] = (
+            said.startswith("alert:没保存：这台电脑的显卡编不了 AV1") and app_settings.get("recording_codec") == "h264")
+        _, said = note(client, "/settings/recording/quality", {**good, "codec": "hevc"}, token)
+        out[f"配置里没有的编码格式（hevc）：不保存（{said}）"] = (
             said.startswith("alert:没保存：选项不对") and app_settings.get("recording_codec") == "h264")
+        # 加回 AV1 以前检测的结果里没有 AV1：打开设置页时重新检测一次；这台电脑编得了 AV1 时能选、保存
+        recorder.pick_encoder = lambda path, options, rules, hwnd=None: (
+            tried.append(options.codec) or {"h264": "h264_nvenc", "av1": "av1_nvenc"}.get(options.codec))
+        app_settings.set_value(panel_recordings.CHECK_KEY, {"ffmpeg": "ffmpeg.exe", "h264": "h264_nvenc"})
+        tried.clear()
+        box = section(client.get("/settings").get_data(as_text=True))
+        codec = re.findall(r'<option value="av1"[^>]*>[^<]*</option>', box)
+        why = re.findall(r'id="rec-codec-why">([^<]*)<', box)
+        out[f"以前检测的结果里没有 AV1：打开设置页重新检测（试了 {tried}），编得了 AV1 就能选（{codec}），不写原因"] = (
+            "av1" in tried and (app_settings.get(panel_recordings.CHECK_KEY) or {}).get("av1") == "av1_nvenc"
+            and len(codec) == 1 and "disabled" not in codec[0] and why == [""])
+        box, said = note(client, "/settings/recording/quality", {**good, "codec": "av1"}, token)
+        want = panel_recordings.estimate(recorder.load_rules(), (1920, 1080), "720p", 30, "small", "av1", panel_recordings.limit_gb())
+        out[f"选 AV1 保存（{said}），页面上选着 AV1，估算按 AV1 算（{want}）"] = (
+            said.startswith("status:保存了") and app_settings.get("recording_codec") == "av1"
+            and '<option value="av1" selected>AV1' in box and want in box)
+        note(client, "/settings/recording/quality", good, token)  # 改回 H.264
+        recorder.pick_encoder = fake_pick
+        app_settings.set_value(panel_recordings.CHECK_KEY, {"ffmpeg": "ffmpeg.exe", "h264": "h264_nvenc", "av1": None})
         real_rules = recorder.load_rules
-        two = {**real_rules(), "encoders": {**real_rules()["encoders"], "av1": ["av1_nvenc"]}}
-        recorder.load_rules = lambda: two  # 以后加回 AV1 时：这台电脑编不了 AV1
+        one = {**real_rules(), "encoders": {"h264": real_rules()["encoders"]["h264"]}}
+        recorder.load_rules = lambda: one  # 配置里只有一种时
         try:
             box = section(client.get("/settings").get_data(as_text=True))
-            codec = re.findall(r'<option value="av1"[^>]*>[^<]*</option>', box)
-            _, said = note(client, "/settings/recording/quality", {**good, "codec": "av1"}, token)
         finally:
             recorder.load_rules = real_rules
-        out[f"配置里有几种编码格式时显示那一项：显卡编不了的 AV1 不能选、写着原因，提交了也不保存（{codec}，{said}）"] = (
-            'id="rec-codec"' in box and len(codec) == 1 and "disabled" in codec[0] and "编不了" in codec[0]
-            and said.startswith("alert:没保存：这台电脑的显卡编不了 AV1") and app_settings.get("recording_codec") == "h264")
+        out["配置里只有一种（H.264）时：不显示编码格式那一项，提交时带着 h264"] = (
+            'id="rec-codec"' not in box and '<input type="hidden" name="codec" value="h264">' in box)
         bad = [{**good, "size": "4k"}, {**good, "fps": "144"}, {**good, "quality": "ultra"}, {**good, "fps": "abc"}]
         results = [note(client, "/settings/recording/quality", b, token)[1] for b in bad]
         out["乱填的（4k、144 帧、ultra、abc）都不保存"] = (

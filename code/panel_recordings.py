@@ -22,8 +22,8 @@
 设置页的"录像"一栏（_settings_recording.html，模板里调 recording_settings()）：找不到 ffmpeg、也没开着时整栏不显示（0.7.0b 只有测试版
 带 ffmpeg；0.7.0 起正式版也带，2026-11-21 用户定的，照旧标"实验"）。开关（默认关，原则 2）；打开以后才显示画质
 （分辨率、帧数、画质、编码格式，下面估一局多大）、硬盘上限、保存位置。打开时检测一次这台电脑能用哪些显卡硬件编码器
-（CHECK_KEY，记在 settings.json），没有 ffmpeg、没有硬件编码器时打不开。编码格式只有一种（现在只有 H.264，AV1 2026-11-20
-先拿掉了）时不显示那一项；有几种时显卡编不了的那种不能选。录制模式（整局录像 / 只录高光）、高光包括哪些事件、每种事件前后录几秒
+（CHECK_KEY，记在 settings.json），没有 ffmpeg、没有硬件编码器时打不开。编码格式（H.264 / AV1，AV1 2026-11-26 加回来）只有一种时
+不显示那一项；有几种时显卡编不了的那种不能选，Evo 窗口放不了 AV1 时（页面脚本问 WebView2）AV1 也不能选。录制模式（整局录像 / 只录高光）、高光包括哪些事件、每种事件前后录几秒
 （滑块，2026-11-21 用户要的），一起保存（/settings/recording/highlights）。
 改了从下一局开始生效（match_recording 每局开录时才读设置）。保存的结果写在那一项下面（NOTE_KEY），不用页面最上面的提示
 （保存完跳回这一栏，最上面看不到）
@@ -82,6 +82,7 @@ CHECK_SOURCE = "lavfi:color=black:s=640x360:r=30"  # 检测编码器用的测试
 SIZE_NAMES = {"native": "原画面", "1080p": "1080p（推荐）", "720p": "720p"}
 QUALITY_NAMES = {"best": "很高", "high": "高", "standard": "标准（推荐）", "small": "省空间"}
 CODEC_NAMES = {"h264": "H.264", "av1": "AV1"}
+CODEC_NEEDS = {"av1": "（要 RTX 40、RX 7000、Intel Arc 及以后的显卡）"}  # 显卡编不了时写在原因后面
 AUDIO_SOURCE_NAMES = {"game": "只录 Apex 的声音", "system": "电脑上所有的声音"}  # 2026-11-21 用户定的两档
 MIC_TEST_SECONDS = 5  # 测试麦克风录几秒（2026-11-21 用户要的，像 Zoom 那样：录一段、按滑块的音量放给自己听）
 MIC_TEST_DIR = Path(tempfile.gettempdir())  # 测试录音只放临时文件夹：每次一个新文件（上一段可能还被播放占着，Windows 删不掉），
@@ -471,9 +472,10 @@ def check_encoders(ffmpeg):
 
 
 def encoders(ffmpeg, run=False):
-    """记着的检测结果（ffmpeg 换了不算）；没有时 run=True 就现在检测，否则返回 None（不知道）。"""
+    """记着的检测结果（ffmpeg 换了、配置里多了一种编码格式的不算：2026-11-26 加回 AV1 以前检测的结果里没有 AV1）；
+    没有时 run=True 就现在检测，否则返回 None（不知道）。"""
     found = app_settings.get(CHECK_KEY)
-    if isinstance(found, dict) and found.get("ffmpeg") == ffmpeg:
+    if isinstance(found, dict) and found.get("ffmpeg") == ffmpeg and all(c in found for c in recorder.load_rules()["encoders"]):
         return found
     return check_encoders(ffmpeg) if run and ffmpeg else None
 
@@ -564,7 +566,8 @@ def settings_view():
         "sizes": [{"value": k, "name": SIZE_NAMES.get(k, k)} for k in rules["sizes"]],
         "fps": rules["fps"],
         "qualities": [{"value": k, "name": QUALITY_NAMES.get(k, k)} for k in rules["bits_per_pixel"]],
-        "codecs": [{"value": k, "name": CODEC_NAMES.get(k, k), "ready": found is None or bool(found.get(k))}
+        "codecs": [{"value": k, "name": CODEC_NAMES.get(k, k), "ready": found is None or bool(found.get(k)),
+                    "why": f"这台电脑的显卡编不了 {CODEC_NAMES.get(k, k)}{CODEC_NEEDS.get(k, '')}"}
                    for k in rules["encoders"]],
         "audio_sources": [{"value": k, "name": AUDIO_SOURCE_NAMES.get(k, k)} for k in recorder.AUDIO_SOURCES],
         "mic_volume_range": recorder.MIC_VOLUME, "mic_test_seconds": MIC_TEST_SECONDS,

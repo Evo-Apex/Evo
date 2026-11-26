@@ -11,12 +11,15 @@
 - 抓画面：默认 Windows Graphics Capture 只抓 Apex 的窗口（ffmpeg 的 gfxcapture，抓的时候就能缩放）；抓不到换桌面复制
   （ddagrab，只能录原画面）。两种都是 Windows 的被动接口，不碰游戏（原则 1）。Apex 的窗口由 find_window 按进程号找，
   只问 Windows 窗口归哪个进程，不打开游戏进程
-- 编码：显卡硬件编码（NVENC / AMF / QSV），画面不出显卡；没有硬件编码器就不录。H.264 开 B 帧（config 的 b_frames，
+- 编码：显卡硬件编码（NVENC / AMF / QSV），画面不出显卡；没有硬件编码器就不录。H.264（默认）或 AV1（2026-11-26 加回来，
+  RTX 40、RX 7000、Arc 及以后的显卡才编得了，选了编不了时改用 H.264）。开 B 帧（config 的 b_frames，
   2026-11-21 实测同样码率略清楚、文件不变大；显卡不支持时自动不开）
 - 时间：每一帧的时间戳 = 抓到它时电脑的时钟 − 开始的时刻 t0（微秒；-enc_time_base filter 不取整，取整会丢帧），
-  TS 里原样保存（-mpegts_copyts 1）。事件、声音用同一个起点，所以都能直接对上画面
-- 文件：每开一次 ffmpeg 写一个 .ts（程序崩了也不会坏）；断了重开就再写一个。结束时把它们首尾相连地读（concat: 协议；
-  不用 ffmpeg 的拼接列表，帧间隔不均匀时时间会越接越偏）拼成 MP4，不重新编码
+  分段文件里原样保存（TS 用 -mpegts_copyts 1；MKV 本来就照存，只到毫秒）。事件、声音用同一个起点，所以都能直接对上画面
+- 文件：每开一次 ffmpeg 写一个分段文件（程序崩了也读得回来）；断了重开就再写一个。结束时接起来拼成 MP4，不重新编码。
+  H.264 写 .ts，首尾相连地读（concat: 协议；不用 ffmpeg 的拼接列表，帧间隔不均匀时时间会越接越偏）。AV1 写 .mkv
+  （ffmpeg 的 TS 读写里没有 AV1）：MKV 不能首尾相连，按拼接列表接，每段写明"到下一段第一帧有多长"（duration），
+  空档原样保留、时间不偏（2026-11-26 实测，见 docs/录像.md）
 - 断了重开：切窗口、切显示模式、弹管理员确认框时桌面复制会失效，ffmpeg 直接退出。按 restart_wait_seconds 等一下再开
   （马上重开常被拒）。断掉的那几秒记进 .json
 - 声音：process_audio 按进程录 Apex 的声音，每一包带时刻。拼 MP4 时，算出 MP4 第一帧那一刻对应 WAV 里第几个采样再对齐
@@ -44,6 +47,14 @@ import process_info
 CONFIG_NAME = "recording.json"
 FALLBACK_CODEC = "h264"  # 选的编码格式这台电脑编不了时改用它（哪里都能放）
 WORK_DIR_NAME = "_recording"  # 录的时候的分段文件放在录像文件夹里的这个子文件夹（结束后删掉）
+# 每种编码格式的分段文件写成什么（没写的 .ts）。AV1 写 MKV：ffmpeg 的 TS 读写里没有 AV1（2026-11-20 看源码）。
+# H.264 照旧 .ts（2026-11-26 用户定的：0.7 验证过的不动；H.264 写进 MKV 时间只到毫秒，开头几帧会撞在同一个时刻）。
+# ffmpeg 被硬杀（Evo 崩了、卡住被结束）时 MKV 读得回多少（2026-11-26 实测）：-cluster_time_limit 让它每 1 秒写完一块
+# （不加时按关键帧 2 秒一块），-flush_packets 1 让写完的马上落到硬盘（不加时攒满 256 KB 才写：录 1.5 秒就被杀，文件是空的）。
+# 两个都加：录 1.5 秒杀掉读得回 1 秒、录 4 秒读得回 3 秒，最多丢约 1 秒。TS 不用加（本来就随写随落盘）
+SEGMENTS = {"av1": (".mkv", ["-f", "matroska", "-cluster_time_limit", "1000", "-flush_packets", "1"])}
+TS_SEGMENT = (".ts", ["-f", "mpegts", "-mpegts_copyts", "1"])
+SEGMENT_SUFFIXES = (".ts", ".mkv")
 CREATE_NEW_PROCESS_GROUP = 0x00000200  # 终端里按 Ctrl+C 不会直接传给 ffmpeg，由我们发 q 让它收尾
 NORMAL_PRIORITY_CLASS = 0x00000020
 CREATE_NO_WINDOW = 0x08000000
@@ -89,7 +100,7 @@ class Options:
     source: str = "window"  # window = 只抓游戏窗口（Windows Graphics Capture）；desktop = 桌面复制；lavfi:… = 测试用的画面
     size: str = "1080p"  # config 里 sizes 的一项：native / 1080p / 720p（默认 1080p 60 帧标准：2026-11-20 用户看样片选的）
     fps: int = 60
-    codec: str = "h264"  # config 里 encoders 的一项：现在只有 h264（AV1 2026-11-20 先拿掉了，见 config）
+    codec: str = "h264"  # config 里 encoders 的一项：h264（默认，2026-11-26 用户定的：先在游戏里试过 AV1 再说）/ av1
     quality: str = "standard"  # config 里 bits_per_pixel 的一项：best / high / standard / small
     audio: bool = True
     audio_source: str = "game"  # 声音：game = 只录 Apex；system = 电脑上所有的声音（系统内录，2026-11-21 用户要的两档）
@@ -275,10 +286,41 @@ def read_progress(path):
 
 
 def first_frame_time(ffmpeg, path):
-    """一个 .ts 文件里第一帧的时间戳（秒，从 t0 算起：录的时候用了 -mpegts_copyts，文件里就是原来的时间）。读不到返回 None。"""
+    """一个分段文件里第一帧的时间戳（秒，从 t0 算起：TS 录的时候用了 -mpegts_copyts、MKV 本来就照存，文件里就是原来的时间）。
+    用整数的 pts × 时间单位算：showinfo 的 pts_time 只有 6 位有效数字（1000 秒以后只到 0.01 秒，拼 AV1 时每段的时长会差）。
+    读不到返回 None。"""
     _, err = run_ffmpeg(ffmpeg, ["-copyts", "-i", str(path), "-frames:v", "1", "-vf", "showinfo", "-f", "null", "-"])
+    base = re.search(r"config in time_base: (\d+)/(\d+)", err or "")
+    pts = re.search(r"\bn:\s*0\s+pts:\s*(-?\d+)", err or "")
+    if base and pts and int(base[2]):
+        return int(pts[1]) * int(base[1]) / int(base[2])
     m = re.search(r"pts_time:([\d.]+)", err or "")
     return float(m[1]) if m else None
+
+
+def segment_parts(work):
+    """一局录的分段文件（按顺序，空的不算）。"""
+    return [p for p in sorted(Path(work).glob("part_*")) if p.suffix in SEGMENT_SUFFIXES and p.stat().st_size > 0]
+
+
+def joined_input(ffmpeg, parts, work):
+    """把分段文件接起来读的 ffmpeg 输入参数（在 work 里运行），和第一帧的时刻（秒，从 t0 算起）：(参数, 时刻)。
+    读不出第一帧的时刻返回 (None, None)。两种都保留断了重开留下的空档（KEEP_GAPS），MP4 从第一帧算 0。
+    .ts：首尾相连地读（concat: 协议）。.mkv（AV1）：拼接列表，每段写明到下一段第一帧有多长（duration）：拼接列表本来按每段
+    自己的长度接、把空档挤掉（帧间隔不均匀时还越接越偏），写明以后下一段正好从它原来的时刻开始。读不出时刻的段（硬杀时
+    还没写出一帧）不要。"""
+    if parts[0].suffix == ".ts":
+        return [*KEEP_GAPS, "-i", "concat:" + "|".join(p.name for p in parts)], first_frame_time(ffmpeg, parts[0])
+    timed = [(p, t) for p in parts if (t := first_frame_time(ffmpeg, p)) is not None]
+    if not timed:
+        return None, None
+    lines = ["ffconcat version 1.0"]
+    for i, (part, t) in enumerate(timed):
+        lines.append(f"file '{part.name}'")
+        if i + 1 < len(timed):
+            lines.append(f"duration {timed[i + 1][1] - t:.6f}")
+    (Path(work) / "parts.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return [*KEEP_GAPS, "-f", "concat", "-safe", "0", "-i", "parts.txt"], timed[0][1]
 
 
 def audio_offset(packets, rate, start_qpc):
@@ -459,11 +501,12 @@ class Recording:
             return None
         graph = (source + f",settb=AVTB,setpts=RTCTIME-{self.t0_us}"
                  + gpu_chain(self.encoder, opts.source) + "[v]")
+        suffix, muxer = SEGMENTS.get(opts.codec, TS_SEGMENT)
         return [self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-nostats", "-stats_period", "1",
                 "-progress", str(self.work / f"progress_{n}.txt"), "-filter_complex", graph, "-map", "[v]",
                 *encoder_args(self.encoder, opts.fps, self.bitrate, self.rules["keyframe_seconds"], self.b_frames),
                 "-fps_mode", "vfr", "-enc_time_base:v", "filter",
-                "-f", "mpegts", "-mpegts_copyts", "1", str(self.work / f"part_{n:03d}.ts")]
+                *muxer, str(self.work / f"part_{n:03d}{suffix}")]
 
     def _launch(self):
         cmd = self._command()
@@ -575,12 +618,12 @@ class Recording:
         for audio in (self.audio, self.mic):
             if audio:
                 audio.stop()
-        parts = [p for p in sorted(self.work.glob("part_*.ts")) if p.stat().st_size > 0]
+        parts = segment_parts(self.work)
         if not parts:
             self.log("录像：一帧都没录到")
             shutil.rmtree(self.work, ignore_errors=True)
             return None
-        start = first_frame_time(self.ffmpeg, parts[0])
+        joined, start = joined_input(self.ffmpeg, parts, self.work)
         if start is None:
             self.log(f"录像：读不到第一帧的时间，分段文件留在 {self.work}")
             return None
@@ -589,7 +632,7 @@ class Recording:
         folder = self.out_dir / self.started.strftime("%Y-%m")
         folder.mkdir(parents=True, exist_ok=True)
         out = folder / f"{self.started:%Y-%m-%d_%H%M%S}{'_' + label if label else ''}.mp4"
-        cmd = ["-y", *KEEP_GAPS, "-i", "concat:" + "|".join(p.name for p in parts)] + self._audio_args(start)
+        cmd = ["-y", *joined] + self._audio_args(start)
         audio_note = self.audio_note
         cmd += ["-c:v", "copy", "-movflags", "+faststart", str(out)]
         code, err = run_ffmpeg(self.ffmpeg, cmd, timeout=600, cwd=self.work)
@@ -663,7 +706,7 @@ def recover_leftovers(ffmpeg, out_dir, log=print):
     """上次 Evo 崩了、没来得及拼的分段文件：拼成 MP4（只有画面，名字后面加"_未完成"），拼不成就留着。返回拼好的路径。"""
     done = []
     for work in sorted((Path(out_dir) / WORK_DIR_NAME).glob("*")):
-        parts = [p for p in sorted(work.glob("part_*.ts")) if p.stat().st_size > 0]
+        parts = segment_parts(work)
         if not parts:
             shutil.rmtree(work, ignore_errors=True)
             continue
@@ -671,10 +714,13 @@ def recover_leftovers(ffmpeg, out_dir, log=print):
             started = datetime.strptime(work.name, "%Y%m%d_%H%M%S")
         except ValueError:
             continue
+        joined, _ = joined_input(ffmpeg, parts, work)
+        if joined is None:  # 一帧都读不出来：留着
+            continue
         folder = Path(out_dir) / started.strftime("%Y-%m")
         folder.mkdir(parents=True, exist_ok=True)
         out = folder / f"{started:%Y-%m-%d_%H%M%S}_未完成.mp4"
-        code, _ = run_ffmpeg(ffmpeg, ["-y", *KEEP_GAPS, "-i", "concat:" + "|".join(p.name for p in parts), "-map", "0:v",
+        code, _ = run_ffmpeg(ffmpeg, ["-y", *joined, "-map", "0:v",
                                       "-c:v", "copy", "-movflags", "+faststart", str(out)], timeout=600, cwd=work)
         if code == 0 and out.exists():
             shutil.rmtree(work, ignore_errors=True)

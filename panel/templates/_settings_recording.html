@@ -110,14 +110,16 @@
       <div class="setting-text">
         <label class="setting-name" for="rec-codec">编码格式</label>
         <div class="setting-desc">H.264 哪里都能放；AV1 同样画质文件小约四成，Evo 里能放，有的播放器要另装插件</div>
+        {# 不能选的原因写在这里，不写进选项：选项一长下拉框就被撑宽，左边这几行挤成一窄条（2026-11-26） #}
+        <div class="setting-desc" id="rec-codec-why">{% for one in rec.codecs if not one.ready %}{{ one.why }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
       </div>
       <select id="rec-codec" name="codec">
         {% for one in rec.codecs %}
-        <option value="{{ one.value }}" {{ 'selected' if one.value == rec.current.codec }}{{ ' disabled' if not one.ready }}>{{ one.name }}{{ '（这台电脑的显卡编不了）' if not one.ready }}</option>
+        <option value="{{ one.value }}" {{ 'selected' if one.value == rec.current.codec }}{{ ' disabled' if not one.ready }}>{{ one.name }}{{ '（不能选）' if not one.ready }}</option>
         {% endfor %}
       </select>
     </div>
-    {% else %}{# 只有一种（现在只有 H.264）：不让选，提交时带上它 #}
+    {% else %}{# 只有一种：不让选，提交时带上它 #}
     <input type="hidden" name="codec" value="{{ rec.codecs[0].value }}">
     {% endif %}
     {# 声音两档（2026-11-21 用户定的）：和画质一起保存 #}
@@ -255,6 +257,22 @@
         var text = table[[f.size.value, f.fps.value, f.quality.value, f.codec.value].join("|")];
         if (text) out.textContent = text;
       });
+    })();
+    // AV1：显卡编得了，Evo 窗口（WebView2）也要放得了才能选（2026-11-26）。开发电脑装着 Windows 的"AV1 视频扩展"，
+    // WebView2 用显卡解码放得了；没装的电脑放不放得了没核实（Edge 以前要靠这个扩展），所以按这台电脑的 WebView2 自己说的算。
+    // 放不了：和显卡编不了一样变灰、标"不能选"，原因写在左边说明下面；本来选着 AV1 的换回第一种能选的
+    (function () {
+      var select = document.getElementById("rec-codec");
+      if (!select || document.createElement("video").canPlayType('video/mp4; codecs="av01.0.08M.08"')) return;
+      var av1 = select.querySelector('option[value="av1"]');
+      if (!av1 || av1.disabled) return;
+      av1.disabled = true;
+      av1.textContent = av1.textContent + "（不能选）";
+      document.getElementById("rec-codec-why").textContent = "Evo 窗口放不了 AV1，可以装微软的“AV1 视频扩展”试试";
+      if (select.value === "av1") {
+        var first = select.querySelector("option:not([disabled])");
+        if (first) { select.value = first.value; select.dispatchEvent(new Event("change", {bubbles: true})); }
+      }
     })();
     // 麦克风音量：拖动时数字跟着变，松手 0.3 秒后保存（不刷新页面）；正在放测试录音时音量马上跟着变。
     // "测试"：录几秒（音量条跟着跳），录完取回来按滑块的音量放（Web Audio 增益，200% 能放大；放的时候音量条也跟着跳，

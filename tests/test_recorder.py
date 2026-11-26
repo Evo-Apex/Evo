@@ -7,6 +7,7 @@
 - 中途 ffmpeg 退出：自己重开，断掉的那段记进 .json，MP4 里空档原样保留（断 11 秒也保留：ffmpeg 默认会把 10 秒以上的空档挤掉）
 - 声音：假录音在第 2 秒"嘀"一声，MP4 里嘀声的位置对得上画面（30 毫秒以内）
 - 上次崩了没拼的分段文件：拼成"_未完成"的 MP4
+- AV1（2026-11-26，显卡编得了才跑）：分段写 .mkv、按拼接列表拼，录 3 秒、断 11 秒空档保留、声音对齐、崩了补拼、剪高光照样跑一遍
 - 作业对象：开 ffmpeg 的程序被强行结束，ffmpeg 也跟着退
 - 找窗口：按进程号找到一个测试窗口（不打开那个进程），只抓这个窗口抓得到
 - 接进记录程序（match_recording.py）：开关默认关；一局开始开录、事件（倒地、被扶起、成盒、被复活、冠军、击倒对手、击杀）、右上角变了的时刻、
@@ -267,16 +268,25 @@ def beep_time(ffmpeg, path):
     return None
 
 
-def record_checks(ffmpeg, tmp):
+def video_codec(ffmpeg, path):
+    """MP4 里画面的编码格式（h264 / av1），读不出返回 None。"""
+    _, err = recorder.run_ffmpeg(ffmpeg, ["-i", str(path)])
+    m = re.search(r"Video: (\w+)", err or "")
+    return m[1] if m else None
+
+
+def record_checks(ffmpeg, tmp, codec="h264"):
+    """真录（测试画面）。codec="av1"（2026-11-26）：分段写 .mkv、按拼接列表拼，前 4 项照样跑一遍，项目名前面加"AV1："。"""
     out = {}
     rules = recorder.load_rules()
     quiet = []
+    p, lib = ("", "") if codec == "h264" else (f"{codec.upper()}：", f"-{codec}")
     # 画质固定"很高"，不跟着默认变：测试画面只有 640×360，默认的"标准"码率约 0.6 Mbps，下面开录 1.5 秒就结束 ffmpeg 的
     # 那两项里 ffmpeg 还没把画面写进文件，第一段是空的（2026-11-20 默认改成标准时遇到）
-    best = {"source": TEST_SOURCE, "quality": "best"}
+    best = {"source": TEST_SOURCE, "quality": "best", "codec": codec}
 
     # 1. 录 3 秒，中间记两个事件
-    rec = recorder.Recording(ffmpeg, recorder.Options(**best, audio=False), tmp / "lib", log=quiet.append,
+    rec = recorder.Recording(ffmpeg, recorder.Options(**best, audio=False), tmp / f"lib{lib}", log=quiet.append,
                              rules=rules)
     rec.start()
     time.sleep(1.0)
@@ -289,24 +299,30 @@ def record_checks(ffmpeg, tmp):
     video = rec.finish({"mode": "排位", "legend": "恶灵"})
     meta = json.loads(video.with_suffix(".json").read_text(encoding="utf-8")) if video else {}
     duration = probe_duration(ffmpeg, video) if video else None
-    out["录 3 秒拼成 MP4：在 录像文件夹\\年-月\\ 里，文件名带模式和传奇，分段文件删了"] = (
-        video is not None and video.parent.parent == (tmp / "lib").resolve() and video.name.endswith("_排位_恶灵.mp4")
-        and not any((tmp / "lib" / recorder.WORK_DIR_NAME).glob("*/*.ts")))
-    out[f"MP4 约 3 秒（{duration}）、640×360"] = duration is not None and 2.5 < duration < 3.6 and \
+    out[p + "录 3 秒拼成 MP4：在 录像文件夹\\年-月\\ 里，文件名带模式和传奇，分段文件删了"] = (
+        video is not None and video.parent.parent == (tmp / f"lib{lib}").resolve() and video.name.endswith("_排位_恶灵.mp4")
+        and not any((tmp / f"lib{lib}" / recorder.WORK_DIR_NAME).glob("*/part_*")))
+    out[f"{p}MP4 约 3 秒（{duration}）、640×360"] = duration is not None and 2.5 < duration < 3.6 and \
         meta.get("size") == [640, 360]
     events = meta.get("events", [])
-    out[f".json 里的事件：时刻是 MP4 里的位置（倒地约 1 秒、击杀约 2 秒处；{[e['t'] for e in events]}），带着附加的说明"] = (
+    out[f"{p}.json 里的事件：时刻是 MP4 里的位置（倒地约 1 秒、击杀约 2 秒处；{[e['t'] for e in events]}），带着附加的说明"] = (
         [e["kind"] for e in events] == ["knocked", "kill"] and events[1].get("kills") == 1
         and 0.6 < events[0]["t"] < 1.1 and 1.6 < events[1]["t"] < 2.1 and meta.get("outages") == [])
     want_b = recorder.b_frames(ffmpeg, meta.get("encoder", ""), rules)
     kinds = frame_types(ffmpeg, video) if video else {}
-    out[f"B 帧：{meta.get('encoder')} 开 {meta.get('b_frames')} 个（写进 .json），MP4 里有 B 帧（{kinds}）"] = (
-        meta.get("b_frames") == want_b and (kinds.get("B", 0) > 0 if want_b else kinds.get("B") == 0)
-        and kinds.get("I", 0) > 0)
+    if codec == "h264":
+        out[f"B 帧：{meta.get('encoder')} 开 {meta.get('b_frames')} 个（写进 .json），MP4 里有 B 帧（{kinds}）"] = (
+            meta.get("b_frames") == want_b and (kinds.get("B", 0) > 0 if want_b else kinds.get("B") == 0)
+            and kinds.get("I", 0) > 0)
+    else:  # AV1 没有 B 帧这个说法（编码器的 B 帧在 AV1 里是不显示的参照帧，解出来都是 I / P）
+        made = video_codec(ffmpeg, video) if video else None
+        out[f"{p}MP4 里是 {made}，编码器 {meta.get('encoder')}（写进 .json，B 帧 {meta.get('b_frames')}），解得出来（{kinds}）"] = (
+            made == codec and meta.get("options", {}).get("codec") == codec
+            and meta.get("encoder") in rules["encoders"][codec] and meta.get("b_frames") == want_b and kinds.get("I", 0) > 0)
 
     # 2. 中途 ffmpeg 退出：重开，空档保留（断 11 秒：超过 ffmpeg 默认挤掉空档的 10 秒）
     long_rules = {**rules, "restart_wait_seconds": [11]}
-    rec = recorder.Recording(ffmpeg, recorder.Options(**best, audio=False), tmp / "lib2", log=quiet.append,
+    rec = recorder.Recording(ffmpeg, recorder.Options(**best, audio=False), tmp / f"lib2{lib}", log=quiet.append,
                              rules=long_rules)
     rec.start()
     time.sleep(1.5)
@@ -322,14 +338,14 @@ def record_checks(ffmpeg, tmp):
     gap = (meta2.get("outages") or [[0, 0]])[0]
     times = frame_times(ffmpeg, video2) if video2 else []
     jump = max((b - a for a, b in zip(times, times[1:])), default=0)
-    out[f"ffmpeg 中途退出：自己重开，两个分段，断掉的那段记进 .json（{gap}）"] = (
+    out[f"{p}ffmpeg 中途退出：自己重开，两个分段，断掉的那段记进 .json（{gap}）"] = (
         meta2.get("parts") == 2 and 10.5 < gap[1] - gap[0] < 13)
-    out[f"MP4 里空档原样保留（画面里最大的间隔 {jump:.1f} 秒），空档后的事件位置对得上"] = (
+    out[f"{p}MP4 里空档原样保留（画面里最大的间隔 {jump:.1f} 秒），空档后的事件位置对得上"] = (
         10.5 < jump < 13 and abs(meta2["events"][0]["t"] - gap[1]) < 1.0)
 
     # 3. 声音：假录音在第 2 秒嘀一声
     fake = FakeAudio(beep_at=2.0)
-    rec = recorder.Recording(ffmpeg, recorder.Options(**best), tmp / "lib3", log=quiet.append, rules=rules,
+    rec = recorder.Recording(ffmpeg, recorder.Options(**best), tmp / f"lib3{lib}", log=quiet.append, rules=rules,
                              audio_factory=fake)
     rec.start(apex_pid=1234)
     time.sleep(3.5)
@@ -339,19 +355,22 @@ def record_checks(ffmpeg, tmp):
     beep = beep_time(ffmpeg, video3) if video3 else None
     # 嘀声在 MP4 里的位置 = 嘀声的时刻 - MP4 第一帧的时刻（都换成 QPC：第一帧 = t0 + first_frame）
     want = (fake.start_qpc + 2.0) - (rec.t0_qpc + meta3["first_frame"]) if "first_frame" in meta3 else None
-    out[f"声音：合进 MP4，嘀声在 MP4 里的位置对得上画面（在 {beep} 秒，应在 {want and round(want, 3)} 秒）"] = (
+    out[f"{p}声音：合进 MP4，嘀声在 MP4 里的位置对得上画面（在 {beep} 秒，应在 {want and round(want, 3)} 秒）"] = (
         meta3.get("audio") is not None and beep is not None and want is not None and abs(beep - want) < 0.03)
 
-    # 4. 上次崩了没拼的分段文件
-    rec = recorder.Recording(ffmpeg, recorder.Options(**best, audio=False), tmp / "lib4", log=quiet.append,
+    # 4. 上次崩了没拼的分段文件（AV1 的 .mkv 被硬杀：没写完的那一块不要，前面的照样读得回来）
+    rec = recorder.Recording(ffmpeg, recorder.Options(**best, audio=False), tmp / f"lib4{lib}", log=quiet.append,
                              rules=rules)
     rec.start()
-    time.sleep(1.5)
+    time.sleep(2.5 if codec == "av1" else 1.5)  # MKV 每 1 秒才写出一块：多录一会儿，硬杀时文件里已经有画面
     rec._kill()  # 像 Evo 崩了一样：不收尾
-    done = recorder.recover_leftovers(ffmpeg, tmp / "lib4", log=quiet.append)
-    out["上次崩了没拼的分段文件：拼成名字带'_未完成'的 MP4，分段文件删掉"] = (
-        len(done) == 1 and done[0].name.endswith("_未完成.mp4") and done[0].stat().st_size > 0
-        and not any((tmp / "lib4" / recorder.WORK_DIR_NAME).iterdir()))
+    done = recorder.recover_leftovers(ffmpeg, tmp / f"lib4{lib}", log=quiet.append)
+    left = probe_duration(ffmpeg, done[0]) if done else None
+    out[f"{p}上次崩了没拼的分段文件：拼成名字带'_未完成'的 MP4（{left} 秒），分段文件删掉"] = (
+        len(done) == 1 and done[0].name.endswith("_未完成.mp4") and done[0].stat().st_size > 0 and bool(left)
+        and not any((tmp / f"lib4{lib}" / recorder.WORK_DIR_NAME).iterdir()))
+    if codec != "h264":  # 下面两项（混音、编不了 AV1 改用 H.264）和编码格式无关
+        return out
 
     # 6. 电脑上所有的声音 + 麦克风：第 1 条混好的（两声都有），原声各自另存一条，每条有名字，时刻都对得上画面；
     #    麦克风音量 50%：混音里麦克风那一声是原声的一半，麦克风原声那条不变
@@ -385,11 +404,14 @@ def record_checks(ffmpeg, tmp):
     # 5. 设置里选了 AV1、这块显卡编不了（这里用一个不存在的编码器假装）：改用 H.264 照样录，不是整局不录
     no_av1 = {**rules, "encoders": {**rules["encoders"], "av1": ["av1_evo_test_missing"]}}
     said = []
-    rec = recorder.Recording(ffmpeg, recorder.Options(**best, codec="av1", audio=False), tmp / "lib5",
+    # 检测结果按 (ffmpeg, 画面, 编码格式) 记着：前后都清掉，这台电脑真编得了 AV1 时不串（下面 AV1 真录那几项还要真检测）
+    recorder._encoder_cache.pop((ffmpeg, TEST_SOURCE, "av1"), None)
+    rec = recorder.Recording(ffmpeg, recorder.Options(**{**best, "codec": "av1"}, audio=False), tmp / "lib5",
                              log=said.append, rules=no_av1)
     rec.start()
     time.sleep(1.0)
     video5 = rec.finish()
+    recorder._encoder_cache.pop((ffmpeg, TEST_SOURCE, "av1"), None)
     out[f"选了 AV1 但编不了：改用 H.264 录（{rec.encoder}），日志里写着"] = (
         video5 is not None and rec.encoder in rules["encoders"]["h264"] and rec.options.codec == "h264"
         and any("改用 h264" in line for line in said))
@@ -656,15 +678,17 @@ def checksums(ffmpeg, path):
     return [(float(t), k, c) for t, k, c in re.findall(r"pts_time:(-?[\d.]+) .*?type:([IPB]).*?checksum:([0-9A-F]+)", err or "")]
 
 
-def highlight_record_checks(ffmpeg, tmp):
-    """真录一段（测试画面、N 卡 B 帧、第 5 秒嘀一声），再剪高光：开头落在关键帧、画面和原片逐帧一样、声音对得上。"""
+def highlight_record_checks(ffmpeg, tmp, codec="h264"):
+    """真录一段（测试画面、N 卡 B 帧、第 5 秒嘀一声），再剪高光：开头落在关键帧、画面和原片逐帧一样、声音对得上。
+    codec="av1"（2026-11-26）：剪的那几项照样跑一遍，项目名前面加"AV1："（只录高光删整局那几项和编码格式无关，不重复）。"""
     import highlights
     import shutil
     out, quiet = {}, []
     rules = recorder.load_rules()
+    p, hl = ("", "hl") if codec == "h264" else (f"{codec.upper()}：", f"hl-{codec}")
     fake = FakeAudio(beep_at=5.0)
-    rec = recorder.Recording(ffmpeg, recorder.Options(source=TEST_SOURCE, quality="best"), tmp / "hl", log=quiet.append,
-                             rules=rules, audio_factory=fake)
+    rec = recorder.Recording(ffmpeg, recorder.Options(source=TEST_SOURCE, quality="best", codec=codec), tmp / hl,
+                             log=quiet.append, rules=rules, audio_factory=fake)
     rec.start(apex_pid=1234)
     time.sleep(1.6)
     rec.mark("knock")
@@ -674,7 +698,7 @@ def highlight_record_checks(ffmpeg, tmp):
     rec.poll()
     video = rec.finish({"mode": "排位", "legend": "恶灵"})
     if video is None:
-        return {"剪高光：先录一段测试录像": False}
+        return {p + "剪高光：先录一段测试录像": False}
     meta = json.loads(video.with_suffix(".json").read_text(encoding="utf-8"))
     events = {e["kind"]: e["t"] for e in meta["events"]}
 
@@ -685,11 +709,11 @@ def highlight_record_checks(ffmpeg, tmp):
         by_ffmpeg = highlights.keyframes(ffmpeg, video)
     finally:
         highlights.keyframe_times = real
-    out[f"关键帧：直接读 MP4 的索引，和 ffmpeg 解出来的一样（{keys}）"] = (
+    out[f"{p}关键帧：直接读 MP4 的索引，和 ffmpeg 解出来的一样（{keys}）"] = (
         bool(keys) and by_ffmpeg is not None and len(keys) == len(by_ffmpeg) >= 3
         and all(abs(a - b) < 1e-5 for a, b in zip(keys, by_ffmpeg)) and keys[0] == 0)
     gaps = [round(b - a, 3) for a, b in zip(keys or [], (keys or [])[1:])]
-    out[f"关键帧每 2 秒一个、没有挨着的一对（间隔 {gaps}；以前 -g 和按时间的两套碰上时会差一两帧成对）"] = (
+    out[f"{p}关键帧每 2 秒一个、没有挨着的一对（间隔 {gaps}；以前 -g 和按时间的两套碰上时会差一两帧成对）"] = (
         bool(gaps) and all(1.8 < g < 2.2 for g in gaps))
 
     picked = {k: {"on": False, "before": 0, "after": 0} for k in highlights.choices({}, rules)}
@@ -698,7 +722,7 @@ def highlight_record_checks(ffmpeg, tmp):
     said = []
     clips = highlights.save(ffmpeg, video, picked, log=said.append)
     metas = [json.loads(c.with_suffix(".json").read_text(encoding="utf-8")) for c in clips]
-    out[f"剪出两段，按事件起名（{[c.name for c in clips]}），旁边有 .json、缩略图，整局留着"] = (
+    out[f"{p}剪出两段，按事件起名（{[c.name for c in clips]}），旁边有 .json、缩略图，整局留着"] = (
         [c.name for c in clips] == [video.stem + "_击倒1.mp4", video.stem + "_击杀1.mp4"]
         and all(c.with_suffix(".jpg").exists() for c in clips) and video.exists()
         and highlights.existing(video) == clips and not list(video.parent.glob("*.part")))
@@ -706,24 +730,26 @@ def highlight_record_checks(ffmpeg, tmp):
         return out
     h = metas[1]["highlight"]
     kill_from = max(k for k in keys if k <= events["kill"] - 1 + 1e-6)
-    out[f"击杀那一段：从击杀前 1 秒之前最近的关键帧（{kill_from}）到击杀后 1.5 秒（{h['from']}–{h['to']}），记着第几段、哪一局"] = (
+    out[f"{p}击杀那一段：从击杀前 1 秒之前最近的关键帧（{kill_from}）到击杀后 1.5 秒（{h['from']}–{h['to']}），记着第几段、哪一局"] = (
         abs(h["from"] - kill_from) < 1e-3 and abs(h["to"] - (events["kill"] + 1.5)) < 1e-3
         and h["of"] == video.name and h["index"] == 2 and h["count"] == 2 and h["name"] == "击杀1"
         and metas[1]["match"] == {"mode": "排位", "legend": "恶灵"} and metas[1]["started"] == meta["started"])
     clip_events = {e["kind"]: e["t"] for e in metas[1]["events"]}
-    out[f"片段里事件的时刻是片段里的位置（击杀在 {clip_events.get('kill')} 秒）"] = (
+    out[f"{p}片段里事件的时刻是片段里的位置（击杀在 {clip_events.get('kill')} 秒）"] = (
         abs(clip_events.get("kill", -1) - (events["kill"] - h["from"])) < 0.01 and "knock" not in clip_events)
     whole, part = checksums(ffmpeg, video), checksums(ffmpeg, clips[1])
     at = next((i for i, f in enumerate(whole) if abs(f[0] - h["from"]) < 0.002), None)
     n = len(part) - 4  # 结尾因为 B 帧可能少两三帧
-    out[f"片段开头是关键帧、在 0 秒（{part[0][:2] if part else None}），前面 {n} 帧和原片逐帧一样（没有花屏、不缺帧）"] = (
+    out[f"{p}片段开头是关键帧、在 0 秒（{part[0][:2] if part else None}），前面 {n} 帧和原片逐帧一样（没有花屏、不缺帧）"] = (
         bool(part) and part[0][1] == "I" and abs(part[0][0]) < 1e-6 and at is not None
         and [f[2] for f in part[:n]] == [f[2] for f in whole[at:at + n]])
     duration = metas[1]["duration"]
-    out[f"片段的时长对（{duration} 秒，应约 {h['to'] - h['from']:.2f} 秒）"] = abs(duration - (h["to"] - h["from"])) < 0.15
+    out[f"{p}片段的时长对（{duration} 秒，应约 {h['to'] - h['from']:.2f} 秒）"] = abs(duration - (h["to"] - h["from"])) < 0.15
     beep_whole, beep_clip = beep_time(ffmpeg, video), beep_time(ffmpeg, clips[1])
-    out[f"声音对得上：嘀声在整局 {beep_whole} 秒、片段 {beep_clip} 秒（差 {h['from']}）"] = (
+    out[f"{p}声音对得上：嘀声在整局 {beep_whole} 秒、片段 {beep_clip} 秒（差 {h['from']}）"] = (
         beep_whole is not None and beep_clip is not None and abs((beep_whole - h["from"]) - beep_clip) < 0.03)
+    if codec != "h264":
+        return out
 
     # 只录高光：切好再删整局；一个勾了的事件都没有、切不成：整局留着
     def copy_to(name):
@@ -938,6 +964,11 @@ def main():
         checks.update(window_checks(ffmpeg))
         checks.update(record_checks(ffmpeg, tmp))
         checks.update(highlight_record_checks(ffmpeg, tmp))
+        if recorder.pick_encoder(ffmpeg, recorder.Options(source=TEST_SOURCE, codec="av1"), recorder.load_rules()):
+            checks.update(record_checks(ffmpeg, tmp, "av1"))
+            checks.update(highlight_record_checks(ffmpeg, tmp, "av1"))
+        else:
+            print("  （这台电脑的显卡编不了 AV1：跳过 AV1 真录的那些）")
     return report(checks)
 
 

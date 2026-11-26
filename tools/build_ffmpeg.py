@@ -12,9 +12,8 @@
 4. 结果放 dist/ffmpeg/：ffmpeg.exe、licenses/（ffmpeg 的 LGPL 和静态链进去的库的许可证）、BUILD.txt（版本、源码地址、
    configure 参数：LGPL 要求拿到程序的人也能拿到源码、能自己重新编）
 5. 自检：ENABLE 里列的都在 ffmpeg.exe 里
-只带 H.264：AV1 2026-11-20 先拿掉了（用户定的；录的时候分段写成 MPEG-TS，ffmpeg 的 TS 读写里没有 AV1，见 config/recording.json
-的 _说明_encoders）。以后加回 AV1 时这里也要加：编码器 av1_nvenc、av1_amf、av1_qsv，解码器 libdav1d（截缩略图、读第一帧的时刻
-要解码）和 MSYS2 包 dav1d、它的许可证，parser av1，bsf av1_frame_split、av1_frame_merge
+带 H.264 和 AV1（AV1 2026-11-26 加回来，用户定的：ffmpeg 的 TS 读写里没有 AV1，AV1 录的时候分段写成 MKV，见 docs/录像.md
+定下来的第 6 条）。AV1 要解码器 libdav1d（截缩略图、读第一帧的时刻要解码；MSYS2 包 dav1d，BSD 许可，静态链进去）
 build.py 打测试版时把 dist/ffmpeg 复制进 Evo\\ffmpeg（recorder.find_ffmpeg 找得到它）。
 """
 
@@ -42,6 +41,7 @@ PACKAGES = [  # MSYS2 的 UCRT64 环境
     "mingw-w64-ucrt-x86_64-ffnvcodec-headers",  # NVIDIA 显卡编码（NVENC）：只有头文件，运行时用显卡驱动里的
     "mingw-w64-ucrt-x86_64-amf-headers",  # AMD 显卡编码（AMF）：同上
     "mingw-w64-ucrt-x86_64-libvpl",  # Intel 显卡编码（QSV）：静态链进去
+    "mingw-w64-ucrt-x86_64-dav1d",  # AV1 解码（截缩略图、读第一帧的时刻）：静态链进去
 ]
 
 ENABLE = {  # configure 的 --enable-<种类>=…（--disable-everything 以后只打开这些）
@@ -55,18 +55,19 @@ ENABLE = {  # configure 的 --enable-<种类>=…（--disable-everything 以后�
     ],
     "encoder": [
         "h264_nvenc", "h264_amf", "h264_qsv",  # 显卡编码：NVIDIA、AMD、Intel
+        "av1_nvenc", "av1_amf", "av1_qsv",  # AV1（2026-11-26）：RTX 40、RX 7000、Arc 及以后的显卡才编得了
         "aac",  # 游戏声音
         "mjpeg",  # 缩略图 .jpg
         "wrapped_avframe", "pcm_s16le",  # -f null 和测试里读声音
     ],
-    "decoder": ["h264", "aac", "pcm_s16le", "pcm_f32le",
+    "decoder": ["h264", "libdav1d", "aac", "pcm_s16le", "pcm_f32le",
                 "wrapped_avframe"],  # wrapped_avframe：测试里 -f lavfi -i testsrc2 出来的画面
-    "muxer": ["mpegts", "mp4", "mov", "null", "image2", "pcm_s16le"],  # pcm_s16le：测试里 -f s16le 读声音
-    "demuxer": ["mpegts", "mov", "wav"],
+    "muxer": ["mpegts", "matroska", "mp4", "mov", "null", "image2", "pcm_s16le"],  # pcm_s16le：测试里 -f s16le 读声音
+    "demuxer": ["mpegts", "matroska", "concat", "mov", "wav"],  # matroska、concat：AV1 的分段 .mkv 按拼接列表接起来
     "indev": ["lavfi"],  # 测试里 -f lavfi -i testsrc2
-    "protocol": ["file", "concat", "pipe"],  # concat:：分段的 .ts 首尾相连地读
-    "parser": ["h264", "aac", "mjpeg"],
-    "bsf": ["h264_mp4toannexb", "aac_adtstoasc", "extract_extradata", "null"],
+    "protocol": ["file", "concat", "pipe"],  # concat:：H.264 分段的 .ts 首尾相连地读
+    "parser": ["h264", "av1", "aac", "mjpeg"],
+    "bsf": ["h264_mp4toannexb", "aac_adtstoasc", "extract_extradata", "av1_frame_split", "av1_frame_merge", "null"],
 }
 
 CONFIGURE = [
@@ -76,7 +77,7 @@ CONFIGURE = [
     "--extra-libs=-lstdc++",  # libvpl（Intel）是 C++ 写的，它的 pkg-config 没写要 C++ 运行库
     "--disable-doc", "--disable-ffplay", "--disable-ffprobe", "--disable-network", "--disable-debug",
     "--enable-w32threads", "--enable-d3d11va",  # 抓屏要 Direct3D 11
-    "--enable-ffnvcodec", "--enable-nvenc", "--enable-amf", "--enable-libvpl",
+    "--enable-ffnvcodec", "--enable-nvenc", "--enable-amf", "--enable-libvpl", "--enable-libdav1d",
 ]
 
 LICENSES = {  # dist/ffmpeg/licenses 里的文件名 → 从哪里复制（源码里的、MSYS2 装的）
@@ -85,6 +86,8 @@ LICENSES = {  # dist/ffmpeg/licenses 里的文件名 → 从哪里复制（源�
     "libvpl-LICENSE": "msys:ucrt64/share/licenses/libvpl/LICENSE",
     "ffnvcodec-headers-LICENSE": "msys:ucrt64/share/licenses/ffnvcodec-headers/LICENSE",
     "amf-headers-LICENSE": "msys:ucrt64/share/licenses/amf-headers/LICENSE",
+    "dav1d-COPYING": "msys:ucrt64/share/licenses/dav1d/COPYING",
+    "dav1d-PATENTS": "msys:ucrt64/share/licenses/dav1d/PATENTS",
     "mingw-w64-winpthreads-COPYING": "msys:ucrt64/share/licenses/winpthreads/COPYING",
 }
 
@@ -174,7 +177,7 @@ def main():
         f"Evo 录像用的精简版 ffmpeg {VERSION}（LGPL 2.1 或更新版本，见 licenses/）。\n"
         f"源码：{SOURCE_URL}（SHA-256 {SOURCE_SHA256}）\n"
         f"怎么编的：Evo 的 tools/build_ffmpeg.py（https://github.com/Evo-Apex/Evo），MSYS2 UCRT64、gcc，静态链接 "
-        "libvpl（Intel）；NVIDIA、AMD 的编码器只用头文件，运行时调用显卡驱动。只带 H.264。\n"
+        "libvpl（Intel）、dav1d（AV1 解码）；NVIDIA、AMD 的编码器只用头文件，运行时调用显卡驱动。只带 H.264 和 AV1。\n"
         f"configure 参数：\n  " + "\n  ".join(args) + "\n", encoding="utf-8")
     print("5. 自检")
     self_check(OUT / "ffmpeg.exe")
