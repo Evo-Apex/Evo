@@ -235,6 +235,21 @@ def pure_checks(tmp):
         [p.name for p in removed] == ["v0.mp4"] and not (lib / "2026-11" / "v0.json").exists()
         and not (lib / "2026-11" / "v0.jpg").exists() and (lib / "2026-11" / "v1.mp4").exists()
         and (lib / "2026-11" / "v1.jpg").exists())
+    # 快速剪辑（2026-11-26 用户定的：剪辑的不自动删）：最旧的是一个剪辑，跳过它，删下一个整局；剪辑照样算进已用的空间
+    lib = tmp / "lib-keep"
+    month = lib / "2026-11"
+    month.mkdir(parents=True)
+    for i, (name, size, meta) in enumerate([("a_剪辑1", 300, {"highlight": {"of": "a.mp4", "kind": "edit"}}), ("a", 200, {}),
+                                            ("a_击杀1", 100, {"highlight": {"of": "a.mp4", "kind": "kill"}}), ("b", 100, {})]):
+        video = month / f"{name}.mp4"
+        video.write_bytes(b"\0" * size)
+        video.with_suffix(".json").write_text(json.dumps(meta), encoding="utf-8")
+        t = time.time() - 1000 + i * 10
+        os.utime(video, (t, t))
+    removed = recorder.enforce_limit(lib, 450, log=lambda *_: None)
+    out[f"超过上限：玩家自己剪的（快速剪辑）不删，算进已用的空间，删下一个最旧的（删了 {[p.name for p in removed]}）"] = (
+        [p.name for p in removed] == ["a.mp4", "a_击杀1.mp4"] and (month / "a_剪辑1.mp4").exists() and (month / "b.mp4").exists()
+        and recorder.kept(month / "a_剪辑1.mp4") and not recorder.kept(month / "b.mp4"))
     return out
 
 
@@ -678,6 +693,62 @@ def checksums(ffmpeg, path):
     return [(float(t), k, c) for t, k, c in re.findall(r"pts_time:(-?[\d.]+) .*?type:([IPB]).*?checksum:([0-9A-F]+)", err or "")]
 
 
+def edit_checks(ffmpeg, video, keys, events, whole, beep_whole, p=""):
+    """快速剪辑（2026-11-26，highlights.save_edit）：在真录的那段上倒着挑两段（先放击杀那段、再放开头），接成一个视频。
+    whole：整局每一帧（checksums）；events：{事件: 整局里的时刻}。"""
+    import highlights
+    out, said = {}, []
+    kill = events["kill"]
+    pieces = [[kill - 1.2, kill + 1.0], [0.3, 2.6]]
+    try:
+        edit = highlights.save_edit(ffmpeg, video, pieces, log=said.append)
+    except highlights.HighlightError as e:
+        return {f"{p}快速剪辑：倒着挑两段接成一个视频（{e}）": False}
+    meta = json.loads(edit.with_suffix(".json").read_text(encoding="utf-8"))
+    cuts = meta["highlight"]["pieces"]
+    want = [[max(k for k in keys if k <= s + 1e-6), e] for s, e in pieces]
+    out[f"{p}快速剪辑：存成'整局_剪辑1'（{edit.name}），记着是自己剪的、每段从哪到哪（开头挪到关键帧：{cuts}），整局留着"] = (
+        edit.name == video.stem + "_剪辑1.mp4" and meta["highlight"]["kind"] == "edit" and meta["highlight"]["of"] == video.name
+        and len(cuts) == 2 and all(abs(a[0] - b[0]) < 1e-3 and abs(a[1] - b[1]) < 1e-3 for a, b in zip(cuts, want))
+        and video.exists() and not list(video.parent.glob("_剪辑_*")) and not list(video.parent.glob("*.part")))
+    length = sum(e - s for s, e in cuts)
+    out[f"{p}快速剪辑：时长是两段加起来（{meta.get('duration')} 秒，应约 {length:.2f} 秒）"] = abs(meta.get("duration", 0) - length) < 0.2
+    frames = checksums(ffmpeg, edit)
+    first = next((i for i, f in enumerate(whole) if abs(f[0] - cuts[0][0]) < 0.002), None)
+    second = next((i for i, f in enumerate(whole) if abs(f[0] - cuts[1][0]) < 0.002), None)
+    sums = [f[2] for f in frames]
+    joint = next((j for j in range(1, len(sums)) if second is not None and sums[j:j + 30] == [f[2] for f in whole[second:second + 30]]), None)
+    n1 = (joint or 0) - 4  # 第一段结尾因为 B 帧可能少两三帧
+    out[f"{p}快速剪辑：开头是关键帧、在 0 秒，第一段 {n1} 帧和整局逐帧一样，第二段从第 {joint} 帧起接上、30 帧逐帧一样"] = (
+        bool(frames) and frames[0][1] == "I" and abs(frames[0][0]) < 1e-6 and first is not None and joint is not None
+        and sums[:n1] == [f[2] for f in whole[first:first + n1]] and abs(frames[joint][0] - (cuts[0][1] - cuts[0][0])) < 0.15)
+    got = {e["kind"]: e["t"] for e in meta["events"]}
+    gap = frames[joint][0] if joint is not None else 0
+    out[f"{p}快速剪辑：事件换成剪辑里的位置（击杀 {got.get('kill')}、击倒 {got.get('knock')}）"] = (
+        abs(got.get("kill", -1) - (kill - cuts[0][0])) < 0.01 and abs(got.get("knock", -1) - (gap + events["knock"] - cuts[1][0])) < 0.15)
+    beep = beep_time(ffmpeg, edit)
+    out[f"{p}快速剪辑：声音对得上（嘀声在剪辑 {beep} 秒，整局 {beep_whole} 秒）"] = (
+        beep is not None and beep_whole is not None and abs(beep - (beep_whole - cuts[0][0])) < 0.03)
+    again = highlights.save_edit(ffmpeg, video, [[1.0, 3.0]], log=said.append)
+    autos = highlights.existing(video, edits=False)
+    out[f"{p}快速剪辑：再剪一个是'剪辑2'；排在自动剪的高光后面，不算存过高光（{[c.name for c in highlights.existing(video)]}）"] = (
+        again.name == video.stem + "_剪辑2.mp4" and highlights.existing(video)[-2:] == [edit, again]
+        and edit not in autos and again not in autos and len(autos) == 2)
+    bad = []
+    for wrong in ([], [[3, 3.2]], [["a", 1]], [[1, 2]] * 31, [[5, 1]], None):
+        try:
+            highlights.save_edit(ffmpeg, video, wrong, log=said.append)
+            bad.append(None)
+        except highlights.HighlightError as e:
+            bad.append(str(e))
+    out[f"{p}快速剪辑：没挑、太短、不是数、超过 30 段、终点在起点前面的不剪（{bad[:2]}…）"] = all(bad) and not video.with_name(
+        video.stem + "_剪辑3.mp4").exists()
+    for c in (edit, again):  # 后面"只录高光"那几项要的是只有两段高光的样子
+        for suffix in (".mp4", ".json", ".jpg"):
+            c.with_suffix(suffix).unlink(missing_ok=True)
+    return out
+
+
 def highlight_record_checks(ffmpeg, tmp, codec="h264"):
     """真录一段（测试画面、N 卡 B 帧、第 5 秒嘀一声），再剪高光：开头落在关键帧、画面和原片逐帧一样、声音对得上。
     codec="av1"（2026-11-26）：剪的那几项照样跑一遍，项目名前面加"AV1："（只录高光删整局那几项和编码格式无关，不重复）。"""
@@ -748,6 +819,7 @@ def highlight_record_checks(ffmpeg, tmp, codec="h264"):
     beep_whole, beep_clip = beep_time(ffmpeg, video), beep_time(ffmpeg, clips[1])
     out[f"{p}声音对得上：嘀声在整局 {beep_whole} 秒、片段 {beep_clip} 秒（差 {h['from']}）"] = (
         beep_whole is not None and beep_clip is not None and abs((beep_whole - h["from"]) - beep_clip) < 0.03)
+    out.update(edit_checks(ffmpeg, video, keys, events, whole, beep_whole, p))
     if codec != "h264":
         return out
 

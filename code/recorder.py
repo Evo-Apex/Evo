@@ -55,6 +55,7 @@ WORK_DIR_NAME = "_recording"  # 录的时候的分段文件放在录像文件夹
 SEGMENTS = {"av1": (".mkv", ["-f", "matroska", "-cluster_time_limit", "1000", "-flush_packets", "1"])}
 TS_SEGMENT = (".ts", ["-f", "mpegts", "-mpegts_copyts", "1"])
 SEGMENT_SUFFIXES = (".ts", ".mkv")
+KEEP_KIND = "edit"  # 旁边 .json 的 highlight.kind 是它的录像（快速剪辑，highlights.save_edit）超过上限时不自动删（kept）
 CREATE_NEW_PROCESS_GROUP = 0x00000200  # 终端里按 Ctrl+C 不会直接传给 ffmpeg，由我们发 q 让它收尾
 NORMAL_PRIORITY_CLASS = 0x00000020
 CREATE_NO_WINDOW = 0x08000000
@@ -729,14 +730,27 @@ def recover_leftovers(ffmpeg, out_dir, log=print):
     return done
 
 
+def kept(video):
+    """玩家自己剪的（快速剪辑，旁边 .json 的 highlight.kind 是 KEEP_KIND）：超过上限时不自动删。"""
+    try:
+        meta = json.loads(Path(video).with_suffix(".json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    hl = meta.get("highlight") if isinstance(meta, dict) else None
+    return isinstance(hl, dict) and hl.get("kind") == KEEP_KIND
+
+
 def enforce_limit(out_dir, max_bytes, log=print):
-    """录像文件夹超过上限时，从最旧的录像删起（MP4 和同名的 .json、.jpg 一起删），直到不超过。返回删掉的 MP4。"""
+    """录像文件夹超过上限时，从最旧的录像删起（MP4 和同名的 .json、.jpg 一起删），直到不超过。返回删掉的 MP4。
+    玩家自己剪的（快速剪辑，kept）算进已用的空间，但不删（2026-11-26 用户定的：很可能要留着分享），只删整局和自动剪的高光。"""
     videos = sorted(Path(out_dir).glob("*/*.mp4"), key=lambda p: p.stat().st_mtime)
     total = sum(p.stat().st_size for p in videos)
     removed = []
     for video in videos:
         if total <= max_bytes:
             break
+        if kept(video):
+            continue
         total -= video.stat().st_size
         video.unlink(missing_ok=True)
         video.with_suffix(".json").unlink(missing_ok=True)

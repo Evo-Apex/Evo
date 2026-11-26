@@ -60,6 +60,46 @@
     <div class="rec-ticks num" aria-hidden="true"><span>0:00</span><span id="rec-now">0:00</span><span>{{ item.clock }}</span></div>
   </div>
 
+  {% if edit %}
+  {# 快速剪辑（2026-11-26 用户要的，docs/录像.md 定下来的第 11 条）：只在整局录像上有。放到哪里点"起点"、再点"终点"（键盘 I / O），
+     这一段加进列表、时间轴上画出来（开头已经挪到前面最近的关键帧：直接切只能从关键帧开始）；能挪先后、删、从某一段开始预览
+     （按列表的顺序一段接一段放）；"把这局的高光加进来"按设置页勾的事件。"导出"用脚本提交（panel_recordings.save_edit），成了跳到
+     新剪辑的播放页，不成原因写在下面、挑好的几段留着。挑好的几段记在 sessionStorage（刷新页面不丢）。要脚本：没有脚本时按钮不出来 #}
+  <div class="rec-edit-bar">
+    <button type="button" class="btn" id="rec-edit-toggle" aria-expanded="false" aria-controls="rec-edit" hidden>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M20 4L8.12 15.88"></path><path d="M14.47 14.48L20 20"></path><path d="M8.12 8.12L12 12"></path></svg>
+      快速剪辑
+    </button>
+  </div>
+  <section class="rec-edit" id="rec-edit" aria-labelledby="h-edit" hidden
+           data-keys="{{ edit.keyframes | tojson | forceescape }}" data-suggested="{{ edit.suggested | tojson | forceescape }}"
+           data-max="{{ edit.max_pieces }}" data-min="{{ edit.min_seconds }}" data-v="{{ item.id }}"
+           data-action="{{ url_for('recordings.save_edit') }}" data-token="{{ token }}">
+    <h3 id="h-edit">快速剪辑</h3>
+    <p class="note rec-edit-help">放到想要的地方点"起点"，再放到结束的地方点"终点"，这一段就加进下面；挑好几段、排好先后，导出成一个视频。
+      直接切、不重新压缩，几秒就好；每段开头会提前到最近的关键帧（最多早 2 秒）。</p>
+    <div class="rec-edit-tools">
+      <button type="button" class="btn" id="rec-edit-in" aria-keyshortcuts="I">起点 <kbd aria-hidden="true">I</kbd></button>
+      <button type="button" class="btn" id="rec-edit-out" aria-keyshortcuts="O">终点 <kbd aria-hidden="true">O</kbd></button>
+      <span class="note rec-edit-status" id="rec-edit-status" aria-live="polite"></span>
+      {% if edit.suggested %}
+      <button type="button" class="btn-text rec-edit-suggest" id="rec-edit-suggest">把这局的高光加进来（<span class="num">{{ edit.suggested | length }}</span> 段）</button>
+      {% endif %}
+    </div>
+    <ol class="rec-edit-list" id="rec-edit-list" aria-label="要剪的几段（按这个顺序接起来）"></ol>
+    <p class="note rec-edit-empty" id="rec-edit-empty">还没有挑要剪的段</p>
+    <p class="update-error rec-edit-error" id="rec-edit-error" role="alert" hidden></p>
+    <div class="rec-edit-foot">
+      <span class="note" id="rec-edit-total"></span>
+      <div class="rec-edit-actions">
+        <button type="button" class="btn-text" id="rec-edit-clear" disabled>清空</button>
+        <button type="button" class="btn" id="rec-edit-preview" disabled>预览</button>
+        <button type="button" class="btn btn-primary" id="rec-edit-export" disabled>导出</button>
+      </div>
+    </div>
+  </section>
+  {% endif %}
+
   {% if item.events %}
   <ol class="rec-events" aria-label="这局的事件（点了从前 {{ lead }} 秒开始放）">
     {% for e in item.events %}
@@ -73,7 +113,7 @@
   {% if clips or can_save %}
   <section class="rec-clips" aria-labelledby="h-clips">
     <div class="rec-clips-head">
-      <h3 id="h-clips">高光片段{% if clips %} <span class="num muted">{{ clips | length }}</span>{% endif %}</h3>
+      <h3 id="h-clips">{{ '高光和剪辑' if clips | selectattr('clip.edit') | list else '高光片段' }}{% if clips %} <span class="num muted">{{ clips | length }}</span>{% endif %}</h3>
       {% if clips %}<span class="note">共 <span class="num">{{ clip_total }}</span> · <span class="num">{{ clip_size }}</span></span>{% endif %}
       <div class="rec-clips-actions">
         {% if item.clip and full_id %}<a class="btn" href="{{ url_for('recordings.watch', v=full_id) }}">看整局</a>{% endif %}
@@ -81,7 +121,7 @@
         <form method="post" action="{{ url_for('recordings.save_clips') }}" id="rec-save-clips">
           <input type="hidden" name="token" value="{{ token }}">
           <input type="hidden" name="v" value="{{ item.id }}">
-          <button type="submit" class="btn" {{ 'disabled' if clips }}>{{ '已保存高光' if clips else '保存高光' }}</button>
+          <button type="submit" class="btn" {{ 'disabled' if saved_auto }}>{{ '已保存高光' if saved_auto else '保存高光' }}</button>
         </form>
         {% endif %}
       </div>
@@ -120,14 +160,14 @@
       <input type="hidden" name="next" value="{{ request.full_path }}">
       <button type="submit" class="btn">在资源管理器中显示</button>
     </form>
-    {% if item.clip %}{# 删一段高光：回到整局，整局删了回到这一局别的片段 #}
+    {% if item.clip %}{# 删一段高光（或一个剪辑）：回到整局，整局删了回到这一局别的片段 #}
     {% set others = clips | rejectattr('id', 'equalto', item.id) | list %}
     <form method="post" action="{{ url_for('recordings.delete') }}" id="rec-delete"
-          data-confirm="{{ '确定删除这一段高光吗？' ~ item.path.name ~ '（' ~ item.size_text ~ '）会从电脑上删掉，不能恢复。' }}">
+          data-confirm="{{ ('确定删除这个剪辑吗？' if item.clip.edit else '确定删除这一段高光吗？') ~ item.path.name ~ '（' ~ item.size_text ~ '）会从电脑上删掉，不能恢复。' }}">
       <input type="hidden" name="token" value="{{ token }}">
       <input type="hidden" name="v" value="{{ item.id }}">
       {% if full_id or others %}<input type="hidden" name="back" value="{{ full_id or others[0].id }}">{% endif %}
-      <button type="submit" class="btn btn-danger">删除这一段</button>
+      <button type="submit" class="btn btn-danger">{{ '删除这个剪辑' if item.clip.edit else '删除这一段' }}</button>
     </form>
     {% else %}
     <form method="post" action="{{ url_for('recordings.delete') }}" id="rec-delete"
@@ -234,6 +274,232 @@
     }
     track.addEventListener("pointerup", endDrag);
     track.addEventListener("pointercancel", endDrag);
+    // 快速剪辑（2026-11-26，模板里那一段的说明）
+    (function () {
+      var panel = document.getElementById("rec-edit");
+      if (!panel) return;
+      var toggle = document.getElementById("rec-edit-toggle");
+      var list = document.getElementById("rec-edit-list"), empty = document.getElementById("rec-edit-empty");
+      var status = document.getElementById("rec-edit-status"), error = document.getElementById("rec-edit-error");
+      var total = document.getElementById("rec-edit-total");
+      var inBtn = document.getElementById("rec-edit-in"), outBtn = document.getElementById("rec-edit-out");
+      var previewBtn = document.getElementById("rec-edit-preview"), clearBtn = document.getElementById("rec-edit-clear");
+      var exportBtn = document.getElementById("rec-edit-export"), suggestBtn = document.getElementById("rec-edit-suggest");
+      var keys = JSON.parse(panel.dataset.keys || "[]"), suggested = JSON.parse(panel.dataset.suggested || "[]");
+      var maxPieces = parseInt(panel.dataset.max, 10) || 30, minLen = parseFloat(panel.dataset.min) || 0.5;
+      var store = "evo-edit:" + panel.dataset.v;
+      var pieces = [], pending = null, preview = null, ours = false;
+
+      function fine(s) {  // 2:01.5：剪的时候要看到十分之一秒
+        s = Math.max(0, s);
+        var m = Math.floor(s / 60), rest = s - m * 60;
+        return m + ":" + (rest < 10 ? "0" : "") + rest.toFixed(1);
+      }
+      function snap(t) {  // 前面最近的关键帧（和导出时 highlights.snap 一样）；读不出关键帧时不挪，导出时照样会挪
+        if (!keys.length) return t;
+        var lo = 0, hi = keys.length - 1, best = 0;
+        while (lo <= hi) { var mid = (lo + hi) >> 1; if (keys[mid] <= t + 1e-6) { best = keys[mid]; lo = mid + 1; } else hi = mid - 1; }
+        return best;
+      }
+      function valid(p) { return Array.isArray(p) && p.length === 2 && isFinite(p[0]) && isFinite(p[1]) && p[1] - p[0] >= minLen && p[0] >= 0 && p[1] <= length() + 0.5; }
+      function keep() { try { sessionStorage.setItem(store, JSON.stringify(pieces)); } catch (e) {} }
+      function say(text) { status.textContent = text; }
+      function fail(text) { error.textContent = text; error.hidden = !text; }
+      function pct(t) { return (length() ? Math.max(0, Math.min(1, t / length())) * 100 : 0) + "%"; }
+      var ICONS = {
+        up: '<path d="M12 19V5"></path><path d="M5 12l7-7 7 7"></path>',
+        down: '<path d="M12 5v14"></path><path d="M19 12l-7 7-7-7"></path>',
+        del: '<path d="M18 6L6 18"></path><path d="M6 6l12 12"></path>'
+      };
+      function iconButton(act, label, disabled) {
+        return '<button type="button" class="rec-edit-icon" data-act="' + act + '" aria-label="' + label + '" title="' + label + '"' +
+          (disabled ? " disabled" : "") + '><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+          'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS[act] + "</svg></button>";
+      }
+      function render() {
+        // 时间轴上：要剪的几段（编号）、点了起点还没点终点时的那条线；放在标记下面，不挡点击
+        track.querySelectorAll(".rec-cut, .rec-cut-pending").forEach(function (n) { n.remove(); });
+        var anchor = track.querySelector(".rec-played").nextSibling;
+        if (!panel.hidden) {
+          pieces.forEach(function (p, i) {
+            var band = document.createElement("span");
+            band.className = "rec-cut" + (preview && preview.i === i ? " playing" : "");
+            band.style.left = pct(p[0]);
+            band.style.width = "calc(" + pct(p[1]) + " - " + pct(p[0]) + ")";
+            band.setAttribute("aria-hidden", "true");
+            band.innerHTML = '<span class="rec-cut-no num">' + (i + 1) + "</span>";
+            track.insertBefore(band, anchor);
+          });
+          if (pending !== null) {
+            var line = document.createElement("span");
+            line.className = "rec-cut-pending";
+            line.style.left = pct(pending);
+            line.setAttribute("aria-hidden", "true");
+            track.insertBefore(line, anchor);
+          }
+        }
+        list.innerHTML = pieces.map(function (p, i) {
+          var n = i + 1, range = fine(p[0]) + "–" + fine(p[1]);
+          return '<li class="rec-edit-piece' + (preview && preview.i === i ? " playing" : "") + '" data-i="' + i + '">' +
+            '<span class="rec-edit-no num" aria-hidden="true">' + n + "</span>" +
+            '<button type="button" class="rec-edit-range num" data-act="play" aria-label="第 ' + n + " 段，" + range + "，从这一段开始预览" + '">' + range + "</button>" +
+            '<span class="rec-edit-len num">' + (p[1] - p[0]).toFixed(1) + " 秒</span>" +
+            '<span class="rec-edit-row-actions">' + iconButton("up", "第 " + n + " 段往前挪", i === 0) +
+            iconButton("down", "第 " + n + " 段往后挪", i === pieces.length - 1) + iconButton("del", "删掉第 " + n + " 段", false) + "</span></li>";
+        }).join("");
+        empty.hidden = pieces.length > 0;
+        var sum = pieces.reduce(function (a, p) { return a + p[1] - p[0]; }, 0);
+        total.textContent = pieces.length ? "共 " + pieces.length + " 段 · " + clock(sum) : "";
+        previewBtn.disabled = clearBtn.disabled = exportBtn.disabled = !pieces.length;
+        if (suggestBtn) suggestBtn.disabled = pieces.length >= maxPieces;
+      }
+      function add(start, end) {
+        if (pieces.length >= maxPieces) { fail("最多 " + maxPieces + " 段"); return false; }
+        pieces.push([Math.round(snap(start) * 1000) / 1000, Math.round(end * 1000) / 1000]);
+        return true;
+      }
+      function open(on) {
+        panel.hidden = !on;
+        toggle.setAttribute("aria-expanded", String(on));
+        toggle.classList.toggle("active", on);
+        if (!on) { stopPreview(); pending = null; say(""); }
+        render();
+      }
+      function markIn() {
+        stopPreview();
+        fail("");
+        pending = video.currentTime;
+        say("起点 " + fine(pending) + "：放到结束的地方点“终点”");
+        render();
+      }
+      function markOut() {
+        stopPreview();
+        var t = video.currentTime;
+        if (pending === null) { fail("先点“起点”"); return; }
+        if (t - pending < minLen) { fail("终点要在起点后面（至少 " + minLen + " 秒）"); return; }
+        fail("");
+        if (add(pending, t)) {
+          var p = pieces[pieces.length - 1];
+          say("加了第 " + pieces.length + " 段：" + fine(p[0]) + "–" + fine(p[1]) + (pending - p[0] > 0.05 ? "（开头提前到了关键帧）" : ""));
+        }
+        pending = null;
+        keep();
+        render();
+      }
+      // 预览：从第 i 段开始，按列表的顺序一段接一段放（放到一段的终点就跳到下一段的起点）；自己拖进度条、点标记、暂停就停
+      function seekOurs(t) { ours = true; jump(t, true); }
+      function startPreview(i) {
+        if (!pieces[i]) return;
+        fail("");
+        preview = { i: i };
+        say("正在预览第 " + (i + 1) + " 段（共 " + pieces.length + " 段）");
+        seekOurs(pieces[i][0]);
+        render();
+      }
+      function stopPreview() {
+        if (!preview) return;
+        preview = null;
+        say("");
+        render();
+      }
+      video.addEventListener("seeked", function () { ours = false; });
+      video.addEventListener("timeupdate", function () {
+        if (!preview || ours) return;
+        var p = pieces[preview.i];
+        if (!p) { stopPreview(); return; }
+        if (video.currentTime >= p[1] - 0.03) {
+          if (preview.i + 1 < pieces.length) startPreview(preview.i + 1);
+          else { preview = null; video.pause(); say("预览完了"); render(); }
+        }
+      });
+      video.addEventListener("pause", function () { if (preview && !ours && !video.ended) stopPreview(); });
+      track.addEventListener("pointerdown", stopPreview);
+      document.querySelectorAll(".rec-mark, .rec-event").forEach(function (b) { b.addEventListener("click", stopPreview); });
+
+      toggle.hidden = false;
+      toggle.addEventListener("click", function () { open(panel.hidden); });
+      inBtn.addEventListener("click", markIn);
+      outBtn.addEventListener("click", markOut);
+      // 键盘：剪辑开着时 I = 起点、O = 终点（在输入框里、按着 Ctrl / Alt 时不算）
+      document.addEventListener("keydown", function (e) {
+        if (panel.hidden || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+        var tag = (e.target.tagName || "").toLowerCase();
+        if (tag === "input" || tag === "textarea" || tag === "select" || e.target.isContentEditable) return;
+        if (e.key === "i" || e.key === "I") { e.preventDefault(); markIn(); }
+        else if (e.key === "o" || e.key === "O") { e.preventDefault(); markOut(); }
+      });
+      list.addEventListener("click", function (e) {
+        var b = e.target.closest("button");
+        if (!b) return;
+        var i = parseInt(b.closest("li").dataset.i, 10), act = b.dataset.act;
+        if (act === "play") { startPreview(i); return; }
+        stopPreview();
+        var focusAct = act;
+        if (act === "up" && i > 0) { pieces.splice(i - 1, 0, pieces.splice(i, 1)[0]); i -= 1; }
+        else if (act === "down" && i < pieces.length - 1) { pieces.splice(i + 1, 0, pieces.splice(i, 1)[0]); i += 1; }
+        else if (act === "del") { pieces.splice(i, 1); i = Math.min(i, pieces.length - 1); focusAct = "del"; }
+        keep();
+        render();
+        // 挪完、删完焦点留在同一个按钮上（读屏、键盘接着操作）；挪到头了那个按钮变灰，焦点放到这一行的预览上
+        var row = list.querySelector('li[data-i="' + i + '"]');
+        var next = row && (row.querySelector('[data-act="' + focusAct + '"]:not([disabled])') || row.querySelector('[data-act="play"]'));
+        if (next) next.focus(); else inBtn.focus();
+      });
+      if (suggestBtn) suggestBtn.addEventListener("click", function () {
+        stopPreview();
+        fail("");
+        var added = 0;
+        suggested.forEach(function (p) {
+          var dup = pieces.some(function (q) { return Math.abs(q[0] - p[0]) < 0.01 && Math.abs(q[1] - p[1]) < 0.01; });
+          if (!dup && add(p[0], p[1])) added += 1;
+        });
+        say(added ? "加了 " + added + " 段高光" : "这局的高光都在列表里了");
+        keep();
+        render();
+      });
+      previewBtn.addEventListener("click", function () { startPreview(0); });
+      clearBtn.addEventListener("click", function () {
+        if (pieces.length > 1 && !confirm("清空挑好的 " + pieces.length + " 段吗？")) return;
+        stopPreview();
+        pieces = [];
+        pending = null;
+        say("");
+        fail("");
+        keep();
+        render();
+      });
+      exportBtn.addEventListener("click", function () {
+        stopPreview();
+        fail("");
+        exportBtn.disabled = true;
+        exportBtn.textContent = "正在导出…";
+        panel.setAttribute("aria-busy", "true");
+        var body = new FormData();
+        body.append("token", panel.dataset.token);
+        body.append("v", panel.dataset.v);
+        body.append("pieces", JSON.stringify(pieces));
+        fetch(panel.dataset.action, { method: "POST", body: body, headers: { "X-Evo-Fetch": "1" } })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (data.ok) {
+              try { sessionStorage.removeItem(store); } catch (e) {}
+              location.href = data.url;
+              return;
+            }
+            throw new Error(data.error || "没剪成");
+          })
+          .catch(function (err) {
+            fail(err && err.message && err.message !== "Failed to fetch" ? err.message : "没剪成：Evo 没有回应，再试一次");
+            exportBtn.disabled = false;
+            exportBtn.textContent = "导出";
+            panel.removeAttribute("aria-busy");
+          });
+      });
+      video.addEventListener("loadedmetadata", render);
+      // 刷新页面、导出没成：挑好的几段还在（sessionStorage，只在这个窗口里）
+      try { pieces = (JSON.parse(sessionStorage.getItem(store) || "[]") || []).filter(valid).slice(0, maxPieces); } catch (e) { pieces = []; }
+      if (pieces.length) open(true); else render();
+    })();
     // 保存高光：要几秒（整局里找关键帧、一段一段地切），按钮先变成"正在保存…"，不让再点
     var save = document.getElementById("rec-save-clips");
     if (save) save.addEventListener("submit", function () {

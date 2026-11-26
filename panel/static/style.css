@@ -1722,6 +1722,45 @@ button.watch-mate:focus-visible { outline: 2px solid var(--p3-bg); outline-offse
 [data-theme="light"] .rec-clip-icons > span { --ev-ink: color-mix(in srgb, var(--ev) 72%, #000); }  /* 要写在带 .ev-* 的那一层 */
 @media (prefers-reduced-motion: reduce) { .rec-clip { transition: none; } }
 .rec-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; margin-top: 20px; }
+/* 快速剪辑（2026-11-26，recordings_watch.html）：时间轴下面一个"快速剪辑"按钮，打开是一块面板：起点 / 终点（I / O）、要剪的几段
+   （编号、范围、长度、往前挪 / 往后挪 / 删掉）、预览、导出。时间轴上用蓝色（--p3-bg，和焦点框同一种，不和事件的颜色撞）画出要剪的几段 */
+.rec-edit-bar { display: flex; justify-content: flex-end; margin-top: 10px; }
+.rec-edit-bar .btn.active { border-color: var(--p3-bg); box-shadow: 0 0 0 1px var(--p3-bg); }
+.rec-edit-bar .btn[hidden] { display: none; }  /* .btn 的 display 会盖过 hidden：没有脚本时不出来 */
+.rec-edit { margin-top: 10px; padding: 14px 16px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--inset); }
+.rec-edit h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.rec-edit-help { margin: 4px 0 0; max-width: 72ch; }
+.rec-edit-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; }
+.rec-edit-tools kbd { font: 600 11px/1 "Chakra Petch", Consolas, monospace; padding: 2px 5px; border: 1px solid var(--border); border-radius: 3px; color: var(--muted); }
+.rec-edit-status:empty { display: none; }
+.rec-edit-suggest { margin-left: auto; }
+.rec-edit-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.rec-edit-list:empty { display: none; }
+.rec-edit-piece { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 4px 6px 4px 10px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--card); }
+.rec-edit-piece.playing { border-color: var(--p3-bg); box-shadow: 0 0 0 1px var(--p3-bg); }
+.rec-edit-no { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--p3-bg); color: var(--p3-fg); font-size: 12px; line-height: 22px; text-align: center; }
+.rec-edit-range { font: inherit; font-size: 14px; padding: 6px 8px; border: 0; border-radius: 4px; background: transparent; color: var(--text); cursor: pointer; }
+.rec-edit-range:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.rec-edit-len { color: var(--muted); font-size: 13px; }
+.rec-edit-row-actions { margin-left: auto; display: flex; gap: 2px; }
+.rec-edit-icon { width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 4px;
+  background: transparent; color: var(--muted); cursor: pointer; }
+.rec-edit-icon:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+.rec-edit-icon:disabled { opacity: 0.35; cursor: default; background: transparent; color: var(--muted); }
+.rec-edit-icon[data-act="del"]:hover { color: var(--bad); }
+.rec-edit-icon:focus-visible, .rec-edit-range:focus-visible { outline: 2px solid var(--p3-bg); outline-offset: 1px; }
+.rec-edit-empty { margin: 12px 0 0; }
+.rec-edit-empty[hidden], .rec-edit-error[hidden] { display: none; }
+.rec-edit-error { margin: 10px 0 0; font-size: 13px; }
+.rec-edit-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; }
+.rec-edit-actions { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+/* 时间轴上要剪的几段：淡蓝底、两头一道蓝边、左上角编号；点了起点还没点终点时一条蓝线。都不挡点击 */
+.rec-cut { position: absolute; top: 0; bottom: 0; min-width: 2px; box-sizing: border-box; border-left: 2px solid var(--p3-bg); border-right: 2px solid var(--p3-bg);
+  background: color-mix(in srgb, var(--p3-bg) 22%, transparent); pointer-events: none; }
+.rec-cut.playing { background: color-mix(in srgb, var(--p3-bg) 40%, transparent); }
+.rec-cut-no { position: absolute; top: 1px; left: 3px; font-size: 10px; line-height: 1; color: var(--text); }
+.rec-cut-pending { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; background: var(--p3-bg); pointer-events: none; }
 /* 战绩页：有录像的局，传奇后面一个小按钮 */
 .rec-link { position: relative; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; margin-left: 4px;
   border-radius: 4px; color: var(--muted); }

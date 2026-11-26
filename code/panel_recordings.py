@@ -15,6 +15,8 @@
 - 列表一局一张卡片（groups）：有片段的写"高光 N 段"；整局删了（只录高光）的标"只有高光"，点了放第一段
 - 播放页下面"高光片段"：这一局的每一段（缩略图、名字"击杀 1"、在整局里的哪一段、时长、里面的事件），正在放的那段标出来；
   整局录像上"保存高光"（POST /recordings/highlights，按设置页现在勾的切，整局留着；已经存过的不能再点，2026-11-21 用户定的）
+- 快速剪辑（2026-11-26，highlights.save_edit）：整局录像的播放页上挑几段、排好先后，导出成一个视频（POST /recordings/edit，
+  页面用脚本提交、回答 JSON），也是这一局的一个片段（名字"剪辑 1"，排在自动剪的高光后面，不算"存过高光"，不自动删）
 录像文件 /recordings/video?v=…（send_file 支持 Range：播放器能拖进度条）、缩略图 /recordings/thumb?v=…
 和战绩对上：按时间（.json 里的开始时刻 + 时长），战绩里那一局的结束时刻落在录像里（往后留 MATCH_SLACK）就算同一局。
 不改数据库。战绩页有录像的局显示一个小按钮（match_links）
@@ -172,8 +174,11 @@ def load(video):
     clip = None
     if hl:
         start, stop = hl.get("from") or 0, hl.get("to") or 0
-        clip = {"name": spaced(hl.get("name") or "高光"), "index": hl.get("index") or 0, "from": start,
-                "range": f"{clock(start)}–{clock(stop)}", "kinds": list(dict.fromkeys(e["css"] for e in events))}
+        edit = hl.get("kind") == highlights.EDIT_KIND  # 快速剪辑（2026-11-26）：几段接起来的，"整局的 3 段"
+        pieces = hl.get("pieces") if edit and isinstance(hl.get("pieces"), list) else []
+        clip = {"name": spaced(hl.get("name") or "高光"), "index": hl.get("index") or 0, "from": start, "edit": edit,
+                "range": f"{len(pieces)} 段" if edit else f"{clock(start)}–{clock(stop)}",
+                "kinds": list(dict.fromkeys(e["css"] for e in events))}
     group = f"{video.parent.name}/{Path(hl['of']).stem}" if hl and hl.get("of") else f"{video.parent.name}/{video.stem}"
     return {
         "id": f"{video.parent.name}/{video.stem}", "path": video, "started": started,
@@ -203,7 +208,7 @@ def groups(items):
             g["full"] = r
     out = []
     for g in by.values():
-        clips = sorted(g["clips"], key=lambda r: r["clip"]["from"])
+        clips = sorted(g["clips"], key=lambda r: (r["clip"]["edit"], r["clip"]["index"] if r["clip"]["edit"] else r["clip"]["from"]))
         lead = g["full"] or clips[0]
         card = {**lead, "clips": clips, "only_clips": g["full"] is None,
                 "group_size": sum(r["size"] for r in clips) + (g["full"]["size"] if g["full"] else 0)}
@@ -342,7 +347,22 @@ def watch():
                            clip_total=clock(sum(c["duration"] for c in clips)),
                            clip_size=size_text(sum(c["size"] for c in clips)),
                            can_save=not item["clip"] and not item["unfinished"] and bool(item["events"]),
+                           saved_auto=any(not c["clip"]["edit"] for c in clips),
+                           edit=edit_view(video, item),
                            clip_note=note if isinstance(note, dict) else None)
+
+
+def edit_view(video, item):
+    """播放页"快速剪辑"要的（2026-11-26）：只在整局录像上有。关键帧（直接读 MP4 的索引，不到 0.1 秒；读不出是空的，页面就不挪，
+    导出时照样挪）、"把高光都加进来"按设置页现在勾的事件算的几段（和保存高光一样）、最多几段、每段至少多长。"""
+    if item["clip"] or not item["duration"]:
+        return None
+    keys = highlights.keyframe_times(video) or []
+    meta = highlights.read_meta(video) or {}
+    events = sorted((e for e in meta.get("events") or [] if isinstance(e.get("t"), (int, float))), key=lambda e: e["t"])
+    picks = highlights.plan(events, item["duration"], highlights.choices(app_settings.load()), keys or None)
+    return {"keyframes": [round(k, 6) for k in keys], "suggested": [[round(p["start"], 3), round(p["end"], 3)] for p in picks],
+            "max_pieces": highlights.EDIT_MAX_PIECES, "min_seconds": highlights.EDIT_MIN_SECONDS}
 
 
 @bp.post("/recordings/highlights")
@@ -357,7 +377,7 @@ def save_clips():
     def done(text, error=False):
         session[CLIP_NOTE_KEY] = {"text": text, "error": error}
         return redirect(url_for("recordings.watch", v=rid) + "#h-clips")
-    if highlights.existing(path):
+    if highlights.existing(path, edits=False):  # 自己剪过（快速剪辑）不算存过高光
         return done("这一局已经存过高光了", error=True)
     try:
         clips = highlights.save(_ffmpeg(), path, highlights.choices(app_settings.load()), log=lambda line: None)
@@ -367,6 +387,29 @@ def save_clips():
         return done("这一局没有设置页里勾选的事件，没有存", error=True)
     seconds = sum(recorder.mp4_duration(c) or 0 for c in clips)
     return done(f"存好了 {len(clips)} 段高光（共 {clock(seconds)}，{size_text(sum(c.stat().st_size for c in clips))}）")
+
+
+@bp.post("/recordings/edit")
+def save_edit():
+    """快速剪辑的"导出"（2026-11-26）：页面用脚本提交 pieces（JSON：[[起, 止], …]，按玩家排的先后），回答 JSON：
+    成了 {"ok": true, "url": 新剪辑的播放页}（页面跳过去，那里写着剪好了），不成 {"ok": false, "error": 原因}（挑好的几段留在页面上）。"""
+    rid = request.form.get("v")
+    path = resolve(rid)
+    if path is None:
+        return jsonify({"ok": False, "error": "找不到这个录像（可能已经删掉了）"}), 404
+    try:
+        pieces = json.loads(request.form.get("pieces") or "null")
+    except ValueError:
+        pieces = None
+    try:
+        out = highlights.save_edit(_ffmpeg(), path, pieces, log=lambda line: None)
+    except highlights.HighlightError as e:
+        return jsonify({"ok": False, "error": f"没剪成：{e}"}), 400
+    seconds = recorder.mp4_duration(out) or 0
+    count = len(pieces)
+    session[CLIP_NOTE_KEY] = {"text": f"剪好了：{count} 段接成一个视频（{clock(seconds)}，{size_text(out.stat().st_size)}）。"
+                                      "剪辑的不会因为硬盘超过上限被自动删掉", "error": False}
+    return jsonify({"ok": True, "url": url_for("recordings.watch", v=f"{out.parent.name}/{out.stem}")})
 
 
 @bp.route("/recordings/video")

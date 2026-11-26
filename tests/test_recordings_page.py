@@ -21,6 +21,7 @@
 运行：python tests/test_recordings_page.py
 """
 
+import html
 import json
 import re
 import shutil
@@ -32,7 +33,7 @@ import wave
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode
 
 from fake_game import report  # 要在项目代码之前导入（设置临时数据文件夹）
 
@@ -81,6 +82,96 @@ def make_clip(full, name, index, count, start, end, events=(), of_duration=600, 
         "duration": end - start, "match": {"legend": legend}, "events": list(events), "outages": []}, ensure_ascii=False),
         encoding="utf-8")
     return clip
+
+
+def edit_page_checks(client, token, base):
+    """快速剪辑（2026-11-26）：整局录像的播放页上有、片段上没有；导出（假的切，不用 ffmpeg）；剪辑在片段里排在后面、
+    写"剪辑 1""整局的 2 段"；自己剪过照样能"保存高光"。"""
+    import highlights
+    out = {}
+    started = NOW - timedelta(hours=12)
+    full = make_recording(base, started, "排位_恶灵", 300, legend="恶灵",
+                          events=[{"t": 40, "kind": "kill", "kills": 1, "count": 1}, {"t": 120, "kind": "knock"}])
+    fid = f"{full.parent.name}/{full.stem}"
+    real = highlights.save_edit
+    calls = []
+    result = {"error": None}
+
+    def fake_edit(ffmpeg, video, pieces, log=print):
+        calls.append((Path(video), pieces))
+        if result["error"]:
+            raise highlights.HighlightError(result["error"])
+        highlights.check_pieces(pieces, 300)
+        clip = Path(video).with_name(f"{Path(video).stem}_剪辑1.mp4")
+        clip.write_bytes(bytes(range(256)) * 4)
+        clip.with_suffix(".json").write_text(json.dumps({
+            "version": 1, "video": clip.name, "started": started.isoformat(timespec="seconds"), "first_frame": 0.4,
+            "highlight": {"of": Path(video).name, "name": "剪辑1", "kind": "edit", "index": 1, "from": 118.0, "to": 45.0,
+                          "of_duration": 300, "pieces": [[118.0, 125.0], [38.0, 45.0]]},
+            "duration": 14.0, "match": {"legend": "恶灵"}, "events": [{"t": 2.0, "kind": "knock"}, {"t": 9.0, "kind": "kill"}],
+            "outages": []}, ensure_ascii=False), encoding="utf-8")
+        return clip
+    highlights.save_edit = fake_edit
+    try:
+        raw = client.get("/recordings/watch", query_string={"v": fid}).get_data(as_text=True)
+        panel = (re.findall(r'<section class="rec-edit" id="rec-edit".*?</section>', raw, re.S) or [""])[0]
+        suggested = json.loads(html.unescape((re.findall(r'data-suggested="([^"]*)"', panel) or ["null"])[0]))
+        out[f"整局的播放页：有'快速剪辑'（没有脚本时按钮藏着），起点 / 终点（I / O）、预览、导出；"
+            f"'把这局的高光加进来'按设置页勾的事件算好了（{suggested}）"] = (
+            'id="rec-edit-toggle" aria-expanded="false" aria-controls="rec-edit" hidden' in raw and "hidden" in panel[:400]
+            and 'aria-keyshortcuts="I"' in panel and 'aria-keyshortcuts="O"' in panel and 'id="rec-edit-export"' in panel
+            and 'id="rec-edit-preview"' in panel and f'data-v="{fid}"' in panel and f'data-token="{token}"' in panel
+            and suggested == [[10.0, 50.0], [100.0, 130.0]] and "把这局的高光加进来（<span class=\"num\">2</span> 段）" in panel)
+
+        def post(pieces, with_token=True):
+            data = {"v": fid, "pieces": pieces if isinstance(pieces, str) else json.dumps(pieces)}
+            if with_token:
+                data["token"] = token
+            return client.post("/recordings/edit", data=data, headers={"X-Evo-Fetch": "1"})
+        r = post([[118, 125], [38, 45]], with_token=False)
+        out["导出：没有口令不让剪"] = r.status_code != 200 and calls == []
+        r = post("这不是 JSON")
+        out[f"导出：段不对（不是 JSON）不剪，回答原因（{r.get_json()}）"] = (
+            r.status_code == 400 and r.get_json() == {"ok": False, "error": "没剪成：还没有挑要剪的段"})
+        result["error"] = "读不出录像里的关键帧"
+        r = post([[118, 125]])
+        out["导出：切不成时回答原因，挑好的几段留在页面上（页面上的脚本只是写出原因）"] = (
+            r.status_code == 400 and r.get_json()["error"] == "没剪成：读不出录像里的关键帧")
+        result["error"] = None
+        r = post([[118, 125], [38, 45]])
+        data = r.get_json() or {}
+        clip_id = f"{full.parent.name}/{full.stem}_剪辑1"
+        out[f"导出：按页面上排的先后交给 save_edit，回答新剪辑的播放页（{data}）"] = (
+            data.get("ok") is True and unquote(data.get("url", "")).endswith("v=" + clip_id)
+            and calls[-1] == (full, [[118, 125], [38, 45]]))
+        raw = client.get(data.get("url", "/")).get_data(as_text=True)
+        out["新剪辑的播放页：写着剪好了、不会被自动删；标题'剪辑 1'、'整局的 2 段'；删除写'删除这个剪辑'；片段上没有快速剪辑"] = (
+            'role="status">剪好了：2 段接成一个视频' in raw and "不会因为硬盘超过上限被自动删掉" in raw and "· 剪辑 1" in raw
+            and "整局的 <span class=\"num\">2 段</span>" in raw and "删除这个剪辑" in raw and "确定删除这个剪辑吗" in raw
+            and 'id="rec-edit"' not in raw)
+        make_clip(full, "击杀1", 1, 1, 28.0, 50.0, started=started)
+        raw = client.get("/recordings/watch", query_string={"v": fid}).get_data(as_text=True)
+        strip = (re.findall(r'<section class="rec-clips".*?</section>', raw, re.S) or [""])[0]
+        names = re.findall(r'<span class="rec-clip-name">([^<]*)</span>', strip)
+        out[f"整局那一页：标题'高光和剪辑'，剪辑排在自动剪的高光后面（{names}）"] = (
+            "高光和剪辑" in strip and names == ["击杀 1", "剪辑 1"])
+        (full.with_name(f"{full.stem}_击杀1.mp4")).unlink()
+        (full.with_name(f"{full.stem}_击杀1.json")).unlink()
+        raw = client.get("/recordings/watch", query_string={"v": fid}).get_data(as_text=True)
+        saved = []
+        real_save = highlights.save
+        highlights.save = lambda ffmpeg, video, picked, log=print: saved.append(video) or []
+        try:
+            client.post("/recordings/highlights", data={"v": fid, "token": token})
+        finally:
+            highlights.save = real_save
+        out["只有自己剪的：'保存高光'照样能点、能存（自己剪过不算存过高光）"] = (
+            re.search(r'<button type="submit" class="btn" >保存高光</button>', raw) is not None and saved == [full])
+    finally:
+        highlights.save_edit = real
+        for video in base.glob(f"*/{started:%Y-%m-%d_%H%M%S}*"):
+            video.unlink(missing_ok=True)
+    return out
 
 
 def show_checks(client, token, base):
@@ -677,6 +768,7 @@ def checks():
 
     out.update(settings_checks(client, token, base))
     out.update(clip_checks(client, token, base, conn))
+    out.update(edit_page_checks(client, token, base))
     out.update(show_checks(client, token, base))
 
     r = client.post("/recordings/delete", data={"v": rid})

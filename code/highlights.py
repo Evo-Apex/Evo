@@ -1,9 +1,12 @@
 """自动剪高光：从一局的整局录像里按事件切出片段（docs/录像.md 定下来的第 10 条，2026-11-21 用户定的，照 Outplayed 的设置页）。
 
-两处用它：
+三处用它：
 - 录制模式"只录高光"（match_recording.py）：照样录整局，一局结束、击杀助攻读完以后 keep_only：切出片段，再删掉整局
   （一个勾了的事件都没有时整局留着，2026-11-21 用户定的；切不成也留着）
-- 录像页上整局录像的"保存高光"按钮（panel_recordings.py）：save，整局留着。已经存过高光的不能再点（用户定的）
+- 录像页上整局录像的"保存高光"按钮（panel_recordings.py）：save，整局留着。已经存过高光的不能再点（用户定的；自己剪的不算）
+- 录像页上的"快速剪辑"（2026-11-26 用户要的，docs/录像.md 定下来的第 11 条）：save_edit，玩家在一局里挑几段、排好先后，
+  直接切、接成一个视频（"整局_剪辑1"），整局留着。用户定的：直接切不重新压缩、先只剪一局、剪辑的不自动删（硬盘超过上限
+  从最旧的删起时跳过它，recorder.enforce_limit）
 
 怎么切：
 - 设置页勾哪些事件算高光、每种事件"前几秒、后几秒"（choices：默认在 config/recording.json 的 highlights，玩家改的在
@@ -21,8 +24,10 @@
 
 import bisect
 import json
+import math
 import re
 import struct
+import tempfile
 from pathlib import Path
 
 import recorder
@@ -38,6 +43,10 @@ NAMES = {  # 片段的名字、日志里写的
 PRIORITY = ("champion", "kill", "dead", "respawned", "knocked", "revived", "knock", "assist_knock", "assist")
 # 切的时候 -ss 正好写关键帧的时刻（精确到微秒）：晚一点点（试过晚 0.0005 秒）那个关键帧在片段里就落在 0 之前，
 # 播放器不显示它，片段从下一帧开始（2026-11-21 试的）；早一点点没关系（ffmpeg 按解码时刻找，关键帧的解码时刻还要早几帧）
+EDIT_KIND = recorder.KEEP_KIND  # 快速剪辑存的视频：.json 里 highlight.kind 是它（不自动删，recorder.enforce_limit 认这个）
+EDIT_NAME = "剪辑"  # 名字：整局的名字 + "_剪辑1"、"_剪辑2"……
+EDIT_MAX_PIECES = 30  # 一个剪辑最多几段
+EDIT_MIN_SECONDS = 0.5  # 每段至少多长（页面上也按这个挡）
 
 
 class HighlightError(Exception):
@@ -87,8 +96,7 @@ def plan(events, duration, picked, keyframes=None):
             continue
         start, end = max(0.0, t - c["before"]), min(float(duration), t + c["after"])
         if keyframes:
-            i = bisect.bisect_right(keyframes, start + 1e-6) - 1
-            start = keyframes[i] if i >= 0 else 0.0
+            start = snap(keyframes, start)
         if end > start:
             windows.append((start, end, e))
     windows.sort(key=lambda w: (w[0], w[1]))
@@ -100,6 +108,12 @@ def plan(events, duration, picked, keyframes=None):
         else:
             out.append({"start": start, "end": end, "hits": [e]})
     return out
+
+
+def snap(keyframes, t):
+    """t 前面最近的关键帧（正好在关键帧上就是它）：直接切时片段只能从关键帧开始。"""
+    i = bisect.bisect_right(keyframes, t + 1e-6) - 1
+    return keyframes[i] if i >= 0 else 0.0
 
 
 def top_kind(hits):
@@ -251,15 +265,22 @@ def is_clip(meta):
     return isinstance((meta or {}).get("highlight"), dict)
 
 
-def existing(video):
-    """这个整局录像已经存下的高光片段（.json 的 highlight.of 是它），按在整局里的先后排。"""
+def is_edit(meta):
+    """快速剪辑存的（玩家自己剪的），不是自动剪的高光。"""
+    return is_clip(meta) and meta["highlight"].get("kind") == EDIT_KIND
+
+
+def existing(video, edits=True):
+    """这个整局录像已经存下的高光片段（.json 的 highlight.of 是它）：自动剪的按在整局里的先后排，自己剪的（快速剪辑）
+    排在后面、按第几个排。edits=False：只要自动剪的（"保存高光"按钮看这个：自己剪过不算存过高光）。"""
     video = Path(video)
     found = []
     for clip in video.parent.glob(f"{glob_escape(video.stem)}_*.mp4"):
         meta = read_meta(clip)
-        if is_clip(meta) and meta["highlight"].get("of") == video.name:
-            found.append((meta["highlight"].get("from") or 0, clip))
-    return [clip for _, clip in sorted(found)]
+        if is_clip(meta) and meta["highlight"].get("of") == video.name and (edits or not is_edit(meta)):
+            hl = meta["highlight"]
+            found.append(((1, hl.get("index") or 0) if is_edit(meta) else (0, hl.get("from") or 0), clip.name, clip))
+    return [clip for _, _, clip in sorted(found)]
 
 
 def glob_escape(text):
@@ -356,3 +377,110 @@ def keep_only(ffmpeg, video, picked, log=print):
         return clips
     log(f"录像：只录高光，整局删了（{video.name}）")
     return clips
+
+
+# ---------- 快速剪辑（2026-11-26） ----------
+
+def check_pieces(pieces, duration):
+    """玩家挑的几段 [[起, 止], …]（按玩家排的先后）→ [(起, 止)]，限在录像里。不对抛 HighlightError（原因写在页面上）。
+    可以重叠、可以倒着排（同一段放两遍、先放后面的都行）。"""
+    if not isinstance(pieces, list) or not pieces:
+        raise HighlightError("还没有挑要剪的段")
+    if len(pieces) > EDIT_MAX_PIECES:
+        raise HighlightError(f"最多 {EDIT_MAX_PIECES} 段")
+    out = []
+    for p in pieces:
+        if (not isinstance(p, (list, tuple)) or len(p) != 2
+                or any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in p)):
+            raise HighlightError("段的起点、终点不对，刷新一下页面再试")
+        start, end = max(0.0, float(p[0])), min(float(duration), float(p[1]))
+        if end - start < EDIT_MIN_SECONDS:
+            raise HighlightError(f"每段至少 {EDIT_MIN_SECONDS:g} 秒（终点要在起点后面）")
+        out.append((start, end))
+    return out
+
+
+def _last_line(err):
+    lines = [x for x in (err or "").strip().splitlines() if x.strip()]
+    return lines[-1] if lines else ""
+
+
+def save_edit(ffmpeg, video, pieces, log=print):
+    """快速剪辑：从整局录像 video 按玩家挑的几段 pieces（check_pieces）直接切、按顺序接成一个视频，存在整局旁边
+    （"整局的名字_剪辑1"，已经有了就 2、3……）。返回它的路径；不成抛 HighlightError（切了一半的删掉，整局不动）。
+
+    每段开头挪到前面最近的关键帧（和剪高光一样，最多早 keyframe_seconds 秒；页面上画的、列的已经是挪过的）。
+    先一段一段切到临时文件夹（在月份文件夹里，名字以 _剪辑_ 开头：面板只列月份文件夹里的 MP4，看不到），再按 ffmpeg 的
+    拼接列表接起来（同一个录像切的，格式都一样，直接接）。几条音轨照样带上、照写名字。旁边的 .json：highlight.kind 是
+    EDIT_KIND（不自动删）、pieces（每段在整局里从第几秒到第几秒），事件换成剪辑里的位置。整局录像没有 .json（崩了拼回来的
+    "_未完成"）也能剪，只是没有事件。"""
+    video = Path(video).resolve()  # 接起来那一步在临时文件夹里运行：输出要写完整路径
+    if not ffmpeg:
+        raise HighlightError("找不到录像要用的组件（ffmpeg）")
+    meta = read_meta(video) or {}
+    if is_clip(meta):
+        raise HighlightError("只能从整局录像里剪")
+    duration = meta.get("duration") or recorder.mp4_duration(video)
+    if not duration:
+        raise HighlightError("读不出录像有多长")
+    asked = check_pieces(pieces, duration)
+    keys = keyframes(ffmpeg, video)
+    if not keys:
+        raise HighlightError("读不出录像里的关键帧")
+    cuts = [(snap(keys, start), end) for start, end in asked]
+    index = 1
+    while video.with_name(f"{video.stem}_{EDIT_NAME}{index}.mp4").exists():
+        index += 1
+    name = f"{EDIT_NAME}{index}"
+    out = video.with_name(f"{video.stem}_{name}.mp4")
+    part = out.with_name(out.name + ".part")
+    titles = recorder.track_title_args((meta.get("audio") or {}).get("tracks"))
+    lengths = []
+    with tempfile.TemporaryDirectory(prefix="_剪辑_", dir=video.parent, ignore_cleanup_errors=True) as tmp:
+        tmp = Path(tmp)
+        for i, (start, end) in enumerate(cuts, 1):
+            piece = tmp / f"{i:03d}.mp4"
+            # -copypriorss 0：起点以前的不要。不加时声音会多带约 1 秒"预读"（单独放时被编辑表藏起来，按拼接列表接的时候
+            # 当成了正常的声音：剪辑变长、后面声音晚 1 秒，2026-11-26 测出来的）；画面正好从关键帧切，前面本来就没有
+            code, err = recorder.run_ffmpeg(ffmpeg, [
+                "-y", "-loglevel", "error", "-ss", f"{start:.6f}", "-to", f"{end:.6f}",
+                "-i", str(video), "-map", "0", "-c", "copy", "-copypriorss", "0", "-f", "mp4", str(piece)], timeout=300)
+            if code != 0 or not piece.exists() or piece.stat().st_size == 0:
+                raise HighlightError(f"切第 {i} 段时 ffmpeg 出错（{_last_line(err) or code}）")
+            lengths.append(recorder.mp4_duration(piece) or end - start)
+        (tmp / "list.txt").write_text("ffconcat version 1.0\n" + "".join(f"file '{i:03d}.mp4'\n" for i in range(1, len(cuts) + 1)),
+                                      encoding="utf-8")
+        code, err = recorder.run_ffmpeg(ffmpeg, [
+            "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", "list.txt", "-map", "0", "-c", "copy", *titles,
+            "-movflags", "+faststart", "-f", "mp4", str(part)], timeout=600, cwd=tmp)
+        if code != 0 or not part.exists() or part.stat().st_size == 0:
+            part.unlink(missing_ok=True)
+            raise HighlightError(f"接成一个视频时 ffmpeg 出错（{_last_line(err) or code}）")
+    # 每段在剪辑里从第几秒开始：前面几段的长度加起来（拼接列表就是这样一段接一段排的）
+    offsets, at = [], 0.0
+    for length in lengths:
+        offsets.append(at)
+        at += length
+    events = sorted((e for e in meta.get("events") or [] if isinstance(e.get("t"), (int, float))), key=lambda e: e["t"])
+    mapped, gaps = [], []
+    for (start, end), offset in zip(cuts, offsets):
+        mapped += [{**e, "t": round(e["t"] - start + offset, 3)} for e in events if start <= e["t"] <= end]
+        gaps += [[round(max(a, start) - start + offset, 2), round(min(b, end) - start + offset, 2)]
+                 for a, b in meta.get("outages") or [] if b > start and a < end]
+    clip_meta = {
+        "version": 1, "video": out.name,
+        "highlight": {"of": video.name, "name": name, "kind": EDIT_KIND, "index": index,
+                      "from": round(cuts[0][0], 3), "to": round(cuts[-1][1], 3), "of_duration": duration,
+                      "pieces": [[round(s, 3), round(e, 3)] for s, e in cuts]},
+        "started": meta.get("started"), "ended": meta.get("ended"), "match": meta.get("match") or {},
+        "first_frame": meta.get("first_frame"), "events": mapped, "outages": gaps,
+        **{k: meta.get(k) for k in ("options", "encoder", "b_frames", "size", "bitrate", "audio")},
+    }
+    out.with_suffix(".json").write_text(json.dumps(clip_meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    part.replace(out)  # 先写好 .json 再改名：面板看到这个 MP4 时它已经是一个剪辑
+    clip_meta["duration"] = round(recorder.mp4_duration(out) or at, 2)
+    out.with_suffix(".json").write_text(json.dumps(clip_meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    recorder.make_thumbnail(ffmpeg, out, min(recorder.thumbnail_time(sorted(mapped, key=lambda e: e["t"]), clip_meta["duration"]),
+                                             max(0.0, clip_meta["duration"] - 0.1)))
+    log(f"录像：剪好了 {out.name}（{len(cuts)} 段，共 {clip_meta['duration']:.0f} 秒）")
+    return out
