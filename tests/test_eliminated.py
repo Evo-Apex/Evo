@@ -187,9 +187,10 @@ def main():
     zoom_text = "、".join(f"{f} 倍 {'✓' if ok else '✗'}" for f, ok in zip(ZOOMS, zoom_ok))
 
     # 其他截图只做外观检查（不跑识别）：一张都不该像淘汰画面。debug_crops、legends 里是小块，不是整屏；
+    # train 是训练小模型的数字小块（tools/train_data.py，6 万多张 34×35，2026-11-26 加：以前一张张看，白花约 3 分钟）；
     # eliminated 是 Evo 记录时按画面分的文件夹（screenshots.path_for），里面本来就是淘汰画面
     others = [p for p in SHOTS.rglob("*.png") if p.relative_to(SHOTS).as_posix() not in SAMPLES
-              and not {"debug_crops", "legends", "eliminated"} & set(p.relative_to(SHOTS).parts)]
+              and not {"debug_crops", "legends", "train", "eliminated"} & set(p.relative_to(SHOTS).parts)]
     alike = [p.name for p in others if detector.looks_like(load(p), "eliminated")]
 
     c, r = collect_checks(images), rule_checks()
