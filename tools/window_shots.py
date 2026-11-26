@@ -1,10 +1,11 @@
-"""README 和官网的窗口截图（开发工具）：python tools/window_shots.py
+"""README 的窗口截图（官网首页用到这几张时也一起换）（开发工具）：python tools/window_shots.py
 
 用演示数据截 Evo 窗口的总览、战绩、设置三页（深色主题、带 Evo 标题栏，1262×988，四角按 Windows 11 窗口的圆角透明），
 不碰正式数据：
 - docs/images/<页>.png：README 用
 - site/img/<页>-<内容摘要>.webp：官网首页用（site/ 在本机才有）。官网图片缓存一天，文件名带内容摘要，换了图就换名字，
-  打开官网马上看到新图；site/index.html 里的 <img> 跟着改，旧图删掉。改完要上传官网才生效（见 docs/底座.md）
+  打开官网马上看到新图；site/index.html 里的 <img> 跟着改，旧图删掉。改完要上传官网才生效（见 docs/底座.md）。
+  2026-11-26 的新版首页不放窗口截图（功能配图是 CSS 画的示意图）：site/index.html 里没有这几张图时跳过这一步，只写 README 的
 
 做法和宣传图一样（tools/feature_cards.py）：临时文件夹里生成演示战绩（游戏名是编的 EvoPlayer）、打开面板、
 Edge 无界面模式截图；关掉入场动画（走势图从左往右展开等），截到的是播完时的样子。
@@ -38,6 +39,14 @@ def corner_mask():
     mask = Image.new("L", (W * s, H * s), 0)
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, W * s - 1, H * s - 1), radius=RADIUS * s, fill=255)
     return mask.resize((W, H), Image.LANCZOS)
+
+
+def site_uses_shots():
+    """官网首页现在用不用这几张窗口截图（没有 site/ 文件夹，或者首页里一张都没引用，就是不用）。"""
+    if not (SITE_IMG.is_dir() and INDEX.is_file()):
+        return False
+    html = INDEX.read_bytes().decode("utf-8")
+    return re.search(rf'src="img/({"|".join(PAGES)})(-[^"/]*)?\.webp"', html) is not None
 
 
 def update_site(files):
@@ -77,6 +86,7 @@ def main():
     db, _ = fc.make_demo_data()
     base, server = fc.serve_panel(db)
     mask = corner_mask()
+    for_site = site_uses_shots()
     site_files = {}
     try:
         for name, path in PAGES.items():
@@ -88,7 +98,7 @@ def main():
             img.putalpha(mask)
             img.save(README_DIR / f"{name}.png", optimize=True)
             print(f"已写 docs/images/{name}.png")
-            if SITE_IMG.is_dir():
+            if for_site:
                 webp = tmp / f"{name}.webp"
                 img.save(webp, quality=85, method=6)
                 file = f"{name}-{hashlib.sha256(webp.read_bytes()).hexdigest()[:8]}.webp"
@@ -102,7 +112,7 @@ def main():
         update_site(site_files)
         print("site/index.html 已改好；上传官网才生效")
     else:
-        print("没有 site/ 文件夹，跳过官网的截图")
+        print("没有 site/ 文件夹，或者官网首页没用这几张截图：跳过官网的截图")
 
 
 if __name__ == "__main__":
