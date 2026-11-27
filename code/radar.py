@@ -104,10 +104,11 @@ def _side(i):
 
 
 def view(summary, rows, your_tier):
-    """画图要用的。rows：页面上选的范围里的局（选中的账号）；your_tier：最近一次读到的段位（没有是 None）。"""
+    """画图要用的。rows：页面上选的范围里的局（选中的账号）；your_tier：最近一次读到的段位（没有是 None）。
+    有排位局就用排位比（六维图是排位的指标）；一局排位都没有时用匹配的（外卡等轮换玩法不单独比，见 modes.py）。"""
     ranked = [r for r in rows if r["mode"] == "ranked"]
     mode = "ranked" if ranked or not rows else "pubs"
-    mine = ranked if mode == "ranked" else rows
+    mine = ranked if mode == "ranked" else [r for r in rows if r["mode"] == "pubs"] or rows
     group = global_stats.TIER_GROUP.get(your_tier) if mode == "ranked" else None
     slices = summary.get("slices") or {}
     part = slices.get(f"all.{mode}.{group}") if group else None

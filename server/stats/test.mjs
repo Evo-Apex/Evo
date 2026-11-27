@@ -75,7 +75,7 @@ function randomGame(day = pick(DAYS)) {
   const num = (list) => pick(list);
   const w = rand();
   return {
-    k: hex(20), day, version: "0.6.1", mode: pick(["ranked", "ranked", "pubs", null, "other"]), map: null,
+    k: hex(20), day, version: "0.6.1", mode: pick(["ranked", "ranked", "pubs", null, "other", "wildcard"]), map: null,
     legend: pick(LEGENDS), mates: [pick(LEGENDS), pick(LEGENDS)],
     mate_stats: [0, 1].map(() => ({ kills: num([null, 0, 2, 5]), assists: num([null, 1]), knockdowns: null, damage: num([null, 300, 1500]) })),
     placement: num([null, 1, 1, 2, 4, 5, 6, 13, 20]), kills: num([null, 0, 1, 3, 9]), assists: num([null, 0, 2]),
@@ -158,6 +158,55 @@ await cron(env);
 check(summaryOf(db) === (await reference()), "第二天 0 点：增量更新以后出的汇总和从头建的一字不差");
 check(!db.rows("SELECT 1 FROM summary_days WHERE day NOT IN (SELECT DISTINCT coalesce(day, '') FROM matches)").length,
       "没有对不上 matches 的日子");
+
+const wildBody = JSON.parse(await (await worker.fetch(new Request("https://stats.test/v1/summary"), env, {})).text());
+const wild = wildBody.slices;
+const wildGames = [...games.values()].filter(([, g]) => g.mode === "wildcard");
+const unknownGames = [...games.values()].filter(([, g]) => g.mode === null || g.mode === undefined);
+check(wildGames.length > 0, `造的局里有外卡（${wildGames.length} 局）`);
+check(wild["all.wildcard.all"] && typeof wild["all.wildcard.all"].matches === "number", "汇总里有一份 all.wildcard.all");
+check(!("all.wildcard.diamond" in wild) && !("all.wildcard.low" in wild), "外卡不分段位（只有 all.wildcard.all）");
+check(unknownGames.length > 0, `造的局里有没认出模式的局（${unknownGames.length} 局）`);
+check(wild["all.unknown.all"] && typeof wild["all.unknown.all"].matches === "number", "汇总里有一份 all.unknown.all");
+check(wild["all.unknown.all"].matches === unknownGames.length,
+      `未知那一份的局数就是没认出模式的局数（${wild["all.unknown.all"].matches} / ${unknownGames.length}）`);
+const pubsMatches = wild["all.pubs.all"].matches;
+const rankedMatches = wild["all.ranked.all"].matches;
+const wildcardMatches = wild["all.wildcard.all"].matches;
+const unknownMatches = wild["all.unknown.all"].matches;
+const totalMatches = [...games.values()].length;
+check(pubsMatches + rankedMatches + wildcardMatches + unknownMatches === totalMatches,
+      `四份加起来等于总局数（${rankedMatches} + ${pubsMatches} + ${wildcardMatches} + ${unknownMatches} = ${totalMatches}）`);
+check(wildcardMatches === wildGames.length, `外卡那一份的局数就是外卡的局数（${wildcardMatches}）`);
+const pubsOnly = [...games.values()].filter(([, g]) => g.mode !== null && g.mode !== undefined
+  && g.mode !== "ranked" && g.mode !== "wildcard");
+check(pubsMatches === pubsOnly.length, `匹配那一份只剩认出是匹配 / 其他模式的局（${pubsMatches} / ${pubsOnly.length}）`);
+const allSlice = wild["all.all.all"];
+const brSlice = wild["all.br.all"];
+// 按原始模式核对大逃杀，公开匹配分组仍包含其他模式。
+const isBr = (g) => ["ranked", "pubs", "wildcard"].includes(g.mode);
+const brGames = [...games.values()].filter(([, g]) => isBr(g));
+const otherGames = pubsOnly.filter(([, g]) => g.mode !== "pubs");
+check(allSlice && typeof allSlice.matches === "number", "汇总里有一份 all.all.all（全部模式）");
+check(brSlice && typeof brSlice.matches === "number", "汇总里有一份 all.br.all（大逃杀）");
+check(allSlice.matches === totalMatches, `全部模式 = 所有局（${allSlice.matches} / ${totalMatches}）`);
+check(brSlice.matches === brGames.length, `大逃杀 = 排位 + 匹配 + 外卡（${brSlice.matches} / ${brGames.length}）`);
+check(otherGames.length > 0 && allSlice.matches === brSlice.matches + unknownMatches + otherGames.length,
+      "全部模式 = 大逃杀 + 未知 + 其他");
+check(!("all.all.diamond" in wild) && !("all.br.low" in wild), "全部模式、大逃杀不分段位");
+// 近 7 天、本赛季这两档也要有 all / br（页面上的范围按钮会用到），局数按各自的起始日期算
+const inFrom = ([, g], from) => Boolean(g.day) && g.day >= from;
+const recent = [...games.values()].filter((x) => inFrom(x, wildBody.recent_from));
+const season = [...games.values()].filter((x) => inFrom(x, wildBody.season_from));
+check(wild["7d.all.all"]?.matches === recent.length,
+      `近 7 天的全部模式 = ${wildBody.recent_from} 起的局（${wild["7d.all.all"]?.matches} / ${recent.length}）`);
+check(wild["7d.br.all"]?.matches === recent.filter((x) => isBr(x[1])).length,
+      `近 7 天的大逃杀 = ${wildBody.recent_from} 起的大逃杀局（${wild["7d.br.all"]?.matches} / ${recent.filter((x) => isBr(x[1])).length}）`);
+check(wild["season.all.all"]?.matches === season.length,
+      `本赛季的全部模式 = ${wildBody.season_from} 起的局（${wild["season.all.all"]?.matches} / ${season.length}）`);
+check(wild["season.br.all"]?.matches === season.filter((x) => isBr(x[1])).length,
+      `本赛季的大逃杀 = ${wildBody.season_from} 起的大逃杀局（${wild["season.br.all"]?.matches} / ${season.filter((x) => isBr(x[1])).length}）`);
+check(!("7d.all.diamond" in wild) && !("season.br.low" in wild), "近 7 天、本赛季的 all / br 也不分段位");
 
 // ---------- /v1/delete：只重建这个编号打过的那几天，中间结果里不留它 ----------
 const gone = ids[3];

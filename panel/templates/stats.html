@@ -39,6 +39,15 @@
     <span class="label">统计范围</span>
     {{ range_seg('stats', part=part) }}
   </div>
+  <div class="filter">
+    <span class="label">模式</span>
+    <div class="seg" role="group" aria-label="模式">
+      <a href="{{ url_for('stats', part=part, range=range_arg) }}" class="{{ 'on' if not mode_key }}">全部模式</a>
+      {% for key, name in modes.items() %}
+      <a href="{{ url_for('stats', part=part, range=range_arg, mode=key) }}" class="{{ 'on' if mode_key == key }}"{% if mode_titles[key] %} title="{{ mode_titles[key] }}"{% endif %}>{{ name }}</a>
+      {% endfor %}
+    </div>
+  </div>
 </div>
 
 {% if not in_range_count %}

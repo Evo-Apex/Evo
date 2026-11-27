@@ -20,7 +20,7 @@ FIELDS = (("placement", "名次"), ("kills", "击杀"), ("assists", "助攻"), (
           ("rp_delta", "RP 变化"))  # 给测试员确认的几项（2026-11-02 用户定的）
 INFO = ("match_id", "ended_at", "mode", "map", "legend", "needs_review", "review_note", "rp_source", "edited",
         "app_version", "survival_time", "rank_tier", "rank_division", "rank_progress", "evidence_path")
-MODE_LABELS = {"ranked": "排位", "pubs": "匹配", "other": "其他"}  # 同 post_match.MODE_LABELS（这里不 import 它）
+MODE_LABELS = {"ranked": "排位", "pubs": "匹配", "wildcard": "外卡", "other": "其他"}  # 同 post_match.MODE_LABELS（这里不 import 它）
 LATE_SOURCES = {"大厅校准"}  # 打完很久才补上的读数（回大厅时校准 RP）：不算这一局什么时候打完（见 evo_matches）
 SEASON_COLUMNS = ("stat_id", "season", "kind", "season_name", "games", "wins", "top5", "damage", "damage_max",
                   "damage_avg", "kills", "deaths", "kd", "kills_max", "knockdowns", "assists", "win_streak", "revives",

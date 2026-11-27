@@ -4,7 +4,7 @@
 
 截图放在 captures/界面适配/2026-11-26（不在仓库里：有别的玩家的名字；找不到就跳过），文件名写着比例、语言和画面
 （"16比9繁中排位击倒.png"），旁边的 清单.csv 是网友那份表格导出的。这次看出来、改了的：
-- 外卡模式的开局横幅"外卡"（简体、繁体一样）以前一张都认不出：加了 screens.json 的 match_start_wildcard，模式记"其他"
+- 外卡开局横幅的简体、繁体字形相同。识别后将模式记为 wildcard。
 - 繁体中间那一行"擊倒"以前没有参照图，击倒、助攻击倒都认不出：加了 config/templates/zh-TW/hud/knock.png（"助攻"和简体一样）
 - 繁体右上角的剩余小队数：繁体"剩餘小隊數"短一个字、整条往右挪，以前只框到两位数的前一位（"16"读成"1"）
 另外每一张都按文件名对一遍认出的画面，简体 16:9、16:10 的击倒、助攻击倒也在里面（新分辨率的位置照旧对）。
@@ -56,8 +56,8 @@ def wildcard_checks(engine):
         r = read_match_start(engine, load(FOLDER / name), load_config("match_start.json", lang))
         got[name] = (r["mode"], r["map"])
     layout.set_game_aspect(None)
-    return {f"外卡的开局横幅：模式记'其他'、地图风暴点（{list(got.values())}）":
-            all(v == ("other", "风暴点") for v in got.values())}
+    return {f"外卡开局横幅读到独立模式和风暴点（{list(got.values())}）":
+            all(v == ("wildcard", "风暴点") for v in got.values())}
 
 
 def knock_checks(engine):

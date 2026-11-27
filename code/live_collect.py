@@ -53,6 +53,7 @@ import calibration
 import capture
 import evo_usage
 import match_recording
+import modes
 import game_lang
 import ranks
 import screenshots
@@ -71,7 +72,8 @@ from player_name import PlayerNameReader
 from post_match import SAME_MATCH_SECONDS, SOURCE_CHAMPION, SOURCE_SUMMARY, PostMatch
 from process_info import memory_mb, set_full_speed, set_low_priority
 from screens import GameScreens
-from summary_page import KEY_FIELDS, is_champion, read_summary, show, summary_problems, summary_readings, summary_to_match
+from summary_page import (KEY_FIELDS, detect_mode, is_champion, read_summary, show, skip_fields, summary_problems,
+                          summary_readings, summary_to_match)
 from teammates import describe, read_teammates
 from xp_page import numbers_moved, numbers_snapshot, read_rp, read_xp
 
@@ -131,6 +133,7 @@ class SummaryWatcher:
         self.last_saved_results = None  # 这一局每一项的读数（补全时，这次没读到的项沿用这里的）
         self.last_saved_image = None  # 这一局总结页截图的位置（补全时换成新读到的这一张，位置和名字不变）
         self.last_saved_partial = False  # 这一局存下时读数有问题（待确认），很快又读到同一张时要补全
+        self.last_saved_mode = None  # 这一局存下时认出的轮换玩法（补全时它的末几项照旧不写，见 modes.is_rotational）
         self.later = []  # 存下了、还没读队友和名字的总结页（编号、截图、时间、每一项上次读的那一小块、要不要看"捍卫者"）
 
     @property
@@ -170,7 +173,9 @@ class SummaryWatcher:
         champion = (not complete and visit["core_stable"] and values["placement"] is None and "banner" in self.cfg
                     and is_champion(self.engine, frame, self.cfg, visit["memo"]))
         if (complete and values == visit["last"]) or champion:  # 关键项都读到了，且连续两次相同
-            self._record(results, problems, frame, now, champion=champion)
+            # 轮换玩法只在要存下时认（两行标签要识别两次）：认出来模式记成它，配置里的末几项不写进普通字段
+            self._record(results, problems, frame, now, champion=champion,
+                         summary_mode=detect_mode(self.engine, frame, self.cfg, visit["memo"]))
             self.done = True
             if self.on_read is not None:
                 self.on_read(now)
@@ -191,7 +196,10 @@ class SummaryWatcher:
         while self.later:
             job = self.later.pop(0)
             frame, when = job["frame"], job["when"]
-            mates = read_teammates(self.engine, frame, self.cfg)  # 读不准的项留空，不因为队友标待确认
+            row = storage.get_match(self.conn, job["match_id"])
+            if row is None:
+                continue
+            mates = read_teammates(self.engine, frame, self.cfg, row["mode"])  # 读不准的项留空，不因为队友标待确认
             for mate in mates:
                 self.log(f"           队友 {describe(mate)}")
             name = None
@@ -202,11 +210,17 @@ class SummaryWatcher:
             champion = job["banner"] and is_champion(self.engine, frame, self.cfg, job["memo"])
             self.post.on_summary_later(job["match_id"], when, mates, name, champion)
 
-    def _record(self, results, problems, frame, when, note=None, champion=False):
+    def _record(self, results, problems, frame, when, note=None, champion=False, summary_mode=None):
         """把一次总结页的读数存进数据库（只是自己的数据；队友、名字等 catch_up 再读）。如果和上一局是同一局（来回切页），就不重复存。
-        champion：已经看过顶部，是"捍卫者"（冠军的总结页没有名次，存之前要看）。"""
+        champion：已经看过顶部，是"捍卫者"（冠军的总结页没有名次，存之前要看）。
+        summary_mode：总结页最后两行认出的轮换玩法（见 summary_page.detect_mode）。
+        这一局是轮换玩法（总结页标签或开局横幅认出）：模式记成它，配置里不写进普通字段的项（如外卡的
+        最后两行）留空，队友那些项也不读（见 teammates.read_teammates）。"""
         values = {name: r["value"] for name, r in results.items()}
-        if self._upgrade_if_same_page(results, frame, when):
+        # 总结页标签漏读时，沿用开局横幅读到的轮换玩法，按该模式处理专属字段。
+        banner_mode = self.post.info.get("mode")
+        mode = summary_mode or (banner_mode if modes.is_rotational(banner_mode) else None)
+        if self._upgrade_if_same_page(results, frame, when, summary_mode):
             if champion:
                 self.post.on_champion(when, SOURCE_SUMMARY)
             return
@@ -221,19 +235,24 @@ class SummaryWatcher:
         image_path = screenshots.path_for(self.run_dir, name)
         image_path.parent.mkdir(parents=True, exist_ok=True)
         save_png(image_path, frame)
-        match = summary_to_match(results, problems, f"{when:%Y-%m-%d %H:%M:%S}", image_path)
+        skip = skip_fields(self.cfg, mode)
+        match = summary_to_match(results, problems, f"{when:%Y-%m-%d %H:%M:%S}", image_path, mode, skip)
         match_id = storage.insert_match(self.conn, match)
-        readings, scores = summary_readings(results)
+        readings, scores = summary_readings(results, skip)
         storage.save_readings(self.conn, match_id, SOURCE_SUMMARY, readings, f"{when:%Y-%m-%d %H:%M:%S}", scores)
         self.saved += 1
         self.last_saved, self.last_saved_results, self.last_saved_image = values, results, image_path
         self.last_saved_id, self.last_saved_when = match_id, when
         self.last_saved_partial = bool(problems)
+        self.last_saved_mode = mode
         self.log(f"[{when:%H:%M:%S}] 第 {self.saved} 局（编号 {match_id}）：第 {show(values['placement'])} 名，"
-                 f"击杀/助攻/击倒 {show(values['kda'])}，伤害 {show(values['damage'])}")
+                 f"击杀/助攻/击倒 {show(values['kda'])}，伤害 {show(values['damage'])}"
+                 + (f"（{modes.label(mode)}）" if mode else ""))
         for p in problems:
             self.log(f"           ⚠ {p}")
         self.post.on_summary_saved(match_id, values, when)
+        if summary_mode:  # 总结页两行标签认出的；开局横幅认出的模式 insert 时已经写了
+            self.post.on_summary_mode(match_id, summary_mode, when)
         if champion:
             self.post.on_champion(when, SOURCE_SUMMARY)
         self.later.append({"match_id": match_id, "frame": frame.copy(), "when": when,
@@ -247,14 +266,17 @@ class SummaryWatcher:
         return (self.last_saved_id is not None and self.post.match_id == self.last_saved_id
                 and (when - self.last_saved_when).total_seconds() <= SAME_MATCH_SECONDS)
 
-    def _upgrade_if_same_page(self, results, frame, when):
+    def _upgrade_if_same_page(self, results, frame, when, summary_mode=None):
         """上一次没读全就存下了（待确认），这一局还没收尾、很快又读到同一张总结页：把新读到的项补进那一局，不新插一局。
         返回 True：这次读数处理完了（有新内容就补上，没有就什么都不动）；False：不是这种情况，照常往下走。
         名次、小队总击杀、急救、重生等都可能晚 1–2 秒才画出来，第一次可能是空的，所以不要求"两边都读到且相同"，
         只要没有反证：两次都读到伤害或生存时间而且不一样，那是另一张总结页。
         这次没读到的项保留上次的（第二次可能停得更短、读得更少）。截图换成这一张，位置和名字不变（名字要对得上
-        screenshots.SUMMARY_NAME，总结页截图才会一直留着）；结束时间不变，模式、地图等第一次存下时已经写好了，只更新总结页那几项。"""
-        if not self.last_saved_partial or not self._same_round_recent(when):
+        screenshots.SUMMARY_NAME，总结页截图才会一直留着）；结束时间不变，模式、地图等第一次存下时已经写好了，只更新总结页那几项。
+        summary_mode：这一次也认出是某个轮换玩法（第一次没认出来时补上模式，见 post_match.on_summary_mode）。"""
+        mode = summary_mode or self.last_saved_mode
+        mode_changed = mode != self.last_saved_mode
+        if not self._same_round_recent(when) or not (self.last_saved_partial or mode_changed):
             return False
         for key in ("damage", "survival_time"):
             old, new = self.last_saved[key], results[key]["value"]
@@ -262,31 +284,48 @@ class SummaryWatcher:
                 return False
         merged = {name: r if r["value"] is not None else self.last_saved_results[name] for name, r in results.items()}
         values = {name: r["value"] for name, r in merged.items()}
-        if values == self.last_saved:
+        if not self.last_saved_partial and not same_match(
+                {name: r["value"] for name, r in results.items()}, self.last_saved):
+            return False
+        numbers_changed = self.last_saved_partial and values != self.last_saved
+        if not numbers_changed and not mode_changed:
             self.log(f"[{when:%H:%M:%S}] 回到了同一局的总结页，不重复保存")
             return True
-        problems = summary_problems(merged)
-        save_png(self.last_saved_image, frame)
-        fields = summary_to_match(merged, problems, None, self.last_saved_image)
-        del fields["ended_at"]
+        skip = skip_fields(self.cfg, mode)
+        if numbers_changed:
+            problems = summary_problems(merged)
+            save_png(self.last_saved_image, frame)
+            fields = summary_to_match(merged, problems, None, self.last_saved_image, mode, skip)
+            del fields["ended_at"]
+            fields.pop("mode", None)
+        else:
+            merged, values = self.last_saved_results, self.last_saved
+            fields = dict.fromkeys(skip)
+        if mode_changed:
+            fields["mode"] = mode
         storage.update_match(self.conn, self.last_saved_id, fields)
-        readings, scores = summary_readings(merged)
+        readings, scores = summary_readings(merged, skip)
         storage.save_readings(self.conn, self.last_saved_id, SOURCE_SUMMARY, readings,
                               f"{when:%Y-%m-%d %H:%M:%S}", scores)
         self.last_saved, self.last_saved_results, self.last_saved_when = values, merged, when
-        self.last_saved_partial = bool(problems)
-        self.log(f"[{when:%H:%M:%S}] 又读到同一局的总结页（上次没读全），补全编号 {self.last_saved_id}："
-                 f"第 {show(values['placement'])} 名")
-        for p in problems:
-            self.log(f"           ⚠ {p}")
-        self.post.on_summary_upgraded(self.last_saved_id, values, when)
+        self.last_saved_mode = mode
+        if mode_changed:
+            self.log(f"[{when:%H:%M:%S}] 总结页：补认{modes.label(mode)}（编号 {self.last_saved_id}）")
+        if numbers_changed:
+            self.last_saved_partial = bool(problems)
+            self.log(f"[{when:%H:%M:%S}] 又读到同一局的总结页（上次没读全），补全编号 {self.last_saved_id}："
+                     f"第 {show(values['placement'])} 名")
+            for p in problems:
+                self.log(f"           ⚠ {p}")
+            self.post.on_summary_upgraded(self.last_saved_id, values, when)
         return True
 
     def _record_best(self, note):
         """数字没等到读全：用这次停留里读得最全的一次存下（会标记待确认）。
         如果只是名次还没滑进来、其他数字已经连续两次一致，就只标"名次没读到"（经验值页、淘汰画面可以补上），不加 note。"""
         _, results, problems, frame, when = self.visit["best"]
-        self._record(results, problems, frame, when, None if self.visit["core_stable"] else note)
+        self._record(results, problems, frame, when, None if self.visit["core_stable"] else note,
+                     summary_mode=detect_mode(self.engine, frame, self.cfg, self.visit["memo"]))
 
 
 class SoundCues:
@@ -415,7 +454,7 @@ class ScreenWatcher:
         if screen != self.current:
             self.leave()
             if screen in ("match_start", "lobby"):
-                self.post.finish()
+                self.post.finish(returned_to_lobby=screen == "lobby")
             if screen == "champion":
                 self.post.on_champion(now, SOURCE_CHAMPION)
             self.enter_path = None

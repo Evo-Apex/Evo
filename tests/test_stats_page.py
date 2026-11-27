@@ -48,7 +48,11 @@ def new_db(name):
     games += [{"mode": "pubs", "placement": 1, "kills": 5, "damage": 1500, "legend": "恶灵"},  # 匹配：没有 RP
               {"mode": "pubs", "placement": 3, "kills": None, "damage": 900, "legend": "恶灵"},  # 击杀没读到
               {"mode": "pubs", "placement": None, "kills": 2, "damage": 300, "legend": "恶灵"},  # 名次没读到
-              {"mode": "ranked", "placement": 8, "kills": 1, "damage": 200, "rp_delta": -20, "legend": None}]
+              {"mode": "ranked", "placement": 8, "kills": 1, "damage": 200, "rp_delta": -20, "legend": None},
+              # 给外卡和未知模式使用其他传奇，避免影响恶灵的场均击杀断言。
+              {"mode": "wildcard", "placement": 2, "kills": 4, "damage": 1200, "legend": "罗芭"},
+              {"mode": "wildcard", "placement": 6, "kills": 1, "damage": 600, "legend": "寻血猎犬"},
+              {"mode": None, "placement": 11, "kills": 0, "damage": 150, "legend": "命脉"}]
     ids = []
     for i, game in enumerate(games):
         ids.append(storage.insert_match(conn, {"player_name": "ImperialHzd",
@@ -201,6 +205,23 @@ def curve_checks(everything, cards, recent_mates, ref):
     }
 
 
+def mode_parity_checks(path):
+    """面板的内存筛选（panel_app.mode_rows）和战绩页的 SQL 筛选（storage._where）对每一档数出来的局数一样。
+    特意放一局认不出的模式值（历史数据里偶尔有）：两个都要把它算进"匹配"，不能一个算一个不算。"""
+    conn = storage.connect(path)
+    storage.insert_match(conn, {"ended_at": "2026-11-24 09:00:00", "player_name": "ImperialHzd", "mode": "weird",
+                                "legend": "恶灵", "placement": 3})
+    rows = storage.all_matches(conn)
+    same = True
+    for key in (None, "br", "ranked", "pubs", "wildcard", "unknown"):
+        _got, sql_total = storage.query_matches(conn, key, limit=1)
+        same = same and sql_total == len(panel_app.mode_rows(rows, key))
+    conn.execute("DELETE FROM matches WHERE mode = 'weird'")
+    conn.commit()
+    conn.close()
+    return {"内存筛选和战绩页的 SQL 筛选逐档一样（含认不出的模式值算进匹配）": same}
+
+
 def main():
     print("数据页：常一起玩的队友、传奇表现、传奇组合、和队友一起的 RP 走势")
     path = new_db("stats")
@@ -217,6 +238,23 @@ def main():
     everything = "".join(client.get(f"/stats/{part}?range=all").get_data(as_text=True) for part in ("mates", "legends"))
     recent_mates = client.get("/stats/mates?range=30").get_data(as_text=True)
     overview_all = client.get("/?range=all").get_data(as_text=True)
+    stats_wild = client.get("/stats?range=all&mode=wildcard").get_data(as_text=True)
+    stats_br = client.get("/stats?range=all&mode=br").get_data(as_text=True)
+    stats_unknown = client.get("/stats?range=all&mode=unknown").get_data(as_text=True)
+    stats_pubs = client.get("/stats?range=all&mode=pubs").get_data(as_text=True)
+    overview_wild = client.get("/?range=all&mode=wildcard").get_data(as_text=True)
+    # 战绩页也用同一套模式筛选（大逃杀 / 未知），SQL 里的筛选在 storage._where。
+    # 每页 20 局、这个夹具 48 局，所以看"共 N 局"那个总数，不看当前页的行数
+    matches_total = {}
+    for key in (None, "br", "ranked", "pubs", "wildcard", "unknown"):
+        html = client.get("/matches?range=all" + (f"&mode={key}" if key else "")).get_data(as_text=True)
+        found = re.search(r"共\s*(\d+)\s*局", html) or re.search(r'data-total="(\d+)"', html)
+        matches_total[key] = int(found[1]) if found else len(re.findall(r'<tr id="m\d+"', html))
+    with panel_app.app.test_request_context("/"):
+        all_rows = storage.all_matches(panel_app.db())
+        mode_counts = {key: len(panel_app.mode_rows(all_rows, key))
+                       for key in (None, "br", "ranked", "pubs", "wildcard", "unknown")}
+        br_order = panel_app.mode_scope(all_rows, "30", "wildcard")[0]  # 近 30 局先筛模式再取
     unknown = client.get("/stats/x").status_code
     nav = re.findall(r'<nav class="nav".*?</nav>', recent, re.S)[0]
 
@@ -303,7 +341,7 @@ def main():
             "所有对局 参照", f"{ref['games']} 局", f"{ref['wins']} 次 {ref['win_rate']}", ref["avg_place"], ref["avg_rp"], ""]
                                          and stat_values["场均名次"] == ref["avg_place"]
                                          and f">{stat_values['场均伤害']}<" in overview_all,
-        "传奇表现：每个传奇都列出（不合并成\"其他\"），按局数从多到少": [r[0] for r in legends] == ["罗芭", "恶灵"],
+        "传奇表现：每个传奇都列出（不合并成\"其他\"），按局数从多到少": [r[0] for r in legends] == ["罗芭", "恶灵", "命脉", "寻血猎犬"],
         "没认出传奇的局写明几局": "另有 1 局没认出传奇" in everything,
         "读不到写\"—\"不写 0：恶灵都是匹配，没有 RP": len(legends) > 1 and legends[1][8] == "—",
         "恶灵的场均击杀不算没读到的局（5、2 → 3.5）": len(legends) > 1 and legends[1][6] == "3.5",
@@ -312,6 +350,27 @@ def main():
         "\"全部账号\"时算上小号的局（小白 5 局）": (cells(all_accounts, "小白") or [None, None])[1] == "5 局",
         "传奇组合：没有认出全队传奇的局时写明": "还没有认出全队传奇的对局" in lonely,
         "没有可列的队友时也没有 RP 走势的大图": "h-curves" not in lonely_mates,
+        "数据页保留全部模式、大逃杀、排位、匹配、外卡、未知筛选":
+            all(f'>{name}</a>' in stats_br for name in ("全部模式", "大逃杀", "排位", "匹配", "外卡", "未知")),
+        "总览页没有模式筛选，旧的 mode 参数仍按所选范围汇总":
+            'aria-label="模式"' not in overview_all and 'aria-label="模式"' not in overview_wild
+            and "RP 走势" in overview_wild and "radar" in overview_wild.lower()
+            and 'data-url="/share/overview.svg?range=all"' in overview_wild,
+        "按模式筛：大逃杀 = 排位 + 匹配 + 外卡；未知只算没认出模式的局":
+            mode_counts["br"] == mode_counts["ranked"] + mode_counts["pubs"] + mode_counts["wildcard"]
+            and mode_counts["br"] + mode_counts["unknown"] == mode_counts[None] and mode_counts["unknown"] == 1,
+        "外卡筛选：只列出外卡的局（罗芭、寻血猎犬各 1 局；局数一样时场均名次好的在前）":
+            [r[0] for r in peek_rows(stats_wild, "h-legends")] == ["寻血猎犬", "罗芭"],
+        "未知筛选：只列出没认出模式的局（命脉 1 局）":
+            [r[0] for r in peek_rows(stats_unknown, "h-legends")] == ["命脉"],
+        "匹配筛选里没有外卡和未知的局": [r[0] for r in peek_rows(stats_pubs, "h-legends")] == ["恶灵"],
+        "近 30 局先筛模式再取（外卡两局都在近 30 局里）": len(br_order) == mode_counts["wildcard"],
+        "总览页保留 RP 走势和六维图": "RP 走势" in overview_all and "radar" in overview_all.lower(),
+        "战绩页也是同一套模式筛选：大逃杀 = 排位 + 匹配 + 外卡，未知单独一档":
+            matches_total["br"] == matches_total["ranked"] + matches_total["pubs"] + matches_total["wildcard"]
+            and matches_total["br"] + matches_total["unknown"] == matches_total[None]
+            and matches_total["unknown"] == 1 and matches_total["wildcard"] == 2,
+        **mode_parity_checks(path),
         **combos,
         **curve_checks(everything, cards, recent_mates, ref),
     }

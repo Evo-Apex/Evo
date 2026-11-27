@@ -231,10 +231,10 @@ async function remove(body, env) {
 }
 
 // ---------- 全体玩家的汇总（GET /v1/summary）----------
-// 范围（全部 / 近 7 天 / 本赛季）× 模式（排位 / 匹配）× 段位（排位才分：全部 / 白金及以下 / 钻石 / 大师以上），共 15 份，
-// 键是 "范围.模式.段位"，如 "all.ranked.all"、"7d.ranked.diamond"、"season.pubs.all"。
-// "匹配"是不是排位的局：匹配、其他模式，和没认出模式的局（简体中文的匹配开局画面还没加进识别规则，
-// 匹配局的模式都是空的；排位局有段位分数，几乎都认得出）。每份里：
+// 范围（全部 / 近 7 天 / 本赛季）× 模式（排位 / 匹配 / 外卡 / 未知）× 段位（排位才分：全部 / 白金及以下 / 钻石 / 大师以上），
+// 键是 "范围.模式.段位"，如 "all.ranked.all"、"7d.ranked.diamond"、"season.pubs.all"、"all.wildcard.all"、"all.unknown.all"。
+// 模式口径与客户端 code/modes.py 一致：ranked 是排位，wildcard 是外卡，pubs 包含匹配和其他模式，
+// unknown 单独统计未识别模式。各游戏语言识别到的外卡共用 wildcard。每份汇总包含以下字段：
 // - players、matches：多少个编号、多少局
 // - legends：每个传奇一行，按出场次数从多到少。全队三个人都算（队友多半是随机匹配到的；名次全队一样）：
 //   n 出场次数、pick 选用率（n ÷ 所有出场次数）、win 胜率、top5 前五率、place 场均名次、kills 场均击杀、
@@ -265,12 +265,13 @@ async function remove(body, env) {
 // 每天还挑一天从 matches 从头重算、和存着的比（verifyDay），对不上就换成重算的、记在状态里：万一增量算漏了什么，也会自己纠正。
 // 第一次、DAYS_VERSION 改了时从头重建（rebuildDays，每小时建 REBUILD_DAYS 天，建完以前照旧给上一次的汇总）；
 // /v1/delete 删了数据时只重建这个编号打过的那几天
+// 汇总格式版本须与客户端 global_stats.FORMAT 一致。
 const SUMMARY_NAME = "v1";
 // 定时任务（wrangler.toml 的 crons 里也写着；另一个 "* * * * *" 是地图轮换）：每小时第 7 分钟一次。汇总每个 UTC 日子只出一次
 const SUMMARY_CRON = "7 * * * *";
 const DAYS_STATE = "v1_days";  // summary 表里记增量算到哪了的那一行（body 见 refreshSummary）
 const DAYS_DIRTY = "v1_dirty";  // /v1/delete 删过数据：body 是要重建的日子（JSON 数组），下一个小时重建
-const DAYS_VERSION = 1;  // summary_pairs、summary_days 的格式或者算法改了就加 1：部署以后下一个小时从头重建
+const DAYS_VERSION = 3;  // 重新汇总已有战绩，保留其他模式的大逃杀归属
 const OVERLAP = 10 * 60 * 1000;  // 每次往前多读 10 分钟收到的局，和正在写进来的请求错开（同一局再算一遍，结果不变）
 // 一次最多读这么多新收到的局（Evo 出新版本、大家重发旧局时会多），剩下的下一个小时接着读，读完才出汇总。
 // 一个请求的局收到时间都一样（最多 100 局），所以每次都能往前读
@@ -309,11 +310,22 @@ function ratio(part, whole, digits) {
   return whole ? round(part / whole, digits) : null;
 }
 
-// 这一行（某个模式 m、段位组 g、是不是近 7 天、是不是本赛季）算进哪几份汇总
+// 这一行（某个模式 m、段位组 g、是不是近 7 天、是不是本赛季）算进哪几份汇总。
+// m 是用于每日汇总的模式，other 单独保留到最后合并。
+// - all：每局都算一次（含历史未知模式），段位组不细分
+// - br：大逃杀 = 排位 + 匹配 + 外卡（有名次的玩法），段位组不细分；未知不算
+const BR_MODES = new Set(["ranked", "pubs", "wildcard"]);
+
 function sliceKeys(row) {
   const ranges = ["all", ...(row.recent ? ["7d"] : []), ...(row.season ? ["season"] : [])];
   const groups = row.m === "ranked" && row.g ? ["all", row.g] : ["all"];
-  return ranges.flatMap((r) => groups.map((g) => `${r}.${row.m}.${g}`));
+  const statsMode = row.m === "other" ? "pubs" : row.m;
+  const keys = ranges.flatMap((r) => groups.map((g) => `${r}.${statsMode}.${g}`));
+  for (const r of ranges) {
+    keys.push(`${r}.all.all`);
+    if (BR_MODES.has(row.m)) keys.push(`${r}.br.all`);
+  }
+  return keys;
 }
 
 function emptySlices() {
@@ -321,6 +333,10 @@ function emptySlices() {
   for (const r of RANGES) {
     for (const g of ["all", "low", "diamond", "master"]) out[`${r}.ranked.${g}`] = {};
     out[`${r}.pubs.all`] = {};
+    out[`${r}.wildcard.all`] = {};
+    out[`${r}.unknown.all`] = {};
+    out[`${r}.all.all`] = {};
+    out[`${r}.br.all`] = {};
   }
   return out;
 }
@@ -353,11 +369,17 @@ function points(values, digits) {
   return Array.from({ length: MAX_POINTS }, (_, i) => sorted[Math.round((i * (sorted.length - 1)) / (MAX_POINTS - 1))]);
 }
 
-// 一局里汇总用得到的几项，存进 summary_pairs（顺序见 pairParts）
+// 一局里汇总用得到的几项，存进 summary_pairs（顺序见 pairParts）。
+// 每日汇总保留大逃杀的具体模式，另外记录未知和其他。
 const GAME_COLUMNS = `id, k, day, mode, tier, review, placement, legend, mate1, mate2, kills, assists, damage, mate1_kills, mate1_damage,
   mate2_kills, mate2_damage, weapons`;
+// 每日汇总的模式分组，其他模式在生成公开统计时并进匹配。
+function modeGroup(mode) {
+  if (BR_MODES.has(mode)) return mode;
+  return mode === null || mode === undefined ? "unknown" : "other";
+}
 function snapshot(r) {
-  return [r.mode === "ranked" ? 1 : 0, r.tier, r.review, r.placement, r.legend, r.mate1, r.mate2, r.kills, r.assists, r.damage,
+  return [modeGroup(r.mode), r.tier, r.review, r.placement, r.legend, r.mate1, r.mate2, r.kills, r.assists, r.damage,
           r.mate1_kills, r.mate1_damage, r.mate2_kills, r.mate2_damage, r.weapons === null ? null : JSON.parse(r.weapons)];
 }
 
@@ -365,7 +387,8 @@ const newGroup = () => ({ l: {}, c: {}, w: {}, wg: 0 });
 const emptyDay = () => ({ g: {}, p: {}, t: {} });
 
 // 一名玩家一天的局（{k: snapshot}）→ 部分和，每一项和原来的 SQL 一样算（见上面的说明：表现只算不是待确认的局，击杀、伤害只算读到了的……）：
-// - g（全体的）：按"模式|段位组"（如 "ranked|diamond"、"pubs|"）分，l 传奇 {名字: LEGEND_FIELDS}（全队三个人都算）、
+// - g（全体的）：按"模式|段位组"（如 "ranked|diamond"、"pubs|"、"wildcard|"）分，段位组只有排位才有，
+//   l 传奇 {名字: LEGEND_FIELDS}（全队三个人都算）、
 //   c 组合 {"a|b|z": COMBO_FIELDS}、w 武器 {编号: WEAPON_FIELDS}、wg 记下了武器的局数
 // - p（这名玩家的）：按"模式|段位组"分，s 自己的 PEOPLE_FIELDS、l 自己每个传奇用了几局（英雄池）
 // - t：这一天排位局里的段位（排好序）
@@ -373,9 +396,9 @@ function pairParts(games) {
   const g = {};
   const p = {};
   const t = new Set();
-  for (const [ranked, tier, review, place, legend, mate1, mate2, kills, assists, damage, k1, d1, k2, d2, weapons]
+  for (const [mode, tier, review, place, legend, mate1, mate2, kills, assists, damage, k1, d1, k2, d2, weapons]
     of Object.values(games)) {
-    const mg = `${ranked ? "ranked" : "pubs"}|${tierGroup(tier)}`;
+    const mg = `${mode}|${mode === "ranked" ? tierGroup(tier) : ""}`;
     const ok = review === 0;  // 不是待确认的局（SQL 里 review = 0）
     const placed = ok && place !== null;
     const G = (g[mg] ??= newGroup());
@@ -425,7 +448,7 @@ function pairParts(games) {
       s[13] += kills + k1 + k2;
     }
     if (legend !== null) P.l[legend] = (P.l[legend] ?? 0) + 1;
-    if (ranked && tier !== null) t.add(tier);
+    if (mode === "ranked" && tier !== null) t.add(tier);
   }
   return { g, p, t: [...t].sort() };
 }

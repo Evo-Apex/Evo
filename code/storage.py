@@ -17,6 +17,7 @@ import sqlite3
 from difflib import SequenceMatcher
 from pathlib import Path
 
+import modes
 from paths import DB_PATH
 
 APP_VERSION = "0.7.4"
@@ -240,7 +241,9 @@ def recent_matches(conn, limit=20):
 def _where(mode=None, only_review=False, legend=None, names=None, between=None):
     """把筛选条件拼成 SQL 的 WHERE 部分。值用 ? 占位，单独传入。
     names：只要这几个玩家名的局（一个账号用过的所有写法，见 accounts 的 raw）；None = 不按账号分。
-    between：(开始, 结束) 只要这段时间里结束的局（结束为 None = 到现在；战绩页按赛季筛选，见 seasons.bounds）。"""
+    between：(开始, 结束) 只要这段时间里结束的局（结束为 None = 到现在；战绩页按赛季筛选，见 seasons.bounds）。
+    mode：一个模式的值（"ranked"），或者一组（"br" = 排位 + 匹配 + 外卡，"unknown" = 没认出模式的，
+    见 modes.py 和 panel_app.mode_rows）。"""
     clauses, params = [], []
     if between is not None:
         clauses.append("ended_at >= ?")
@@ -252,8 +255,22 @@ def _where(mode=None, only_review=False, legend=None, names=None, between=None):
         clauses.append(f"player_name IN ({', '.join('?' for _ in names)})" if names else "0")
         params.extend(names)
     if mode:
-        clauses.append("mode = ?")
-        params.append(mode)
+        values = modes.mode_values(mode)
+        if values == modes.ALL:  # 全部模式：不做筛选
+            pass
+        elif values == [None]:  # 未知：没认出模式的局
+            clauses.append("mode IS NULL")
+        elif mode == modes.PUBS:  # 匹配：匹配 + 并进匹配的模式 + 认不出的值（和 modes.stats_mode 一样）
+            known = list(modes.MODES)  # 认得出的全部值
+            clauses.append(f"(mode IN ({', '.join('?' for _ in values)})"
+                           f" OR (mode IS NOT NULL AND mode NOT IN ({', '.join('?' for _ in known)})))")
+            params.extend([*values, *known])
+        elif values is not None:
+            clauses.append(f"mode IN ({', '.join('?' for _ in values)})")
+            params.extend(values)
+        else:
+            clauses.append("mode = ?")
+            params.append(mode)
     if only_review:
         clauses.append("needs_review = 1")
     if legend:

@@ -33,7 +33,9 @@
     },
     "summary.json": {
       "banner": {"champion": "CHAMPION"},
-      "_说明_banner": "总结页顶部：被淘汰是'SQUAD ELIMINATED'；拿冠军时的写法还没见过，先按含'CHAMPION'认（还没核实）"
+      "_说明_banner": "总结页顶部：被淘汰是'SQUAD ELIMINATED'；拿冠军时的写法还没见过，先按含'CHAMPION'认（还没核实）",
+      "wildcard": {"labels": {"revives": [], "respawns": []}},
+      "_说明_wildcard": "英文标签待实拍核对。覆盖简中的两行标签，核对前保留空列表。"
     },
     "xp.json": {
       "join_lines": true,

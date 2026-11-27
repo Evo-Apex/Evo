@@ -16,7 +16,7 @@ from pathlib import Path
 from ocr import SMALL_CROP_PARAMS, create_engine, crop, load_config, load_image
 from player_name import pick_name
 from storage import mmss, name_key
-from summary_page import CONFIG_NAME, clean, read_field, read_summary, show, to_seconds
+from summary_page import CONFIG_NAME, clean, read_field, read_summary, show, skip_fields, to_seconds
 
 NAME_CONFIG = "player_name.json"  # 名字的置信度门槛、长度和读自己名字时一样
 
@@ -50,15 +50,21 @@ def read_player_id(engine, img, roi, cfg, length):
     return None
 
 
-def read_teammates(engine, img, cfg):
+def read_teammates(engine, img, cfg, mode=None):
     """返回队友列表（左边的在前），每人一个字典：slot（left / right）、name、player_id、kills、assists、knockdowns、
     damage、survival_time（秒）、revives、respawns，读不准的为 None；problems：哪几项没读准（写日志用）。
-    名字、ID、击杀/助攻/击倒一项都没读到的卡片（可能没有这个队友）不算。"""
+    名字、ID、击杀/助攻/击倒一项都没读到的卡片（可能没有这个队友）不算。
+    mode：这一局认出的轮换玩法（如 "wildcard"）。这种玩法的总结页上最后两行不是急救、重生
+    （config/summary.json 里这个玩法的 skip_fields）：那几项留空，不读、不当作 0；普通的局照旧读。"""
     team, name_cfg = cfg["teammates"], load_config(NAME_CONFIG)
+    skip = set(skip_fields(cfg, mode))
     mates = []
     for slot, dx in team["offsets"].items():
         values, problems = {}, []
         for name in team["fields"]:
+            if name in skip:  # 外卡：最后两行不是普通的急救、重生，不读
+                values[name] = None
+                continue
             spec = {**cfg["fields"][name], "roi": shift(cfg["fields"][name]["roi"], dx)}
             r = read_field(engine, img, name, spec, cfg, False)
             values[name] = r["value"] if r["status"] == "ok" else None

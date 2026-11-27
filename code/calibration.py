@@ -43,6 +43,7 @@ from bisect import bisect_left, bisect_right
 from collections import namedtuple
 from datetime import datetime, timedelta
 
+import modes
 import ranks
 import seasons
 import storage
@@ -119,8 +120,8 @@ def _check_rp(conn, reading, log):
 
 
 def _window(between):
-    """两次大厅之间的局里，算排位的局（模式是排位，或者有 RP）、读到的 RP 之和、没读到 RP 的局。"""
-    ranked = [m for m in between if m["mode"] == "ranked" or m["rp_delta"] is not None]
+    """两次大厅之间的局里，算排位的局（模式是排位，或者有 RP；外卡等轮换玩法不算）、读到的 RP 之和、没读到 RP 的局。"""
+    ranked = [m for m in between if _ranked(m)]
     known = sum(m["rp_delta"] for m in ranked if m["rp_delta"] is not None)
     return ranked, known, [m for m in ranked if m["rp_delta"] is None]
 
@@ -169,7 +170,7 @@ def _fill_last_rank(conn, reading, games, previous, log):
     if not games:
         return
     last = games[-1]
-    if last["rank_tier"] is not None or last["mode"] in ("pubs", "other"):
+    if last["rank_tier"] is not None or last["mode"] not in (None, modes.RANKED):
         return  # 已经有段位；或者是匹配等不算排位的局：段位不会变，不补
     if previous and previous[-1]["read_at"] >= last["ended_at"]:
         return  # 这一局之后已经回过大厅了，那次才是它结束后的段位
@@ -192,7 +193,7 @@ def drop_misreads(conn, name=None):
     战绩页多出 +1000、-1000 两行校准分数）。name：只看这个玩家名的（回大厅时）；None = 所有账号。返回日志。"""
     lobby = [r for r in storage.lobby_readings(conn) if r["score"] is not None]
     matches = [m for m in conn.execute("SELECT ended_at, mode, player_name FROM matches "
-                                       "WHERE ended_at IS NOT NULL ORDER BY ended_at") if m["mode"] not in ("pubs", "other")]
+                                       "WHERE ended_at IS NOT NULL ORDER BY ended_at") if m["mode"] in (None, modes.RANKED)]
     names = [name] if name is not None else \
         sorted({storage.name_key(r["player_name"]) for r in lobby if r["player_name"]}) or [None]
     out, dropped = [], set()
@@ -269,7 +270,7 @@ def _all_segments(conn, name=None):
     """这个玩家名（None = 每个账号各算各的）的 [(前一个参照点, 中间的局, 后一个参照点)]，见 _segments。"""
     lobby = [r for r in storage.lobby_readings(conn) if r["score"] is not None]
     games = [m for m in conn.execute("SELECT * FROM matches WHERE ended_at IS NOT NULL ORDER BY ended_at, match_id")
-             if m["mode"] not in ("pubs", "other")]
+             if m["mode"] in (None, modes.RANKED)]
     inferred = {r[0] for r in conn.execute("SELECT DISTINCT match_id FROM readings WHERE source = ? AND field IN (?, ?, ?)",
                                            (SOURCE_LOBBY, *RANK_FIELDS))}
     if name is not None:
@@ -296,8 +297,10 @@ def _edited(row):
 
 
 def _ranked(row):
-    """算排位的局：模式是排位，或者有 RP（模式没读出、又没有 RP 的可能是匹配）。"""
-    return row["mode"] == "ranked" or row["rp_delta"] is not None
+    """模式为排位，或模式未知且读到了 RP。有明确模式的非排位局不参与校准。"""
+    if row["mode"] not in (None, modes.RANKED):
+        return False
+    return row["mode"] == modes.RANKED or row["rp_delta"] is not None
 
 
 def _rp(row):

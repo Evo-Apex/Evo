@@ -150,7 +150,7 @@
     <span class="label">模式</span>
     <div class="seg" role="group" aria-label="模式">
       {% for key, label in modes.items() %}
-      <a href="{{ url_for('stats', part=part, view='all', range=range_key, mode=key) }}" class="{{ 'on' if mode == key }}"{% if mode == key %} aria-current="true"{% endif %}{% if key == 'pubs' %} title="不是排位的局，包括没认出模式的局"{% endif %}>{{ label }}</a>
+      <a href="{{ url_for('stats', part=part, view='all', range=range_key, mode=key) }}" class="{{ 'on' if mode == key }}"{% if mode == key %} aria-current="true"{% endif %}{% if key == 'pubs' %} title="认出是匹配、其他模式的局"{% endif %}{% if key == 'unknown' %} title="没认出模式的局（老数据、还没加进识别规则的匹配局），单独统计"{% endif %}>{{ label }}</a>
       {% endfor %}
     </div>
   </div>
