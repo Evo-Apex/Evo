@@ -984,7 +984,8 @@ table.stats-table { width: 100%; border-collapse: collapse; }
 [data-theme="light"] .radar-card { --radar-you: var(--accent); --radar-avg: var(--p3-bg); }
 .radar-meta { color: var(--muted); font-size: 12px; }
 .radar-meta .num { color: var(--text); font-weight: 500; }
-.radar-body { display: grid; grid-template-columns: minmax(280px, 440px) minmax(0, 1fr); gap: 24px 40px; align-items: center; }
+/* 先给对比表留够宽度，剩下的空间再给图。 */
+.radar-body { display: grid; grid-template-columns: minmax(280px, 440px) minmax(min-content, 1fr); gap: 24px 40px; align-items: center; }
 .radar-small .radar-body { display: block; }
 .radar-figure { margin: 0; min-width: 0; }
 .radar-plot { position: relative; aspect-ratio: 240 / 220; max-width: 420px; margin: 0 auto; }
@@ -1011,7 +1012,7 @@ table.stats-table { width: 100%; border-collapse: collapse; }
 .radar-key i.key-top { border-top: 1px solid var(--dashed); }
 .radar-foot { margin: 8px 0 0; text-align: center; color: var(--muted); font-size: 12px; }
 .radar-foot .num { color: var(--text); font-weight: 500; }
-.radar-table { width: 100%; border-collapse: collapse; }
+.radar-big .radar-table tbody th { white-space: normal; }
 .radar-you-cell { color: var(--text); }
 .radar-small .chart-empty { min-height: 160px; }
 /* 没开匿名统计：后面几圈看不清的灰色六边形，上面一张小卡片 */
@@ -1033,6 +1034,10 @@ table.stats-table { width: 100%; border-collapse: collapse; }
 .radar-small .radar-lock-panel { margin: 8px; padding: 18px 16px; }
 @container page (max-width: 680px) {
   .radar-body { grid-template-columns: 1fr; }
+}
+@container page (max-width: 360px) {
+  .radar-big { padding-inline: 12px; }
+  .radar-big .radar-table :is(th, td):not(:first-child, :last-child) { padding-inline: 6px; }
 }
 
 /* ---------- 总览页：地图轮换（_maps.html，2026-10-28 用户决定）----------
