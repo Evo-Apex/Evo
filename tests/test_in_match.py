@@ -36,7 +36,8 @@ import storage
 from hud import Hud
 from lobby import LobbyReader
 from ocr import SMALL_CROP_PARAMS, create_engine, load_config
-from post_match import HUD_ONLY_NOTE, NO_END_NOTE, REQUEUE_NOTE, SOURCE_HUD, SOURCE_SUMMARY, XP_ONLY_NOTE, settle
+from paths import CONFIG_DIR
+from post_match import HUD_ONLY_NOTE, NO_END_NOTE, REQUEUE_NOTE, SOURCE_HUD, SOURCE_SUMMARY, XP_ONLY_NOTE, PostMatch, settle
 from screens import ScreenDetector
 from summary_page import is_champion
 
@@ -615,6 +616,75 @@ def calibration_panel_checks():
     }
 
 
+def hud_mode_checks():
+    """检验圆标和显式 RP 证据，原有 RP 读数仍允许裸数字。"""
+    reader = Hud(None)
+    frame = fake_game.BLACK[:1080, :1920].copy()
+    snip = reader.top_snip(frame)
+    checks = {"空白 HUD 没有模式圆标": reader.mode_badge(frame) is None}
+    for mode, spec in reader.cfg["mode_badges"].items():
+        x, y, w, h = spec["template_box"]
+        template = CONFIG_DIR / "templates" / "hud" / f"{mode}_badge.png"
+        frame[y:y + h, x:x + w] = load(template)
+        checks[f"HUD 圆标只认成 {mode}"] = reader.mode_badge(frame) == mode
+        frame.fill(0)
+    rp_cases = [("-38 RP", .99, -38, True), ("+21排位点数", .99, 21, True), ("+21排位點數", .99, 21, True),
+                ("38", .99, 38, False), ("-38 RP", .5, None, False)]
+    for text, confidence, want, ranked in rp_cases:
+        with mock.patch.object(reader, "_texts", side_effect=[[], [(text, confidence)]]):
+            values, scores, _ = reader.read_top(snip)
+        checks[f"HUD RP 原文 {text!r}（置信度 {confidence}）的读数和模式证据"] = (
+            values["rp_delta"] == want and (scores.get("ranked_rp") is not None) == ranked
+        )
+
+    conn = storage.connect(":memory:")
+    try:
+        now = datetime(2026, 11, 26, 12, 0)
+        log = []
+        post = PostMatch(conn, log=log.append)
+        cases = [
+            ("pubs", {"pubs"}, {}, "pubs", "匹配圆标与本局模式一致"),
+            ("ranked", {"ranked"}, {}, "ranked", "排位 RP与本局模式一致"),
+            (None, {"pubs"}, {}, None, "开局和结算未确认模式"),
+            ("wildcard", {"pubs"}, {}, "wildcard", "本局记录为外卡"),
+            ("ranked", {"pubs", "ranked"}, {}, "ranked", "同时出现匹配、排位证据"),
+            (None, {"ranked"}, {"rp_delta": -38}, "ranked", "战绩排位由 HUD RP 推断"),
+        ]
+        for mode, evidence, values, saved_mode, expected in cases:
+            post.match_id = storage.insert_match(conn, {"mode": mode, "ended_at": str(now)})
+            match_id = post.match_id
+            log.clear()
+            post.on_hud_final({"started": now, "ended": now, "end": "summary", "own_dead": False,
+                               "values": values, "mates": [], "modes": evidence})
+            post.finish()
+            mode_logs = [line for line in log if "模式核对" in line]
+            checks[f"赛后模式核对记录「{expected}」，入库模式为 {saved_mode}"] = (
+                len(mode_logs) == 1 and expected in mode_logs[0]
+                and storage.get_match(conn, match_id)["mode"] == saved_mode
+            )
+        log.clear()
+        post.on_hud_final({"started": now, "ended": now, "end": "eliminated", "own_dead": False,
+                           "saw_start": False, "values": {"kills": 3, "rp_delta": -38}, "mates": [],
+                           "modes": {"ranked"}})
+        post.finish()
+        checks["只有 HUD 数据时先保存排位战绩，再提示 RP 是同一来源"] = (
+            conn.execute("SELECT mode FROM matches ORDER BY match_id DESC LIMIT 1").fetchone()["mode"] == "ranked"
+            and any("战绩排位由 HUD RP 推断" in line for line in log)
+        )
+        log.clear()
+        post.on_xp({"rp_delta": -38, "placement": 10, "kills": 1, "assists": 0,
+                    "rank_tier": "黄金", "rank_division": "I", "rank_progress": 100}, [], Path("xp.png"), now)
+        post.on_hud_final({"started": now, "ended": now, "end": "xp", "own_dead": False,
+                           "saw_start": False, "values": {}, "mates": [], "modes": {"pubs"}})
+        post.finish()
+        checks["只有经验值页时先保存排位战绩，再与 HUD 匹配圆标核对"] = (
+            any("匹配圆标，本局记录为排位" in line for line in log)
+        )
+    finally:
+        conn.close()
+    return checks
+
+
 def main():
     print("0.3.0 新流程：对局中、一局结束、冠军、大厅校准、各来源的优先级")
     try:
@@ -627,6 +697,7 @@ def main():
     r = rule_checks()
     checks = {
         **panel_checks(),
+        **hud_mode_checks(),
         f"大厅校准：只缺一局的 RP，用差值补上（{r['fill']}）": r["fill"] == (-45, "大厅校准"),
         f"大厅校准：都有 RP 但对不上，不标待确认，日志写校准分数（{r['mismatch_log'].strip()}）":
             r["mismatch"] == (0, None) and "校准分数 +20，不标待确认" in r["mismatch_log"],

@@ -26,7 +26,7 @@ from layout import Mapping, cut
 from legends import LegendDetector
 from ocr import load_config, load_image
 from player_name import pick_name
-from screens import gray_crop, match, outline
+from screens import gray_crop, match, outline, shrunk, template_outlines
 from storage import name_key
 
 CONFIG_NAME = "hud.json"
@@ -121,6 +121,11 @@ class Hud:
         mates = self.cfg["teammates"]
         self.mate_templates = self.legends.scaled(mates["scale"])
         self.spectate_template = load_hud_template("spectate", lang)
+        self.mode_badge_templates = {}
+        for mode, spec in self.cfg.get("mode_badges", {}).items():
+            template = load_hud_template(f"{mode}_badge", lang)
+            if template is not None:
+                self.mode_badge_templates[mode] = template_outlines(template, spec)
         self.knock_template = load_hud_template("knock", lang)  # 中间那一行的"击倒"（录像标事件用）；别的语言还没有
         self.knock_assist_template = load_hud_template("knock_assist", lang)  # 它左边的"助攻"（助攻击倒）
         self.icon_template = load_hud_template("damage_icon", lang)
@@ -147,6 +152,17 @@ class Hud:
         s = self.cfg["spectate"]
         score, _, _ = best_match(gray_crop(frame, s["roi"], self.base, s.get("anchor")), self.spectate_template)
         return score >= s["min_similarity"]
+
+    def mode_badge(self, frame):
+        """读取自己 HUD 右上角的模式徽章，多个模板类别都命中时留空。"""
+        found = []
+        for mode, templates in self.mode_badge_templates.items():
+            spec = self.cfg["mode_badges"][mode]
+            gray = gray_crop(frame, spec["roi"], self.base, spec["anchor"])
+            region = outline(shrunk(gray, spec["shrink"]))
+            if any(match(region, template).max() >= spec["min_similarity"] for template in templates):
+                found.append(mode)
+        return found[0] if len(found) == 1 else None
 
     def knock(self, frame):
         """画面中间那一行"击倒 名字 +150"（自己击倒了对手）："击倒"两个字在横带里的位置（基准 x），没有返回 None。
@@ -242,8 +258,12 @@ class Hud:
 
     def _number(self, piece, pattern, bounds, top):
         """读一小块里的一个整数（格式和范围都对、置信度够高才算），读不到返回 (None, 置信度或 None)。"""
+        return self._number_from_texts(self._texts(piece), pattern, bounds, top)
+
+    @staticmethod
+    def _number_from_texts(texts, pattern, bounds, top):
         best = (None, None)
-        for text, score in self._texts(piece):
+        for text, score in texts:
             m = re.search(pattern, clean_number(text, top["replace"]))
             if not m:
                 continue
@@ -255,6 +275,7 @@ class Hud:
 
     def read_top(self, snip):
         """读一块右上角。返回 {项: 值}（没显示或读不出为 None）、{项: 置信度}，和"显示着"的项（集合）。
+        置信度里的 ranked_rp 表示读到了带 RP 或排位点数标签的分数，可用来核对模式。
         显示着但读不出 ≠ 没显示：击杀、助攻、老板分那一行看骷髅或握手图标在不在；伤害看图标在不在。
         （2026-10-18 实战：那一行显示着，数字有时只读出一部分、有时一个都没读出来——都不能当成 0）
         老板分的图标不在、但这一行显示着：老板分留空（用户说过老板分不是每次都有，不知道没显示是不是 0）"""
@@ -262,7 +283,10 @@ class Hud:
         values, scores = {}, {}
         for name, spec in top["fields"].items():  # 剩余小队数、RP（击杀那一行见下面）
             piece = snip.crop(spec["roi"], top["upscale"], pad=top["pad"])
-            values[name], scores[name] = self._number(piece, spec["pattern"], spec["range"], top)
+            texts = self._texts(piece)
+            values[name], scores[name] = self._number_from_texts(texts, spec["pattern"], spec["range"], top)
+            if spec.get("mode_pattern"):
+                _, scores["ranked_rp"] = self._number_from_texts(texts, spec["mode_pattern"], spec["range"], top)
         values["damage"], scores["damage"], icon = self._damage(snip, top)
         icons = self._kp_icons(snip, top["kp_row"])
         row_shown = "kills" in icons or "assists" in icons
@@ -347,6 +371,8 @@ def template_specs(cfg):
     top = cfg["top_right"]
     specs = {"spectate": (cfg["spectate"], cfg["spectate"].get("anchor")),
              "damage_icon": (top["damage"], top.get("anchor"))}
+    for mode, badge in cfg.get("mode_badges", {}).items():
+        specs[f"{mode}_badge"] = (badge, badge.get("anchor"))
     for icon in top["kp_row"]["icons"].values():
         specs[icon["template"]] = (icon, top.get("anchor"))
     return specs

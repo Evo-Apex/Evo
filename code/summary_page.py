@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 
 import game_lang
+import modes
 from ocr import SMALL_CROP_PARAMS, create_engine, crop, load_config, load_image
 from paths import CAPTURES_DIR, data_relative
 from process_info import memory_mb
@@ -152,6 +153,47 @@ def is_champion(engine, img, cfg, memo=None):
     return found
 
 
+def detect_mode(engine, img, cfg, memo=None):
+    """总结页最后两行是不是某个轮换玩法自己的标签（config/summary.json 里每个玩法一段，写法在语言配置里）：
+    两行都对得上才算，返回那一份的模式值（如 "wildcard"）；都不是返回 None。
+    每个玩法配了几种写法就认几种（配置里是列表，引擎偶尔读成简体也算）；只对上一行不算（别把普通大逃杀的
+    总结页认成轮换玩法）。没配标签的玩法（还没实拍核对）直接跳过，不跑识别。
+    memo：和 read_field 的一样，没变就不重读。"""
+    for key, mode in modes.summary_modes().items():
+        rule = cfg.get(key)
+        if not rule:
+            continue
+        rows = [(field, names) for field, names in rule.get("labels", {}).items() if names]
+        if not rows:
+            continue
+        found = []
+        for field, names in rows:
+            roi = rule["roi"][field]
+            piece = crop(img, roi, cfg, "center")
+            memo_key = f"{key}_{field}"
+            before = memo.get(memo_key) if memo is not None else None
+            if before is not None and "unchanged" in cfg and same_piece(before[0], piece, cfg["unchanged"]):
+                found.append(before[1])
+                continue
+            result = engine(piece)
+            text = "".join(result.txts or ())
+            names = names if isinstance(names, list) else [names]
+            hit = any(name in text for name in names)
+            if memo is not None:
+                memo[memo_key] = (piece, hit)
+            found.append(hit)
+        if all(found):
+            return mode
+    return None
+
+
+def skip_fields(cfg, mode=None):
+    """这个玩法的总结页上不写进普通字段的项（config/summary.json 的 <summary>.skip_fields）。
+    mode=None 或者这个模式没有配置时返回空（普通的局照常写）。"""
+    key = modes.summary_key(mode) if mode else None
+    return tuple(((cfg.get(key) or {}).get("skip_fields")) or ())
+
+
 def to_seconds(duration):
     """"16:03" → 963 秒。"""
     if duration is None:
@@ -160,11 +202,13 @@ def to_seconds(duration):
     return int(minutes) * 60 + int(seconds)
 
 
-def summary_to_match(results, problems, ended_at, evidence_path=None):
-    """把总结页的识别结果整理成数据库里"一局"的格式（键和 storage.COLUMNS 的列名一致）。"""
+def summary_to_match(results, problems, ended_at, evidence_path=None, mode=None, skip=()):
+    """把总结页的识别结果整理成数据库里"一局"的格式（键和 storage.COLUMNS 的列名一致）。
+    mode：这一局是哪种轮换玩法（见 detect_mode，或开局横幅认出、见 modes.is_rotational），模式写这个值；
+    skip 里的项（这个玩法不写进普通字段的，如外卡的最后两行）留空、不写进去。"""
     v = {name: r["value"] for name, r in results.items()}
     kills, assists, knockdowns = v["kda"] if v["kda"] else (None, None, None)
-    return {
+    match = {
         "ended_at": ended_at,
         "placement": v["placement"],
         "squad_kills": v["squad_kills"],
@@ -179,16 +223,23 @@ def summary_to_match(results, problems, ended_at, evidence_path=None):
         "review_note": "；".join(problems) or None,
         "evidence_path": data_relative(evidence_path) if evidence_path else None,
     }
+    if mode:
+        match["mode"] = mode
+        for name in skip:
+            match[name] = None
+    return match
 
 
 READING_FIELDS = ("placement", "squad_kills", "kills", "assists", "knockdowns", "damage", "survival_time", "revives", "respawns")
 
 
-def summary_readings(results):
+def summary_readings(results, skip=()):
     """总结页读到的各项，整理成 (值, 置信度) 两个字典，键是 storage.COLUMNS 的列名（存进各来源读数表 readings 用）。
-    击杀/助攻/击倒是一个小块里读出来的，三项用同一个置信度。"""
+    击杀/助攻/击倒是一个小块里读出来的，三项用同一个置信度。skip：外卡不写进普通字段的项（值写空）。"""
     match = summary_to_match(results, [], None)
     values = {k: match[k] for k in READING_FIELDS}
+    for name in skip:
+        values[name] = None
     scores = {}
     for name, r in results.items():
         for key in (("kills", "assists", "knockdowns") if name == "kda" else (name,)):

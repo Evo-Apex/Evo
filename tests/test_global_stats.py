@@ -68,6 +68,10 @@ SUMMARY = {
         "all.ranked.diamond": part(4, 90, [legend("探路者", 40, 9.0)]),
         "all.ranked.low": part(0, 0, []), "all.ranked.master": part(0, 0, []),
         "all.pubs.all": part(6, 70, [legend("动力小子", 25, 8.0)]),
+        "all.wildcard.all": part(3, 12, [legend("寻血犬", 8, 6.0)]),
+        "all.unknown.all": part(2, 9, [legend("恶灵", 4, 11.0)]),
+        "all.all.all": part(9, 420, [legend("恶灵", 60, 9.4)]),
+        "all.br.all": part(8, 411, [legend("恶灵", 58, 9.3)]),
     },
     "tiers": {"all": {"players": 10, "counts": {"钻石": 5, "白金": 3, "黄金": 2}},
               "7d": {"players": 4, "counts": {"钻石": 4}}},
@@ -137,8 +141,14 @@ def new_db():
                                       "kills": 1, "damage": 300, "rank_tier": "白金"})
     storage.save_weapon_holds(conn, old, [("nemesis", 0.0, 200.0)])
     storage.insert_match(conn, {"ended_at": f"{now - timedelta(days=1, hours=5):%Y-%m-%d %H:%M:%S}",
-                                "player_name": "ImperialHzd", "mode": None, "legend": "动力小子", "placement": 4,
+                                "player_name": "ImperialHzd", "mode": "pubs", "legend": "动力小子", "placement": 4,
                                 "kills": 6, "damage": 1600})
+    storage.insert_match(conn, {"ended_at": f"{now - timedelta(days=1, hours=7):%Y-%m-%d %H:%M:%S}",
+                                "player_name": "ImperialHzd", "mode": None, "legend": "恶灵", "placement": 11,
+                                "kills": 1, "damage": 400})
+    storage.insert_match(conn, {"ended_at": f"{now - timedelta(days=1, hours=6):%Y-%m-%d %H:%M:%S}",
+                                "player_name": "ImperialHzd", "mode": "wildcard", "legend": "寻血犬", "placement": 6,
+                                "kills": 3, "damage": 900})
     storage.save_lobby(conn, {"read_at": f"{now:%Y-%m-%d %H:%M:%S}", "player_name": "ImperialHzd",
                                       "rank_tier": "钻石", "rank_division": 4, "rank_progress": 120, "score": 8120})
     conn.close()
@@ -343,11 +353,41 @@ def checks():
         card_rows(diamond.split('id="h-combos"')[0]) == ["探路者"] and 'aria-current="true">钻石</a>' in diamond)
     pubs = page("/stats?view=all&range=all&mode=pubs&tier=diamond")
     pubs_card = pubs.split('id="h-combos"')[0]
-    out["匹配：没有段位按钮；没认出模式的局算匹配（动力小子 1 局，名次 4）"] = (
+    out["匹配：没有段位按钮；认出是匹配的局才算进来（没认出模式的不算）"] = (
         "段位</span>" not in pubs and card_rows(pubs_card) == ["动力小子"]
         and card_you(pubs_card, "动力小子") == ("4.0（比全体好）1局", "better"))
+    unknown = page("/stats?view=all&range=all&mode=unknown")
+    unknown_card = unknown.split('id="h-combos"')[0]
+    out["未知模式：单独一份，能单独筛；没认出模式的那局算在这里，不在匹配"] = (
+        "段位</span>" not in unknown and card_rows(unknown_card) == ["恶灵"]
+        and '<a href="/stats?view=all&amp;range=all&amp;mode=unknown" class="on"' in unknown)
     out["汇总里没有武器（老的统计服务器、还没人发过）：写\"还没有记下武器的对局\"，不写局数"] = (
         "这个范围里还没有记下武器的对局" in weapon_section(pubs) and "记下了武器的" not in weapon_section(pubs))
+    wild = page("/stats?view=all&range=all&mode=wildcard&tier=diamond")
+    wild_card = wild.split('id="h-combos"')[0]
+    out["外卡：单独一份汇总，能单独筛；没有段位按钮；自己的外卡局算进这一份"] = (
+        "段位</span>" not in wild and card_rows(wild_card) == ["寻血犬"]
+        and card_you(wild_card, "寻血犬") == ("6.01局", "same")
+        and '<a href="/stats?view=all&amp;range=all&amp;mode=wildcard&amp;tier=all" class="on"' in wild)
+    out["外卡不算进匹配：匹配那一份里没有自己的外卡局（只有认出是匹配的那局）"] = (
+        card_rows(pubs_card) == ["动力小子"])
+    all_page = page("/stats?view=all&range=all&mode=all")
+    br_page = page("/stats?view=all&range=all&mode=br")
+    out["全部模式、大逃杀两档都能筛，没有段位按钮（只有排位分段位）"] = (
+        "段位</span>" not in all_page and "段位</span>" not in br_page
+        and card_rows(all_page.split('id="h-combos"')[0]) == ["恶灵"]
+        and card_rows(br_page.split('id="h-combos"')[0]) == ["恶灵"]
+        and '<a href="/stats?view=all&amp;range=all&amp;mode=all"' in all_page
+        and '<a href="/stats?view=all&amp;range=all&amp;mode=br"' in all_page)
+    # 自己的局：全部模式每局都算，大逃杀 = 排位 + 匹配 + 外卡（没认出模式的那局不算）
+    with panel_app.app.test_request_context("/"):
+        own = storage.all_matches(panel_app.db())
+        counts = {key: len(global_stats._mine(own, SUMMARY, "all", key, "all"))
+                  for key in ("all", "br", "unknown", "ranked", "pubs", "wildcard")}
+    out["全部模式算上自己的每一局；大逃杀 = 排位 + 匹配 + 外卡，不算没认出模式的那局"] = (
+        counts["all"] == counts["br"] + counts["unknown"]
+        and counts["br"] == counts["ranked"] + counts["pubs"] + counts["wildcard"]
+        and counts["unknown"] == 1)
     deep = page("/stats/legends?view=all&range=all&tier=diamond")
     out["完整的表格带着筛选：按钮留在这一页，\"← 全体玩家\"回到同样筛选的卡片"] = (
         rows_of(deep) == ["探路者"] and 'href="/stats/legends?view=all&amp;range=7d&amp;mode=ranked&amp;tier=diamond"' in deep

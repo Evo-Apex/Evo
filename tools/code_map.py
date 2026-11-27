@@ -41,6 +41,7 @@ SECTIONS = [
     ("模型", "对局中", ["code/in_match.py", "code/hud.py", "code/legends.py", "code/weapons.py"]),
     ("模型", "合并、校准、段位、赛季、留截图", [
         "code/post_match.py", "code/calibration.py", "code/ranks.py", "code/seasons.py", "code/screenshots.py"]),
+    ("模型", "模式（排位、匹配、外卡……的名字和口径）", ["code/modes.py"]),
     ("模型", "游戏里的数据页（录入历史赛季数据）", [
         "code/season_stats.py", "code/season_rules.py", "code/season_import.py"]),
     ("模型", "规则（config/）", [

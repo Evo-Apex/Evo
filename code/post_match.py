@@ -38,6 +38,7 @@
 - 一局彻底结束（finish）时调用 on_round_end：记录程序在这里删掉不需要的截图（见 screenshots.py）
 """
 
+import modes
 import ranks
 import storage
 from paths import data_relative
@@ -62,7 +63,7 @@ NO_END_NOTE = "没看到结算画面（可能队长直接重新匹配、掉线�
 
 MAX_GAP_SECONDS = 600  # 同一局的总结页和经验值页，时间不会相差这么久
 SAME_MATCH_SECONDS = 120  # 总结页、经验值页之后这么久之内看到的淘汰画面等算同一局（新的一局从排队到被淘汰，至少要这么久）
-MODE_LABELS = {"ranked": "排位", "pubs": "匹配", "other": "其他"}
+MODE_LABELS = modes.LABELS  # 模式的值 → 显示的名字（modes.py：排位、匹配、外卡、其他）
 MATE_SIMILAR = 0.6  # 对局中和总结页的队友名字这么像就算同一个人（名字里有游戏显示不了的字，两边可能读得不一样）
 # 自己的名字：一个是另一个的开头、短的至少这么多个字（不管空格），才当作被截短了（游戏只截短长名字；
 # 太短的可能真是两个账号，如 "Bob" 和 "Bobby"）
@@ -220,7 +221,7 @@ def settle(conn, match_id, log=print):
             if row["rp_delta"] is None:
                 filled.append(f"RP {value:+d}（{source}）")
         if row["mode"] is None:
-            fields["mode"] = "ranked"  # 有排位点数，说明是排位赛
+            fields["mode"] = modes.RANKED  # 有排位点数，说明是排位赛（轮换玩法不是排位，靠总结页的标签认，见 on_summary_mode）
 
     # 总结页停留太短：缺的项都补上了，就不用确认
     if all(fields.get(k, row[k]) is not None for k in ("placement", "kills", "assists", "damage")):
@@ -395,6 +396,28 @@ class PostMatch:
             self._merge_mates(self.match_id)
             self._settle(self.match_id)
 
+    def _check_hud_mode(self, evidence, match_id):
+        """收尾时用独立来源核对 HUD 的模式证据。"""
+        if len(evidence) > 1:
+            labels = "、".join(modes.label(mode) for mode in sorted(evidence))
+            self.log(f"           ⚠ 模式核对：右上角同时出现{labels}证据")
+            return
+        detected, = evidence
+        row = storage.get_match(self.conn, match_id) if match_id is not None else None
+        mode = row["mode"] if row is not None else self.info.get("mode")
+        signal = "排位 RP" if detected == modes.RANKED else f"{modes.label(detected)}圆标"
+        hud_inferred = (row is not None and mode == modes.RANKED and row["rp_source"] == SOURCE_HUD
+                        and self.info.get("mode") != modes.RANKED
+                        and "mode" not in (row["edited"] or "").split(","))
+        if hud_inferred:
+            self.log(f"           模式核对：右上角出现{signal}，战绩排位由 HUD RP 推断，缺少独立模式证据")
+        elif mode == detected:
+            self.log(f"           模式核对：右上角{signal}与本局模式一致")
+        elif mode is None:
+            self.log(f"           模式核对：右上角出现{signal}，开局和结算未确认模式")
+        else:
+            self.log(f"           ⚠ 模式核对：右上角出现{signal}，本局记录为{modes.label(mode)}")
+
     def on_summary_saved(self, match_id, values, when, player_name=None):
         """总结页存进数据库之后调用（总结页的读数、队友已经记进去了）。player_name：总结页中间卡片上读到的名字（没读到为 None）。"""
         if self.match_id is not None:  # 没看到开局画面，又来了一局新的总结页：上一局先收尾
@@ -419,6 +442,19 @@ class PostMatch:
             self._merge_mates(match_id)
         self._settle(match_id)
         self._use_xp()
+
+    def on_summary_mode(self, match_id, mode, when):
+        """总结页上认出了这一局是某个轮换玩法（最后两行是这个玩法的标签，见 summary_page.detect_mode）：模式记成它。
+        开局横幅漏读模式时，以总结页的识别结果兜底。
+        排位那套不算它（见 modes.is_ranked）。"""
+        row = storage.get_match(self.conn, match_id)
+        if row is None or row["mode"] == mode:
+            return
+        before = row["mode"]
+        name = modes.label(mode)
+        storage.update_match(self.conn, match_id, {"mode": mode})
+        self.log(f"[{when:%H:%M:%S}] 总结页：最后两行是{name}的标签，这一局记为{name}"
+                 + (f"（开局画面读到的模式是 {MODE_LABELS.get(before, before)}，改成{name}）" if before else ""))
 
     def on_summary_upgraded(self, match_id, values, when):
         """同一局的总结页后来又读全了（原来没读全就离开、存成了待确认）：把读数补进那一局，不新插一局、也不再 finish。
@@ -484,22 +520,25 @@ class PostMatch:
         self._use_xp()
         return first_full
 
-    def finish(self):
+    def finish(self, *, returned_to_lobby=False):
         """这一局彻底结束（下一局开局、回到大厅，或停止运行）。没有总结页的局在这里单独记一局。
-        开局画面会反复进出：只有这一局真的有数据时，才清掉开局画面读到的模式、地图。"""
+        开局画面会反复进出。回到大厅或已有本局数据时，清掉开局画面读到的模式、地图。"""
         had_match = any(x is not None for x in (self.match_id, self.xp, self.elim, self.hud, self.champion))
-        if self.match_id is None:
+        match_id = self.match_id
+        if match_id is None:
             if self.xp is not None and not self.xp_done:
                 reading, problems, path, when = self.xp
-                self._insert_xp_only(reading, not problems, problems, path, when, with_others=True)
+                match_id = self._insert_xp_only(reading, not problems, problems, path, when, with_others=True)
             elif self._hud_counts():
-                self._insert_hud_only()
+                match_id = self._insert_hud_only()
             elif self.elim is not None or self.champion is not None:
-                self._insert_elim_only()
-        if had_match:
-            if "map" not in self.info and self.unknown_maps:
-                self.log(f"           开局画面没认出地图（读到：{'、'.join(sorted(self.unknown_maps))}）。"
-                         "如果是新地图，可以加进 config/match_start.json")
+                match_id = self._insert_elim_only()
+        if self.hud and self.hud.get("modes"):
+            self._check_hud_mode(self.hud["modes"], match_id)
+        if had_match and "map" not in self.info and self.unknown_maps:
+            self.log(f"           开局画面没认出地图（读到：{'、'.join(sorted(self.unknown_maps))}）。"
+                     "如果是新地图，可以加进 config/match_start.json")
+        if had_match or returned_to_lobby:
             self.info, self.unknown_maps = {}, set()
         self.reset()
         if self.on_round_end is not None:
@@ -697,6 +736,7 @@ class PostMatch:
         row = storage.get_match(self.conn, match_id)
         self.log(f"[{when:%H:%M:%S}] 记下一局（编号 {match_id}，只看到{'淘汰画面' if self.elim else '冠军横幅'}）："
                  f"第 {row['placement']} 名")
+        return match_id
 
     def _insert_hud_only(self):
         """单独记一局：没有总结页和经验值页，数据来自对局中右上角（加上淘汰画面、冠军横幅）。"""
@@ -712,6 +752,7 @@ class PostMatch:
                  f"伤害 {row['damage']}，RP {signed(row['rp_delta'])}")
         if row["needs_review"]:
             self.log(f"           ⚠ {row['review_note']}")
+        return match_id
 
     def _insert_xp_only(self, reading, verified, notes, path, when, with_others):
         """单独记一局（这一局没有总结页）。verified = 经验值页读数核对通过（段位才可信）；

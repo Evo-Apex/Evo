@@ -50,6 +50,7 @@ from flask import (Blueprint, abort, current_app, flash, g, jsonify, redirect, r
 import app_settings
 import data_move
 import highlights
+import modes
 import recorder
 import storage
 from paths import DATA_DIR, EXE_DIR
@@ -73,7 +74,7 @@ GROUP_MIN_SECONDS = 1.0  # 再短的录像，相隔这么近的也合成一个
 MARK_PRIORITY = ("ev-champion", "ev-kill", "ev-dead", "ev-respawned", "ev-knocked", "ev-revived", "ev-knock", "ev-assist-knock",
                  "ev-assist")
 MATCH_SLACK = timedelta(minutes=2)  # 战绩里那一局的结束时刻比录像的结尾晚这么多以内，也算同一局（结算画面上才记下）
-MODES = {"ranked": "排位", "pubs": "匹配", "other": "其他"}
+MODES = modes.LABELS  # 模式的值 → 显示的名字（排位、匹配、外卡、其他；见 modes.py）
 DEFAULT_LIMIT_GB = 30  # 和 match_recording.DEFAULT_LIMIT_GB 一样（那个文件加载识别用的库，这里不导入）
 
 # ---- 设置页"录像"一栏 ----

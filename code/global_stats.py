@@ -24,6 +24,7 @@ import urllib.request
 from datetime import date, datetime, timedelta
 
 import game_lang
+import modes
 import net_route
 import storage
 import telemetry
@@ -40,7 +41,7 @@ FORMAT = 1  # 汇总的格式版本（服务器的 SUMMARY_NAME = v1）
 # 本赛季从开赛后第一个整天算起（汇总里的 season_from，见 server/stats/worker.js 的 SEASON）
 RANGES = {"season": "本赛季", "all": "全部", "7d": "近 7 天"}
 DEFAULT_RANGE = "season"
-MODES = {"ranked": "排位", "pubs": "匹配"}
+MODES = modes.STATS_MODES
 TIERS = {"all": "全部段位", "low": "白金及以下", "diamond": "钻石", "master": "大师以上"}  # 只有排位分段位
 TIER_ORDER = ("菜鸟", "青铜", "白银", "黄金", "白金", "钻石", "大师", "Apex 猎杀者")
 TIER_GROUP = {**{t: "low" for t in TIER_ORDER[:5]}, "钻石": "diamond", "大师": "master", "Apex 猎杀者": "master"}
@@ -136,7 +137,7 @@ def fetch(now=None):
 # ---------- 页面上显示的 ----------
 
 def choose(args):
-    """网址里的筛选条件 → (范围, 模式, 段位)。不认识的用默认（本赛季、排位、全部段位）；匹配不分段位。"""
+    """网址里的筛选条件 → (范围, 模式, 段位)。不认识的用默认（本赛季、排位、全部段位）；只有排位分段位。"""
     range_key = args.get("range") if args.get("range") in RANGES else DEFAULT_RANGE
     mode = args.get("mode") if args.get("mode") in MODES else "ranked"
     tier = args.get("tier") if mode == "ranked" and args.get("tier") in TIERS else "all"
@@ -144,7 +145,17 @@ def choose(args):
 
 
 def _mode_of(row):
-    return "ranked" if row["mode"] == "ranked" else "pubs"
+    """按与服务器 server/stats/worker.js 一致的模式口径归类。"""
+    return modes.stats_mode(row["mode"])
+
+
+def _in_mode(row, mode):
+    """全部模式包含每局，大逃杀按注册表归类，其余按公开统计分组筛选。"""
+    if mode == "all":
+        return True
+    if mode == "br":
+        return modes.is_br(row["mode"])
+    return _mode_of(row) == mode
 
 
 def _mine(rows, summary, range_key, mode, tier):
@@ -156,7 +167,7 @@ def _mine(rows, summary, range_key, mode, tier):
         start = summary.get("season_from")
         if start is None:  # 老的汇总（服务器还没按赛季算）：没有本赛季，自己的也不算
             return []
-    return [r for r in rows if _mode_of(r) == mode
+    return [r for r in rows if _in_mode(r, mode)
             and (start is None or (r["ended_at"] or "")[:10] >= start)
             and (tier == "all" or TIER_GROUP.get(r["rank_tier"]) == tier)]
 

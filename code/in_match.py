@@ -21,6 +21,7 @@
 
 from collections import deque
 
+import modes
 from hud import TOP_FIELDS, TOP_LABELS
 from storage import name_key
 from weapons import WeaponDetector, WeaponTimer
@@ -73,6 +74,10 @@ class InMatchWatcher:
         self.mate_early = [[], []]  # 那之前裁的（最多 3 块）：没等到就结束了（刚认出队友就退出）才用
         self.own_names = []  # 自己的名字那一条
         self.tops = deque(maxlen=self.keep)  # 右上角
+        self.badge_checked_at = None
+        self.badge_mode = None
+        self.badge_votes = 0
+        self.ranked_rp_seen = False
         self.weapons.reset()  # 每一段拿在手上的武器
         self.last_frame = None
         self.done = False  # 这一局已经结束了
@@ -136,6 +141,12 @@ class InMatchWatcher:
             self.weapons.update(frame, now)
         self._vote_own(own, now)
         self._vote_mates(frame, now)
+        if self.badge_votes < self.VOTES and (self.badge_checked_at is None
+                                             or (now - self.badge_checked_at).total_seconds() >= 1):
+            self.badge_checked_at = now
+            mode = self.hud.mode_badge(frame)
+            self.badge_votes = self.badge_votes + 1 if mode is not None and mode == self.badge_mode else int(mode is not None)
+            self.badge_mode = mode
         if self.post.player_name is None and len(self.own_names) < self.max_names:
             self.own_names.append(self.hud.own_name_snip(frame, self.name_place["roi"], self.name_place.get("anchor")))
         snip = self.hud.top_snip(frame)
@@ -186,8 +197,9 @@ class InMatchWatcher:
         """从最新的一块往回读，每一项取最后一次读到的值。"""
         got, shown = {}, set()
         for snip in reversed(self.tops):
-            values, _, seen = self.hud.read_top(snip)
+            values, scores, seen = self.hud.read_top(snip)
             self.top_reads += 1
+            self.ranked_rp_seen |= scores.get("ranked_rp") is not None
             shown |= seen
             for name in TOP_FIELDS:
                 if name not in got and values[name] is not None:
@@ -257,9 +269,15 @@ class InMatchWatcher:
         if last_one:
             watched = "、".join(self.hud.legends.name(k) for k in self.spectated)
             self.log(f"           成盒以后观战的是 {watched}，不是队友：自己是小队最后一个被淘汰的，右上角最后的名次、RP 就是最终的")
+        hud_modes = set()
+        if self.badge_votes >= self.VOTES:
+            hud_modes.add(self.badge_mode)
+        if self.ranked_rp_seen:
+            hud_modes.add(modes.RANKED)
         self.post.on_hud_final({
             "started": self.started, "ended": ended, "end": end, "saw_start": self.saw_start,
             "own_dead": own_dead and not last_one, "values": values, "mates": mates,
+            "modes": hud_modes,
             "legend": self.hud.legends.name(self.legend) if self.legend else None,
             "weapons": weapons,
         })

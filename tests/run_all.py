@@ -51,6 +51,8 @@ TESTS = {"总结页停留": "test_summary_page", "轻量（按需加载模型）
          "游戏语言（规则按语言分开、认出游戏语言、设置页选游戏语言、匹配局不补段位）": "test_game_lang",
          "英文游戏画面（排位、匹配两局整段重放）": "test_english",
          "繁体中文游戏画面（匹配两局、排位一局整段重放）": "test_traditional",
+         "外卡（Wildcard）：简中和繁中整局回放、模式口径": "test_wildcard",
+         "统计对账（排位、匹配、外卡、未知各一局：本机和全体玩家口径一致，要 Node.js）": "test_mode_stats",
          "简体中文的匹配局（'三人赛'横幅、'未上榜'大厅，一局整段重放）": "test_simplified_pubs",
          "数据文件夹（放在哪里、搬家、指路文件、老玩家自动搬）": "test_data_move",
          "传奇头像（图标、许可文件、战绩页和总览页）": "test_legend_icons",

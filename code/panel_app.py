@@ -36,6 +36,7 @@ import game_lang
 import global_stats
 import map_rotation
 import mirrorchyan
+import modes
 import notice_check
 import panel_esports
 import panel_recordings
@@ -67,7 +68,7 @@ PER_PAGE = 20
 # 顶部导航：(页面, 显示名)。顺序也决定切换页面时，选中标签的底色从哪边滑过来
 NAV = (("overview", "总览"), ("matches", "战绩"), ("recordings.page", "录像"), ("stats", "数据"), ("seasons.page", "赛季"),
        ("esports.page", "电竞"), ("settings", "设置"))
-MODES ={"ranked": "排位", "pubs": "匹配", "other": "其他"}
+MODES = modes.CHOICES  # 模式的值 → 显示的名字（排位、匹配、外卡、其他；见 modes.py）
 # 修正表单里可以改的字段：(显示名, 最小值, 最大值)
 EDITABLE = {
     "placement": ("名次", 1, 20),
@@ -147,6 +148,51 @@ def range_scope(rows, lobby, range_key):
     number = range_season(range_key)
     in_season = seasons.pick(rows, number)
     return in_season, in_season, seasons.pick(lobby, number, key="read_at")
+
+
+# 战绩页和数据页"我的"共用模式筛选。默认全部模式，网址可省略模式参数。
+# 筛选项沿用注册表顺序，"其他"并入匹配。
+MODE_FILTERS = {"br": modes.BR_LABEL,
+                **{mode: modes.label(mode) for mode, spec in modes.MODES.items() if spec["stats"]},
+                "unknown": "未知"}
+
+
+def choose_mode(args):
+    """网址里的模式筛选 → 键；没写、不认识、是"全部模式"时返回 None（全部模式）。"""
+    key = args.get("mode")
+    return key if key in MODE_FILTERS else None
+
+
+def mode_rows(rows, mode_key):
+    """按模式筛选：全部模式（all）原样返回；大逃杀 = 排位 + 匹配 + 外卡（modes.is_br）；未知 = 没认出模式的；
+    匹配 = 匹配 + 其他 + 认不出的值（和 modes.stats_mode 一样，历史数据里偶尔有奇怪的值）；
+    None = 不筛（和 all 一样）。和战绩页的 SQL 筛选（storage._where）同一套定义。"""
+    if mode_key in (None, "all"):
+        return rows
+    if mode_key == "unknown":
+        return [r for r in rows if r["mode"] is None]
+    if mode_key == "br":
+        return [r for r in rows if modes.is_br(r["mode"])]
+    return [r for r in rows if modes.stats_mode(r["mode"]) == mode_key]
+
+
+def mode_scope(rows, range_key, mode_key):
+    """数据页"我的"：先筛模式，再从该模式的对局里取所选范围。
+    返回 (范围里的局, 段位用的局)：段位、RP 只在排位下用，别的模式返回空，那几块就不画。"""
+    picked = mode_rows(rows, mode_key)
+    in_range, rank_rows, rank_lobby = range_scope(picked, [], range_key)
+    if mode_key is not None and mode_key != "ranked":
+        return in_range, []
+    return in_range, rank_rows
+
+
+def mode_titles():
+    """模式按钮悬停时的说明。"""
+    return {"br": "排位、匹配、外卡（有大逃杀名次的玩法）",
+            "ranked": "只有排位用 RP、段位和排位走势",
+            "pubs": "匹配，以及认出是其他模式的局",
+            "wildcard": "外卡（Wildcard）",
+            "unknown": "没认出模式的局（老数据、还没加进识别规则的匹配局）"}
 
 # ---- 传奇头像（战绩页、总览页）----
 
@@ -1189,7 +1235,8 @@ def merge_calibration(rows, raw, cals, above, last_page):
 
 @app.route("/matches")
 def matches():
-    mode = request.args.get("mode") if request.args.get("mode") in MODES else None
+    # 模式筛选和数据页同一套（大逃杀 / 排位 / 匹配 / 外卡 / 未知），storage 的 SQL 也认这些键
+    mode = request.args.get("mode") if request.args.get("mode") in MODE_FILTERS else None
     only_review = request.args.get("review") == "1"
     legend = request.args.get("legend") or None
     page = max(1, request.args.get("page", 1, type=int))
@@ -1236,6 +1283,8 @@ def matches():
         last=min(page * PER_PAGE, total),
         mode=mode,
         modes=MODES,
+        mode_filters=MODE_FILTERS,
+        mode_titles=mode_titles(),
         only_review=only_review,
         legend=legend,
         legends=storage.distinct_values(db(), "legend", names),
@@ -1290,9 +1339,12 @@ def stats(part=None):
     if part is not None and part not in STATS_PARTS:
         abort(404)
     range_key = choose_range(request.args)
+    mode_key = choose_mode(request.args)
     names = account_view()["names"]
     rows = storage.all_matches(db(), names)
-    in_range, rank_rows, rank_lobby = range_scope(rows, storage.lobby_readings(db(), names), range_key)
+    in_range, rank_rows = mode_scope(rows, range_key, mode_key)
+    rank_lobby = range_scope(rows, storage.lobby_readings(db(), names), range_key)[2] \
+        if mode_key in (None, "ranked") else []
     all_mates = storage.all_teammates(db(), names)
     mates = teammate_table(in_range, all_mates)
     curves = None
@@ -1309,6 +1361,9 @@ def stats(part=None):
         range_key=range_key,
         ranges=ranges_now(),
         range_titles=range_titles(),
+        mode_key=mode_key,
+        modes=MODE_FILTERS,
+        mode_titles=mode_titles(),
         season_label=seasons.label(range_season(range_key)) if range_season(range_key) else None,
         total=len(rows),
         in_range_count=len(in_range),
@@ -1325,8 +1380,8 @@ def stats(part=None):
         weapons=weapons,
         weapon_all=weapon_all,
         buckets=PLACE_BUCKETS,
-        # 六维图只在卡片那页（完整的表格页没有）
-        radar=None if part else radar_card(rank_rows, in_range, rank_lobby),
+        # 六维图只显示在排位卡片页。
+        radar=None if part or not modes.is_ranked(mode_key or "ranked") else radar_card(rank_rows, in_range, rank_lobby),
         review_count=storage.count_review(db(), names),
     )
 
